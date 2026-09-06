@@ -1,0 +1,49 @@
+# diag.global.silver_multitask — global image features, accepted-silver auxiliary heads.
+#
+# Question: does accepted report-derived (silver) auxiliary supervision improve the primary
+# PE +/- head when no anatomy pooling is used?
+# Native supervision stays PE +/- only; the auxiliary heads are trained from accepted SL02
+# rows at task.silver_loss_weight. Silver rows are never used as evaluation labels, and
+# abstained / no_result rows are ignored.
+# Pairs with diag.global.native_multitask (same heads, different supervision source) and
+# with diag.anatomy.silver.* (same supervision, with anatomy pooling).
+# Output: outputs/diagnosis/DX_global_silver_multitask/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: DX_global_silver_multitask
+  name: diag.global.silver_multitask
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  # Native labels: PE presence only. Everything else arrives as accepted silver.
+  label_columns: [pe_present]
+  mask_columns:
+    _replace_: true
+task:
+  # Heads and silver_targets come from components/task/diagnosis.yaml.
+  regions: []
+  silver_loss_weight: 0.2
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  dapt: DINO
+  alignment: true
+  silver_method: SL02
+  supervision_type: native_pe_and_accepted_silver_multitask
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: true
+  silver_labels: ${PE_CLOUD_ROOT}/pe-project/outputs/silver_label/SL_hybrid_adjudicated/labels.parquet

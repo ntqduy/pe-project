@@ -1,0 +1,49 @@
+# repr.foundation.totalfm — frozen public TotalFM encoder under the fixed PE probe.
+#
+# Question: does the TotalFM representation carry more PE signal than CT-FM or CT-CLIP?
+# BLOCKER: configs/components/backbone/totalfm.yaml still needs factory / output_adapter /
+# feature_dim, and upstream TotalFM is organ-patch based, so it is not assumed to be a
+# drop-in whole-volume encoder. Verify the pooling contract before trusting this arm.
+# Output: outputs/diagnosis/DX_probe_totalfm/
+_base_:
+  - ../../paths.yaml
+  - ../../compute/default.yaml
+  - ../../components/backbone/totalfm.yaml
+  - ../../components/task/diagnosis.yaml
+  - ../../components/training/probe.yaml
+experiment:
+  id: DX_probe_totalfm
+  name: repr.foundation.totalfm
+  stage: diagnosis
+  family: diagnosis
+model:
+  load_pretrained: true
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns:
+    _replace_: true
+task:
+  architecture: frozen_probe
+  targets:
+    _replace_: true
+    pe_present: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  backbone: TotalFM
+  initialization: public
+  source_experiment: null
+  source_checkpoint: null
+  transfer_modules: []
+  dapt: none
+  alignment: false
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+  silver_labels: null

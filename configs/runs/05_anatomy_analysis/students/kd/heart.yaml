@@ -1,0 +1,33 @@
+# anatomy.heart_student_kd — heart-only student, ground truth plus frozen-teacher KD.
+#
+# Question: does the full-volume teacher transfer knowledge the heart ROI alone cannot
+# provide from labels?
+# Identical to anatomy.heart_student except that distillation is enabled, so the pair
+# isolates the teacher's contribution.
+# Requires diag.anatomy.concat (teacher) and data.roi.
+# Output: outputs/roi_students/KD_heart_only_distilled/
+#   plus distillation_validation_predictions.parquet: teacher and student logits, GT/KD/total loss
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbone/ct_fm.yaml
+  - ../../../../components/task/diagnosis.yaml
+  - ../../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../../components/training/diagnosis.yaml
+  - ../../../../components/adapter/organ.yaml
+  - ../../../../components/fusion/concat_mlp.yaml
+  - ../../../../components/task/roi_student.yaml
+  - ../../../../components/task/roi_student_kd.yaml
+experiment:
+  id: KD_heart_only_distilled
+  name: anatomy.heart_student_kd
+  stage: roi_student
+  family: roi_student
+data:
+  mask_columns:
+    _replace_: true
+    pa: pa_mask_path
+    lung: lung_mask_path
+  roi_mask_ids: {heart: ROI2}
+task:
+  input_counterfactual: keep_only_heart

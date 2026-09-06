@@ -1,0 +1,23 @@
+# repr.dapt.simclr — D03: two-view contrastive domain-adaptive pretraining.
+#
+# Question: does instance-contrastive adaptation improve the fixed downstream probes?
+# Output: outputs/pretraining/dapt/D_dapt_simclr/  (best.ckpt, lineage.json, result.json)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/dapt/simclr.yaml
+  - ../../../components/training/dapt.yaml
+experiment:
+  id: D_dapt_simclr
+  name: repr.dapt.simclr
+  stage: dapt
+  family: dapt
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+lineage:
+  initialization: public
+  supervision_type: self_supervised

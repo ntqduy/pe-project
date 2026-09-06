@@ -1,0 +1,8 @@
+model:
+  backbone: ct_clip
+  repo: third_party/repos/CT-CLIP/CT_CLIP
+  checkpoint: third_party/weights/foundation/ct_clip/model.pt
+  factory: ""
+  output_adapter: ""
+  feature_dim: 0
+  strict_load: true

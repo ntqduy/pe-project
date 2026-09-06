@@ -1,0 +1,9 @@
+compute:
+  accelerator: cuda
+  # auto: [] -> CPU, [0] -> one GPU, [0, 1, ...] -> distributed execution.
+  strategy: auto
+  devices: [0]
+  num_nodes: 1
+  precision: bf16
+  distributed_backend: nccl
+  num_workers: 8

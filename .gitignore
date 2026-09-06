@@ -1,0 +1,38 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+# Patient-linked inputs and disposable caches are never versioned.
+cache/*
+!cache/.gitkeep
+
+# Scientific outputs live on cloud-backed project storage, not in Git.
+outputs/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.nii
+*.nii.gz
+*.parquet
+
+# Third-party clones and weights are local assets pinned by versions.yaml.
+third_party/repos/*
+!third_party/repos/.gitkeep
+third_party/weights/*
+!third_party/weights/.gitkeep
+!third_party/weights/README.md
+
+.env
+.DS_Store
+Thumbs.db
+
+tools/__pycache__/
+source/__pycache__/
+third_party/__pycache__/
+third_party/weights/*.pth

@@ -1,0 +1,30 @@
+# repr.dapt.none — D00: the no-adaptation control for the DAPT comparison.
+#
+# Question: what does the public encoder score before any in-domain adaptation?
+# Nothing is trained (epochs: 0, encoder frozen); this arm exists so every DAPT method is
+# compared against an explicit, materialized control instead of an implicit baseline.
+# Output: outputs/pretraining/dapt/D_dapt_none/  (best.ckpt, lineage.json, result.json)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/dapt/none.yaml
+experiment:
+  id: D_dapt_none
+  name: repr.dapt.none
+  stage: dapt
+  family: dapt
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+lineage:
+  initialization: public
+  supervision_type: none
+peft:
+  method: frozen
+training:
+  epochs: 0
+  batch_size: 1
+seed: 42

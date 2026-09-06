@@ -1,0 +1,49 @@
+# repr.rspect.single_task — external supervised transfer, PE presence only.
+#
+# Question: does supervised training on the external RSPECT/RSNA-STR PE cohort produce a
+# better representation for INSPECT than C0 alone?
+# Side branch: no downstream experiment requires it. Paired with repr.rspect.multitask,
+# which differs only in its task heads, so the comparison isolates multitask supervision.
+#
+# BLOCKER: manifests/rsna_diagnosis.csv and the dataset identifier are historical
+# placeholders. Point data.manifest at the real patient-level-split external manifest and
+# confirm its label columns before running; preflight fails cleanly while it is absent.
+# Output: outputs/diagnosis/DX_rspect_single_task/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/training/diagnosis.yaml
+experiment:
+  id: DX_rspect_single_task
+  name: repr.rspect.single_task
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  dataset: RSNA
+  manifest: manifests/rsna_diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns:
+    heart: heart_mask_path
+    pa: pa_mask_path
+    lung: lung_mask_path
+task:
+  targets:
+    _replace_: true
+    pe_present: 1
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: true
+  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  require_silver_labels: false

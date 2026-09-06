@@ -1,0 +1,29 @@
+# repr.silver.medgemma — adapt C0 with accepted SL00 (MedGemma-only) silver labels.
+#
+# Question: does the silver source change what the adapted representation learns?
+# Identical to repr.silver.hybrid except for silver_training.silver_source, so the
+# comparison isolates the label-generation method.
+# Output: outputs/pretraining/silver/SE_c_silver_medgemma/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/silver_adaptation.yaml
+experiment:
+  id: SE_c_silver_medgemma
+  name: repr.silver.medgemma
+  stage: silver_encoder_adaptation
+  family: silver_encoder_adaptation
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+silver_training:
+  silver_source: SL00
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  dapt: DINO
+  alignment: true
+  supervision_type: silver_multitask

@@ -1,0 +1,29 @@
+# repr.silver.hybrid — SE01: adapt C0 with accepted SL02 (hybrid) silver labels. Produces C_silver.
+#
+# Question: does accepted report-derived supervision improve the representation over C0?
+# Side branch: C0 stays intact and no downstream task requires C_silver. Compare the two
+# with probe.diag / probe.prog while keeping split, labels and probe contract fixed.
+# Output: outputs/pretraining/silver/SE_c_silver_hybrid/  (best.ckpt is C_silver)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/silver_adaptation.yaml
+experiment:
+  id: SE_c_silver_hybrid
+  name: repr.silver.hybrid
+  stage: silver_encoder_adaptation
+  family: silver_encoder_adaptation
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+silver_training:
+  silver_source: SL02
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  dapt: DINO
+  alignment: true
+  supervision_type: silver_multitask

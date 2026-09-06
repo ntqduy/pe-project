@@ -1,0 +1,15 @@
+silver:
+  method: SL01
+  reports: reports.parquet
+  confidence_threshold: 0.8
+  falcon:
+    provider: falcon
+    model_path: third_party/weights/silver/falcon
+    model_id: null
+    provider_factory: source.silver.providers:build_transformers_provider
+    provider_kwargs:
+      auto_model_class: AutoModelForCausalLM
+      tokenizer_class: AutoTokenizer
+      device_map: auto
+      torch_dtype: bfloat16
+      local_files_only: true

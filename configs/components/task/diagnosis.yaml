@@ -1,0 +1,23 @@
+task:
+  primary_target: pe_present
+  targets:
+    pe_present: 1
+    acuity: 4
+    central: 1
+    lobar: 1
+    segmental: 1
+    subsegmental: 1
+    saddle: 1
+    rv_enlargement: 1
+    rv_lv_abnormal: 1
+    septal_bowing: 1
+    reflux: 1
+    pleural_effusion: 1
+    pericardial_effusion: 1
+    chronic_lung_disease: 1
+  regions: [heart, pa, lung]
+  architecture: soft_moe
+  expert_dim: 128
+  hidden_dim: 256
+  silver_targets: [acuity, central, lobar, segmental, subsegmental, saddle, rv_enlargement, rv_lv_abnormal, septal_bowing, reflux, pleural_effusion, pericardial_effusion, chronic_lung_disease]
+  silver_loss_weight: 0.2

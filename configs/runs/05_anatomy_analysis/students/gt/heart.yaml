@@ -1,0 +1,29 @@
+# anatomy.heart_student — SUFFICIENCY: is the heart region alone enough to predict PE?
+#
+# Ground-truth supervision only, no teacher. Heart input comes from ROI2; the PA and lung
+# branches still receive their stored masks, but the volume outside the heart ROI is erased.
+# Pairs with anatomy.heart_student_kd (identical except for distillation).
+# Output: outputs/roi_students/RS_heart_only_gt/
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbone/ct_fm.yaml
+  - ../../../../components/task/diagnosis.yaml
+  - ../../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../../components/training/diagnosis.yaml
+  - ../../../../components/adapter/organ.yaml
+  - ../../../../components/fusion/concat_mlp.yaml
+  - ../../../../components/task/roi_student.yaml
+experiment:
+  id: RS_heart_only_gt
+  name: anatomy.heart_student
+  stage: roi_student
+  family: roi_student
+data:
+  mask_columns:
+    _replace_: true
+    pa: pa_mask_path
+    lung: lung_mask_path
+  roi_mask_ids: {heart: ROI2}
+task:
+  input_counterfactual: keep_only_heart

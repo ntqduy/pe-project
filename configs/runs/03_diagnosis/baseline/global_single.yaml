@@ -1,0 +1,48 @@
+# diag.global.single — global full-CTPA image features, single PE +/- head.
+#
+# Question: how well does whole-volume image evidence alone predict native PE labels?
+# This is the reference every anatomy-aware and multitask diagnosis arm is compared against.
+# No anatomy pooling (task.regions is empty), no auxiliary targets, no EHR, no PESI:
+# diagnosis is image-only by design.
+# Output: outputs/diagnosis/DX_global_single/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: DX_global_single
+  name: diag.global.single
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns:
+    _replace_: true
+task:
+  targets:
+    _replace_: true
+    pe_present: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  dapt: DINO
+  alignment: true
+  silver_method: null
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+  silver_labels: null

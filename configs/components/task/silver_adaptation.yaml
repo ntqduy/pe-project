@@ -1,0 +1,45 @@
+# Shared contract for silver-supervised encoder adaptation (C0 -> C_silver).
+# The three silver_adaptation runs differ only in silver_training.silver_source.
+# Only rows with status=accepted are used; abstained and no_result rows are ignored.
+init:
+  encoder: C0
+  experiment: AL_image_report_c0
+  checkpoint: pretraining/alignment/AL_image_report_c0/best.ckpt
+silver_training:
+  # The SL00/SL01/SL02 keys are the silver *method* selectors that silver_source picks from;
+  # the values are the run directories those methods write.
+  sources:
+    SL00: silver_label/SL_medgemma_only/labels.parquet
+    SL01: silver_label/SL_rules_falcon/labels.parquet
+    SL02: silver_label/SL_hybrid_adjudicated/labels.parquet
+  targets:
+    pe_present: 1
+    acuity: 4
+    central: 1
+    lobar: 1
+    segmental: 1
+    subsegmental: 1
+    saddle: 1
+    rv_enlargement: 1
+    rv_lv_abnormal: 1
+    septal_bowing: 1
+    reflux: 1
+    pleural_effusion: 1
+    pericardial_effusion: 1
+    chronic_lung_disease: 1
+  # Unlisted weights default to 1.0. No class weights are fabricated.
+  loss_weights: {}
+supervision:
+  require_silver_labels: true
+peft:
+  method: full
+training:
+  epochs: 50
+  batch_size: 1
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  gradient_accumulation: 4
+validation:
+  binary_threshold: 0.5
+  minimum_samples: 2
+seed: 42

@@ -1,0 +1,36 @@
+# prog.ehr_pesi — clinical record plus PESI, no imaging.
+#
+# Question: what is the best purely tabular model? This is the bar the imaging arms must
+# clear to justify a 3D CTPA model at all.
+# BLOCKER: data.ehr_columns is empty; its length must match task.ehr_input_dim (32).
+# Output: outputs/prognosis/PR_ehr_pesi/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+experiment:
+  id: PR_ehr_pesi
+  name: prog.ehr_pesi
+  stage: prognosis
+  family: prognosis
+task:
+  modalities: [ehr, pesi]
+  regions: []
+lineage:
+  backbone: tabular_clinical_pesi
+  initialization: tabular_random
+  source_experiment: null
+  source_checkpoint: null
+  transfer_modules: []
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  require_ehr: true
+  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  require_pesi: true
+  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi
+peft:
+  _replace_: true
+  method: full

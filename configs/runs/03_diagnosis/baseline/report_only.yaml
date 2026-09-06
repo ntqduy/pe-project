@@ -1,0 +1,43 @@
+# diag.report_only — text-only comparison baseline. Never sees the CTPA volume.
+#
+# Question: how much of the diagnosis score is achievable from the report alone?
+# This bounds how impressive an image model's number really is. It is a comparison
+# baseline, not part of the image-only diagnosis family.
+# Reports enter as precomputed embedding columns (same contract as repr.align).
+# Same contract as the pre-refactor DX04_report_only arm.
+# BLOCKER: alignment.report_embedding_columns is empty and must name real manifest columns.
+# Output: outputs/diagnosis/DX_report_only/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/alignment/image_report.yaml
+  - ../../../components/task/diagnosis.yaml
+experiment:
+  id: DX_report_only
+  name: diag.report_only
+  stage: diagnosis
+  family: diagnosis
+task:
+  architecture: report_only
+  hidden_dim: 256
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present, acuity, central, lobar, segmental, subsegmental, saddle,
+                  rv_enlargement, rv_lv_abnormal, septal_bowing, reflux, pleural_effusion,
+                  pericardial_effusion, chronic_lung_disease]
+lineage:
+  backbone: none
+  initialization: public
+  supervision_type: native_labels
+training:
+  epochs: 50
+  batch_size: 8
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+evaluation:
+  bootstrap_samples: 2000
+  confidence: 0.95
+  threshold_method: youden
+seed: 42

@@ -1,0 +1,4 @@
+dapt:
+  method: anatomy_dapt
+  projection_dim: 128
+  anatomy_region: pa

@@ -1,0 +1,8 @@
+model:
+  backbone: ct_fm
+  repo: third_party/repos/CT-FM
+  checkpoint: third_party/weights/foundation/ct_fm/model.ckpt
+  factory: ""
+  output_adapter: ""
+  feature_dim: 0
+  strict_load: true

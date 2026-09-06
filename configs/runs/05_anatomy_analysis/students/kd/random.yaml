@@ -1,0 +1,34 @@
+# anatomy.random_student_kd — random-region student, ground truth plus frozen-teacher KD.
+#
+# The control for the distilled students: distillation can lift a student that sees nothing
+# anatomically relevant, so the organ KD arms are only meaningful above this one.
+# Identical to anatomy.random_student except that distillation is enabled.
+# Requires diag.anatomy.concat (teacher) and data.roi.
+# Output: outputs/roi_students/KD_random_only_distilled/
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbone/ct_fm.yaml
+  - ../../../../components/task/diagnosis.yaml
+  - ../../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../../components/training/diagnosis.yaml
+  - ../../../../components/adapter/organ.yaml
+  - ../../../../components/fusion/concat_mlp.yaml
+  - ../../../../components/task/roi_student.yaml
+  - ../../../../components/task/roi_student_kd.yaml
+experiment:
+  id: KD_random_only_distilled
+  name: anatomy.random_student_kd
+  stage: roi_student
+  family: roi_student
+data:
+  mask_columns:
+    _replace_: true
+    heart: heart_mask_path
+    pa: pa_mask_path
+    lung: lung_mask_path
+  roi_mask_ids: {random: ROI8}
+  roi_control_for: {random: ROI4}
+task:
+  input_counterfactual: keep_only_random
+  matched_region: pa

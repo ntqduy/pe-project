@@ -1,0 +1,79 @@
+# deferred.concept_bottleneck — interpretable concept-bottleneck prognosis. DEFERRED and DISABLED.
+#
+# Question: can mortality be predicted through named clinical concepts instead of an opaque
+# feature vector?
+# Deferred and deliberately disabled: a concept bottleneck is only honest when every concept
+# has a real reviewed label. Enabling it with proxy concepts would produce confident,
+# meaningless explanations. concept_bottleneck.enabled must stay false until each listed
+# concept points at a real native / validated-silver / expert-reviewed column that is also
+# present in data.label_columns (preflight enforces this).
+# Embolic burden and vascular pruning are intentionally absent: this dataset has no
+# defensible target for either.
+# Same contract as the pre-refactor PR17_concept_bottleneck arm, minus one cleanup: that
+# version still demanded PESI artifacts although its modalities are image + ehr.
+# Output: outputs/prognosis/PR_concept_bottleneck/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+experiment:
+  id: PR_concept_bottleneck
+  name: deferred.concept_bottleneck
+  stage: prognosis
+  family: prognosis
+data:
+  cohort: confirmed_pe_positive
+  # Concept targets must be added here once real columns exist, for example:
+  # label_columns: [mortality_30d, rv_enlargement, septal_bowing, pleural_effusion]
+  label_columns: [mortality_30d]
+  mask_columns:
+    heart: heart_mask_path
+    pa: pa_mask_path
+    lung: lung_mask_path
+task:
+  modalities: [image, ehr]
+  regions: [heart, pa, lung]
+  concept_embedding_dim: 64
+  concept_loss_weight: 0.2
+lineage:
+  backbone: CT-FM
+  initialization: C_diag
+  # DANGLING ON PURPOSE: DX01 was a pre-refactor diagnosis arm; no active experiment produces
+  # that checkpoint. Repoint at an active diagnosis run (e.g. DX_anatomy_concat) before
+  # reviving this deferred experiment — that is a scientific choice, not a cleanup.
+  source_experiment: DX01
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX01/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: true
+  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  require_ehr: true
+  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  require_pesi: false
+concept_bottleneck:
+  enabled: false
+  concepts:
+    rv_enlargement:
+      enabled: false
+      source: native
+      target: rv_enlargement
+      type: binary
+    septal_bowing:
+      enabled: false
+      source: native
+      target: septal_bowing
+      type: binary
+    pleural_effusion:
+      enabled: false
+      source: native
+      target: pleural_effusion
+      type: binary
+    pericardial_effusion:
+      enabled: false
+      source: native
+      target: pericardial_effusion
+      type: binary

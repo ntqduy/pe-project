@@ -1,0 +1,9 @@
+# Shared optimization contract for image-report alignment.
+# Copied verbatim from the historical AL01 contract.
+peft:
+  method: full
+training:
+  epochs: 50
+  batch_size: 8
+  learning_rate: 0.0001
+seed: 42

@@ -1,0 +1,38 @@
+# prog.ehr — raw clinical values plus missingness indicators only.
+#
+# Question: does the full clinical record predict 30-day mortality better than the PESI
+# score that summarizes part of it?
+# Imputation and normalization statistics are fit on the training split only.
+# Cleanup vs the pre-refactor PR27_CLINICAL_ONLY arm: it still inherited an image backbone
+# and mask columns it never used.
+# BLOCKER: data.ehr_columns is empty; its length must match task.ehr_input_dim (32).
+# Output: outputs/prognosis/PR_ehr_only/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+experiment:
+  id: PR_ehr_only
+  name: prog.ehr
+  stage: prognosis
+  family: prognosis
+task:
+  modalities: [ehr]
+  regions: []
+lineage:
+  backbone: clinical_mlp
+  initialization: tabular_random
+  source_experiment: null
+  source_checkpoint: null
+  transfer_modules: []
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  require_ehr: true
+  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  require_pesi: false
+peft:
+  _replace_: true
+  method: full

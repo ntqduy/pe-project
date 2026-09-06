@@ -1,0 +1,8 @@
+# Router-weighted soft mixture-of-experts fusion over the named branches.
+# The router is masked and renormalized for unavailable branches.
+fusion:
+  type: soft_moe
+  temperature: 1.0
+  dropout: 0.0
+task:
+  architecture: soft_moe

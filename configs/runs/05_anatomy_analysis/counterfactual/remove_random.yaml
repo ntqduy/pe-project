@@ -1,0 +1,44 @@
+# anatomy.remove_random — NECESSITY CONTROL: erase a volume-matched random region instead.
+#
+# Without this arm, a probability drop after removing an organ proves nothing: erasing any
+# region of that size might move the score. The random control mask (ROI8) is volume-matched
+# to the PA region (ROI4), body-constrained and deterministic per patient/study, so the
+# organ deltas are read against it.
+# Frozen inference only; requires diag.anatomy.concat and data.roi.
+# Output: outputs/counterfactual/CF_remove_random/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/adapter/organ.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: CF_remove_random
+  name: anatomy.remove_random
+  stage: counterfactual
+  family: counterfactual
+data:
+  roi_manifest: ${PE_CLOUD_ROOT}/pe-project/outputs/roi/ROI_anatomy_and_controls/manifest.parquet
+  roi_mask_ids: {random: ROI8}
+  roi_control_for: {random: ROI4}
+task:
+  base_stage: diagnosis
+  input_counterfactual: remove_random
+  matched_region: pa
+  random_control_for: ROI4
+  masking_policy: {type: local_mean, local_radius_voxels: 3}
+lineage:
+  backbone: CT-FM
+  initialization: C_full
+  source_experiment: DX_anatomy_concat
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
+  transfer_modules: [image_encoder, roi, organ_adapters, fusion, heads]
+  dapt: DINO
+  alignment: true
+  supervision_type: frozen_counterfactual_inference
+supervision:
+  require_rois: true
+  rois: ${PE_CLOUD_ROOT}/pe-project/outputs/roi/ROI_anatomy_and_controls

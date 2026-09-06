@@ -1,0 +1,31 @@
+# anatomy.pa_student_kd — PA-only student, ground truth plus frozen-teacher KD.
+#
+# Question: how close to the full model can a PA-only student get when it can also imitate
+# the teacher's probabilities?
+# Identical to anatomy.pa_student except that distillation is enabled.
+# Requires diag.anatomy.concat (teacher) and data.roi.
+# Output: outputs/roi_students/KD_pa_only_distilled/
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbone/ct_fm.yaml
+  - ../../../../components/task/diagnosis.yaml
+  - ../../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../../components/training/diagnosis.yaml
+  - ../../../../components/adapter/organ.yaml
+  - ../../../../components/fusion/concat_mlp.yaml
+  - ../../../../components/task/roi_student.yaml
+  - ../../../../components/task/roi_student_kd.yaml
+experiment:
+  id: KD_pa_only_distilled
+  name: anatomy.pa_student_kd
+  stage: roi_student
+  family: roi_student
+data:
+  mask_columns:
+    _replace_: true
+    heart: heart_mask_path
+    lung: lung_mask_path
+  roi_mask_ids: {pa: ROI4}
+task:
+  input_counterfactual: keep_only_pa

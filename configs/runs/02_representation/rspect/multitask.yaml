@@ -1,0 +1,46 @@
+# repr.rspect.multitask — external supervised transfer, PE presence + PE attributes.
+#
+# Question: does multitask supervision on the external cohort transfer better than
+# presence-only supervision? Identical manifest, split, initialization, optimizer and
+# architecture as repr.rspect.single_task; only the task heads and label columns differ.
+#
+# BLOCKER: same unverified external-cohort manifest/label contract as the single-task arm.
+# Output: outputs/diagnosis/DX_rspect_multitask/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/training/diagnosis.yaml
+experiment:
+  id: DX_rspect_multitask
+  name: repr.rspect.multitask
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  dataset: RSNA
+  manifest: manifests/rsna_diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present, acuity, central, lobar, segmental, subsegmental, saddle,
+                  rv_enlargement, rv_lv_abnormal, septal_bowing, reflux, pleural_effusion,
+                  pericardial_effusion, chronic_lung_disease]
+  mask_columns:
+    heart: heart_mask_path
+    pa: pa_mask_path
+    lung: lung_mask_path
+task:
+  # Native multitask heads only; no silver supervision on the external cohort.
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: true
+  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  require_silver_labels: false

@@ -1,0 +1,34 @@
+# prog.image — global full-CTPA image only.
+#
+# Question: does the CTPA itself carry mortality information beyond the clinical baselines?
+# Global image features only (task.regions is empty), no clinical inputs, so the score is
+# attributable to imaging alone.
+# Output: outputs/prognosis/PR_image_only/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: PR_image_only
+  name: prog.image
+  stage: prognosis
+  family: prognosis
+task:
+  modalities: [image]
+  regions: []
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_ehr: false
+  require_pesi: false

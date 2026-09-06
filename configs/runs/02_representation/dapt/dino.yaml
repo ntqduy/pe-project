@@ -1,0 +1,24 @@
+# repr.dapt.dino — D02: DINO self-distillation domain-adaptive pretraining.
+#
+# Question: does DINO improve the fixed downstream probes over no adaptation and over MAE?
+# This is the DAPT checkpoint the alignment stage (C0) is configured to start from.
+# Output: outputs/pretraining/dapt/D_dapt_dino/  (best.ckpt, lineage.json, result.json)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/dapt/dino.yaml
+  - ../../../components/training/dapt.yaml
+experiment:
+  id: D_dapt_dino
+  name: repr.dapt.dino
+  stage: dapt
+  family: dapt
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+lineage:
+  initialization: public
+  supervision_type: self_supervised

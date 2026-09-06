@@ -1,0 +1,45 @@
+# repr.foundation.ct_clip_zero_shot — DELIBERATELY UNAVAILABLE contract.
+#
+# Question: can the original joint image/text model predict PE zero-shot, with no PE labels?
+#
+# This file documents the contract instead of pretending to implement it. CT-CLIP is a
+# joint image-text model, so zero-shot prediction is conceivable, but this repository has
+# none of the pieces it would require:
+#   - a loaded, inspected text tower and its exact tokenizer contract
+#   - a reviewed PE prompt set (positive/negative phrasing) fixed before any evaluation
+#   - a score definition and calibration rule for turning similarities into probabilities
+#   - an evaluation entrypoint (foundation materialization is NOT zero-shot classification)
+# Until all four exist, preflight fails on zero_shot.available and `run.py run` refuses this
+# experiment. Nothing here is guessed and no substitute score is computed.
+#
+# CT-FM and TotalFM are image-only encoders: they get no zero-shot arm at all, only probes.
+_base_:
+  - ../../paths.yaml
+  - ../../compute/default.yaml
+  - ../../components/backbone/ct_clip.yaml
+experiment:
+  id: F_ct_clip_zero_shot
+  name: repr.foundation.ct_clip_zero_shot
+  stage: foundation
+  family: foundation
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+zero_shot:
+  requested: true
+  available: false
+  reason: >-
+    Zero-shot PE classification is not implemented: no inspected text tower, no reviewed
+    prompt set, no score calibration rule and no zero-shot evaluation entrypoint exist.
+  required_before_enabling:
+    - inspected text encoder and tokenizer contract for the exact CT-CLIP checkpoint
+    - reviewed PE prompt set, frozen before any evaluation run
+    - explicit similarity-to-probability definition and calibration split
+    - a zero-shot evaluation entrypoint separate from foundation materialization
+lineage:
+  backbone: CT-CLIP
+  initialization: public
+  supervision_type: none
+seed: 42

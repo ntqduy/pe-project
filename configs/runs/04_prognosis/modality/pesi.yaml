@@ -1,0 +1,37 @@
+# prog.pesi — PESI / sPESI only. The clinical score baseline.
+#
+# Question: how much 30-day mortality signal is already in the established severity score?
+# Any imaging or multimodal arm has to beat this to be worth anything clinically.
+# No image encoder is built at all (task.modalities has no image), so no backbone is needed.
+# Cleanup vs the pre-refactor PR26_PESI_ONLY arm: it still inherited an image backbone and
+# mask columns it never used, which made preflight demand mask paths for a tabular model.
+# Output: outputs/prognosis/PR_pesi_only/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+experiment:
+  id: PR_pesi_only
+  name: prog.pesi
+  stage: prognosis
+  family: prognosis
+task:
+  modalities: [pesi]
+  regions: []
+lineage:
+  backbone: tabular_pesi
+  initialization: tabular_random
+  source_experiment: null
+  source_checkpoint: null
+  transfer_modules: []
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  require_ehr: false
+  require_pesi: true
+  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi
+peft:
+  _replace_: true
+  method: full

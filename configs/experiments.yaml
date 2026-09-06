@@ -1,0 +1,1412 @@
+# PE project — experiment registry
+#
+# This is the human-facing index of the active pipeline. Every entry answers: what is this
+# experiment, what question does it answer, what must exist before it can run, and what does
+# it leave behind. `run.py` reads only this file to resolve a semantic name to a config.
+#
+# Semantic names are the interface. Each config's experiment.id is the output key: it names
+# the run directory under outputs/ and is stamped into every checkpoint's lineage, so it is
+# self-describing too (SEG_pseudo_anatomy, DX_anatomy_concat, CF_remove_pa, ...).
+# legacy_id records the pre-refactor id an arm replaces (SEG01, DX18_ANATOMY_FULL, ...) so
+# older notes and result folders stay traceable. It is documentation, nothing reads it.
+#
+# status:
+#   ready       config is complete; missing artifacts are reported by `run.py plan`
+#   blocked     an unresolved data or checkpoint contract must be filled first (see blockers)
+#   deferred    intentionally outside the active pipeline
+#   unavailable cannot run by design; the contract is documented but not implemented
+#
+# requires entries may carry:
+#   experiment  the registry name that produces this artifact (used by `run.py plan`)
+#   path_key    dotted key in the resolved config whose value is the artifact path
+#   blocker     an unresolved contract rather than a missing file
+
+project_blockers:
+  - id: backbone_contract
+    what: >-
+      configs/components/backbone/{ct_fm,ct_clip,totalfm}.yaml still have empty factory /
+      output_adapter and feature_dim 0. Every image experiment fails preflight until the
+      inspected checkpoint contract is filled in and the weights are staged locally.
+  - id: inspect_manifests
+    what: >-
+      manifests/ctpa.csv, manifests/diagnosis.csv, manifests/prognosis.csv and
+      manifests/paired_reports.csv must exist under the derived data root with a
+      patient-level split. No split is ever created implicitly.
+
+experiments:
+
+  # ----------------------------------------------------------------- DATA
+  data.segmentation:
+    config: configs/runs/00_data/segmentation.yaml
+    group: DATA
+    legacy_id: SEG01
+    description: TotalSegmentator pseudo-anatomy masks with LungMask lung Dice QC
+    question: Which studies have usable anatomy masks?
+    representation: none
+    task: segmentation
+    modalities: [image]
+    anatomy: produces
+    supervision: none
+    fusion: none
+    requires:
+      - what: CTPA manifest with a patient-level split
+        path_key: data.manifest
+      - what: TotalSegmentator CLI, repository and offline task weights
+        blocker: segmentation_backend
+    produces: [anatomy masks, mask manifest, QC report, preview images]
+    status: ready
+
+  data.roi:
+    config: configs/runs/00_data/roi.yaml
+    group: DATA
+    legacy_id: ROI01
+    description: ROI1-ROI8 crops and volume-matched random controls from a finished segmentation run
+    question: Which studies have usable ROI artifacts and matched random controls?
+    representation: none
+    task: roi
+    modalities: [image]
+    anatomy: produces
+    supervision: none
+    fusion: none
+    requires:
+      - what: Completed segmentation run
+        experiment: data.segmentation
+        path_key: roi.segmentation_run
+    produces: [ROI1-ROI8 masks, ROI manifest, QC report]
+    status: ready
+
+  data.silver.medgemma:
+    config: configs/runs/00_data/silver/medgemma.yaml
+    group: DATA
+    legacy_id: SL00_medgemma_only
+    description: SL00 report-derived silver labels from MedGemma alone
+    question: What supervision can a single medical LLM extract from the reports?
+    representation: none
+    task: silver
+    modalities: [reports]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Report table with report_id and report_text
+        path_key: silver.reports
+      - what: Local MedGemma weights
+        blocker: silver_model_weights
+    produces: [accepted/abstained/no_result labels, audit trail, QC summary]
+    status: blocked
+    blockers:
+      - Local MedGemma model directory is not staged and its exact model id/revision is unrecorded.
+
+  data.silver.rules_falcon:
+    config: configs/runs/00_data/silver/rules_falcon.yaml
+    group: DATA
+    legacy_id: SL01_rules_falcon
+    description: SL01 deterministic rules plus Falcon extraction
+    question: Does a rule-first cascade extract report supervision more reliably than an LLM alone?
+    representation: none
+    task: silver
+    modalities: [reports]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Report table with report_id and report_text
+        path_key: silver.reports
+      - what: Local Falcon weights
+        blocker: silver_model_weights
+    produces: [accepted/abstained/no_result labels, audit trail, QC summary]
+    status: blocked
+    blockers:
+      - Local Falcon model directory is not staged and its exact model id/revision is unrecorded.
+
+  data.silver.hybrid:
+    config: configs/runs/00_data/silver/hybrid.yaml
+    group: DATA
+    legacy_id: SL02_hybrid
+    description: SL02 rules plus Falcon plus MedGemma with agreement adjudication
+    question: Does two-model adjudication produce more trustworthy accepted labels?
+    representation: none
+    task: silver
+    modalities: [reports]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Report table with report_id and report_text
+        path_key: silver.reports
+      - what: Local Falcon and MedGemma weights (both loaded per GPU rank)
+        blocker: silver_model_weights
+    produces: [accepted silver labels used by the multitask arms, audit trail, QC summary]
+    status: blocked
+    blockers:
+      - Local Falcon and MedGemma model directories are not staged.
+
+  # ----------------------------------------------------------- FOUNDATION
+  repr.foundation.ct_fm:
+    config: configs/runs/01_foundation/ct_fm_probe.yaml
+    group: FOUNDATION
+    description: Frozen public CT-FM encoder under the fixed PE probe
+    question: How much PE signal does the public CT-FM representation already carry?
+    representation: public CT-FM
+    task: diagnosis probe
+    modalities: [image]
+    anatomy: false
+    supervision: native PE label
+    fusion: none (fixed linear head)
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: CT-FM weights plus inspected factory/adapter/feature_dim
+        path_key: model.checkpoint
+        blocker: backbone_contract
+    produces: [probe validation/test metrics, probe checkpoint]
+    status: blocked
+    blockers:
+      - CT-FM adapter contract (factory, output_adapter, feature_dim) is unresolved.
+
+  repr.foundation.ct_clip:
+    config: configs/runs/01_foundation/ct_clip_probe.yaml
+    group: FOUNDATION
+    description: Frozen public CT-CLIP image tower under the fixed PE probe
+    question: Does the CT-CLIP image tower carry more PE signal than CT-FM or TotalFM?
+    representation: public CT-CLIP
+    task: diagnosis probe
+    modalities: [image]
+    anatomy: false
+    supervision: native PE label
+    fusion: none (fixed linear head)
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: CT-CLIP weights plus inspected factory/adapter/feature_dim
+        path_key: model.checkpoint
+        blocker: backbone_contract
+    produces: [probe validation/test metrics, probe checkpoint]
+    status: blocked
+    blockers:
+      - CT-CLIP adapter contract (factory, output_adapter, feature_dim) is unresolved.
+
+  repr.foundation.totalfm:
+    config: configs/runs/01_foundation/totalfm_probe.yaml
+    group: FOUNDATION
+    description: Frozen public TotalFM encoder under the fixed PE probe
+    question: Does the TotalFM representation carry more PE signal than CT-FM or CT-CLIP?
+    representation: public TotalFM
+    task: diagnosis probe
+    modalities: [image]
+    anatomy: false
+    supervision: native PE label
+    fusion: none (fixed linear head)
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: TotalFM weights plus inspected factory/adapter/feature_dim
+        path_key: model.checkpoint
+        blocker: backbone_contract
+    produces: [probe validation/test metrics, probe checkpoint]
+    status: blocked
+    blockers:
+      - TotalFM adapter contract is unresolved, and upstream TotalFM is organ-patch based,
+        so whole-volume pooling must be verified before this arm means anything.
+
+  repr.foundation.ct_clip_zero_shot:
+    config: configs/runs/01_foundation/ct_clip_zero_shot.yaml
+    group: FOUNDATION
+    description: CT-CLIP zero-shot PE contract, documented but not implemented
+    question: Can the joint image/text model predict PE with no PE labels at all?
+    representation: public CT-CLIP
+    task: zero-shot classification
+    modalities: [image, text prompts]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Inspected text tower and tokenizer contract
+        blocker: zero_shot_contract
+      - what: Reviewed PE prompt set frozen before evaluation
+        blocker: zero_shot_contract
+      - what: Similarity-to-probability calibration rule and a zero-shot evaluation entrypoint
+        blocker: zero_shot_contract
+    produces: []
+    status: unavailable
+    blockers:
+      - No text tower, prompt set, calibration rule or zero-shot entrypoint exists. Foundation
+        materialization is not zero-shot classification, so this must not be run as a substitute.
+      - CT-FM and TotalFM are image-only encoders and get no zero-shot arm at all.
+
+  # ------------------------------------------------------- REPRESENTATION
+  repr.dapt.none:
+    config: configs/runs/02_representation/dapt/none.yaml
+    group: REPRESENTATION
+    legacy_id: D00
+    description: No-adaptation control for the DAPT comparison
+    question: What does the public encoder score before any in-domain adaptation?
+    representation: public
+    task: dapt
+    modalities: [image]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: CTPA manifest
+        path_key: data.manifest
+      - what: Public backbone contract and weights
+        blocker: backbone_contract
+    produces: [control encoder checkpoint]
+    status: blocked
+    blockers: ["Backbone adapter contract is unresolved."]
+
+  repr.dapt.mae:
+    config: configs/runs/02_representation/dapt/mae.yaml
+    group: REPRESENTATION
+    legacy_id: D01
+    description: Masked-autoencoder domain-adaptive pretraining on INSPECT CTPA
+    question: Does masked reconstruction improve the fixed downstream probes?
+    representation: public + MAE
+    task: dapt
+    modalities: [image]
+    anatomy: false
+    supervision: self-supervised
+    fusion: none
+    requires:
+      - what: CTPA manifest
+        path_key: data.manifest
+      - what: Public backbone contract and weights
+        blocker: backbone_contract
+    produces: [DAPT encoder checkpoint]
+    status: blocked
+    blockers: ["Backbone adapter contract is unresolved."]
+
+  repr.dapt.dino:
+    config: configs/runs/02_representation/dapt/dino.yaml
+    group: REPRESENTATION
+    legacy_id: D02
+    description: DINO self-distillation domain-adaptive pretraining on INSPECT CTPA
+    question: Does DINO improve the fixed downstream probes over no adaptation and over MAE?
+    representation: public + DINO
+    task: dapt
+    modalities: [image]
+    anatomy: false
+    supervision: self-supervised
+    fusion: none
+    requires:
+      - what: CTPA manifest
+        path_key: data.manifest
+      - what: Public backbone contract and weights
+        blocker: backbone_contract
+    produces: [DAPT encoder checkpoint used by the historical alignment lineage]
+    status: blocked
+    blockers: ["Backbone adapter contract is unresolved."]
+
+  repr.dapt.simclr:
+    config: configs/runs/02_representation/dapt/simclr.yaml
+    group: REPRESENTATION
+    legacy_id: D03
+    description: Two-view contrastive domain-adaptive pretraining
+    question: Does instance-contrastive adaptation improve the fixed downstream probes?
+    representation: public + SimCLR
+    task: dapt
+    modalities: [image]
+    anatomy: false
+    supervision: self-supervised
+    fusion: none
+    requires:
+      - what: CTPA manifest
+        path_key: data.manifest
+      - what: Public backbone contract and weights
+        blocker: backbone_contract
+    produces: [DAPT encoder checkpoint]
+    status: blocked
+    blockers: ["Backbone adapter contract is unresolved."]
+
+  repr.dapt.anatomy:
+    config: configs/runs/02_representation/dapt/anatomy.yaml
+    group: REPRESENTATION
+    legacy_id: D04
+    description: Anatomy-aware DAPT contrasting whole-volume against PA-only views
+    question: Does anatomy-aware pretraining teach features the fixed probes can detect?
+    representation: public + anatomy-DAPT
+    task: dapt
+    modalities: [image]
+    anatomy: true
+    supervision: self-supervised
+    fusion: none
+    requires:
+      - what: CTPA manifest
+        path_key: data.manifest
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: Public backbone contract and weights
+        blocker: backbone_contract
+    produces: [anatomy-aware DAPT encoder checkpoint]
+    status: blocked
+    blockers: ["Backbone adapter contract is unresolved."]
+
+  repr.align:
+    config: configs/runs/02_representation/image_report_alignment.yaml
+    group: REPRESENTATION
+    legacy_id: AL01
+    description: Symmetric InfoNCE image-report alignment producing C0
+    question: Does report alignment improve the representation beyond self-supervised DAPT?
+    representation: C0
+    task: alignment
+    modalities: [image, report embeddings]
+    anatomy: false
+    supervision: image-report pairing
+    fusion: none
+    requires:
+      - what: Paired report manifest
+        path_key: data.manifest
+      - what: Selected DAPT checkpoint
+        experiment: repr.dapt.dino
+        path_key: lineage.source_checkpoint
+      - what: Reviewed report embedding columns
+        blocker: report_embedding_columns
+    produces: [C0 checkpoint - the shared starting point for the downstream tasks]
+    status: blocked
+    blockers:
+      - alignment.report_embedding_columns is empty; the real manifest columns must be named.
+
+  probe.diag:
+    config: configs/runs/02_representation/probe/diagnosis.yaml
+    group: PROBE
+    description: Fixed frozen-encoder PE diagnosis probe
+    question: Which representation checkpoint carries the most PE information?
+    representation: any (override lineage.source_checkpoint)
+    task: diagnosis probe
+    modalities: [image]
+    anatomy: false
+    supervision: native PE label
+    fusion: none (fixed linear head)
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: The representation checkpoint under test (default C0)
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+    produces: [comparable probe metrics per representation checkpoint]
+    status: blocked
+    blockers:
+      - Depends on a representation checkpoint, which depends on the backbone contract.
+
+  probe.prog:
+    config: configs/runs/02_representation/probe/prognosis.yaml
+    group: PROBE
+    description: Fixed frozen-encoder 30-day mortality probe
+    question: Which representation checkpoint carries the most outcome-relevant information?
+    representation: any (override lineage.source_checkpoint)
+    task: prognosis probe
+    modalities: [image]
+    anatomy: false
+    supervision: native mortality label
+    fusion: none (fixed small head)
+    requires:
+      - what: Prognosis manifest with patient-level split
+        path_key: data.manifest
+      - what: The representation checkpoint under test (default C0)
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+    produces: [comparable probe metrics per representation checkpoint]
+    status: blocked
+    blockers:
+      - Depends on a representation checkpoint, which depends on the backbone contract.
+
+  repr.rspect.single_task:
+    config: configs/runs/02_representation/rspect/single_task.yaml
+    group: REPRESENTATION
+    legacy_id: DX06_rsna_single
+    description: External RSPECT/RSNA-STR supervised transfer, PE presence only
+    question: Does external supervised transfer produce a better representation than C0 alone?
+    representation: C0 + external supervision
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: external native labels
+    fusion: soft_moe
+    requires:
+      - what: External cohort manifest with patient-level split
+        path_key: data.manifest
+        blocker: rspect_manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+    produces: [externally supervised encoder checkpoint - an optional side branch]
+    status: blocked
+    blockers:
+      - manifests/rsna_diagnosis.csv is a historical placeholder; the real external cohort
+        manifest and its label mapping are unverified.
+
+  repr.rspect.multitask:
+    config: configs/runs/02_representation/rspect/multitask.yaml
+    group: REPRESENTATION
+    legacy_id: DX07_rsna_multi
+    description: External RSPECT/RSNA-STR supervised transfer, PE presence plus attributes
+    question: Does multitask external supervision transfer better than presence-only?
+    representation: C0 + external multitask supervision
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: external native multitask labels
+    fusion: soft_moe
+    requires:
+      - what: External cohort manifest with patient-level split
+        path_key: data.manifest
+        blocker: rspect_manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+    produces: [externally supervised encoder checkpoint - an optional side branch]
+    status: blocked
+    blockers:
+      - Same unverified external-cohort manifest and label contract as the single-task arm.
+
+  repr.silver.hybrid:
+    config: configs/runs/02_representation/silver_adaptation/hybrid.yaml
+    group: REPRESENTATION
+    legacy_id: SE01
+    description: Adapt C0 with accepted SL02 silver labels, producing C_silver
+    question: Does accepted report-derived supervision improve the representation over C0?
+    representation: C_silver
+    task: silver encoder adaptation
+    modalities: [image]
+    anatomy: false
+    supervision: accepted silver multitask
+    fusion: none
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: init.checkpoint
+      - what: Accepted SL02 silver labels
+        experiment: data.silver.hybrid
+      - what: CTPA manifest
+        path_key: data.manifest
+    produces: [C_silver checkpoint - an optional side branch, never a prerequisite]
+    status: blocked
+    blockers: ["Depends on C0 and on accepted silver labels."]
+
+  repr.silver.medgemma:
+    config: configs/runs/02_representation/silver_adaptation/medgemma.yaml
+    group: REPRESENTATION
+    description: Adapt C0 with accepted SL00 silver labels
+    question: Does the silver source change what the adapted representation learns?
+    representation: C_silver (SL00)
+    task: silver encoder adaptation
+    modalities: [image]
+    anatomy: false
+    supervision: accepted silver multitask
+    fusion: none
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: init.checkpoint
+      - what: Accepted SL00 silver labels
+        experiment: data.silver.medgemma
+      - what: CTPA manifest
+        path_key: data.manifest
+    produces: [C_silver (SL00) checkpoint]
+    status: blocked
+    blockers: ["Depends on C0 and on accepted SL00 silver labels."]
+
+  repr.silver.rules_falcon:
+    config: configs/runs/02_representation/silver_adaptation/rules_falcon.yaml
+    group: REPRESENTATION
+    description: Adapt C0 with accepted SL01 silver labels
+    question: Does the rule-first silver source produce a better adapted representation?
+    representation: C_silver (SL01)
+    task: silver encoder adaptation
+    modalities: [image]
+    anatomy: false
+    supervision: accepted silver multitask
+    fusion: none
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: init.checkpoint
+      - what: Accepted SL01 silver labels
+        experiment: data.silver.rules_falcon
+      - what: CTPA manifest
+        path_key: data.manifest
+    produces: [C_silver (SL01) checkpoint]
+    status: blocked
+    blockers: ["Depends on C0 and on accepted SL01 silver labels."]
+
+  # ----------------------------------------------------------- DIAGNOSIS
+  diag.report_only:
+    config: configs/runs/03_diagnosis/baseline/report_only.yaml
+    group: DIAGNOSIS
+    legacy_id: DX04_report_only
+    description: Text-only comparison baseline that never sees the CTPA volume
+    question: How much of the diagnosis score is achievable from the report alone?
+    representation: none (report embeddings)
+    task: diagnosis
+    modalities: [report embeddings]
+    anatomy: false
+    supervision: native multitask
+    fusion: none
+    requires:
+      - what: Diagnosis manifest with report embedding columns
+        path_key: data.manifest
+      - what: Reviewed report embedding columns
+        blocker: report_embedding_columns
+    produces: [text-only reference metrics that bound the image results]
+    status: blocked
+    blockers:
+      - alignment.report_embedding_columns is empty; the real manifest columns must be named.
+
+  diag.global.single:
+    config: configs/runs/03_diagnosis/baseline/global_single.yaml
+    group: DIAGNOSIS
+    description: Global full-CTPA image features with a single PE +/- head
+    question: How well does whole-volume image evidence alone predict native PE labels?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: native PE label
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+    produces: [the reference metrics every anatomy and multitask arm is compared against]
+    status: blocked
+    blockers: ["Depends on C0, which depends on the backbone contract."]
+
+  diag.global.native_multitask:
+    config: configs/runs/03_diagnosis/baseline/global_native_multitask.yaml
+    group: DIAGNOSIS
+    description: Global image features with native multitask heads
+    question: Does reviewed native attribute supervision improve the primary PE head?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: native multitask
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest including every native attribute column
+        path_key: data.manifest
+        blocker: native_attribute_columns
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+    produces: [multitask diagnosis metrics comparable to diag.global.single]
+    status: blocked
+    blockers:
+      - Each native auxiliary column and its class encoding must be verified in the real
+        manifest; missing targets are never synthesized.
+
+  diag.global.silver_multitask:
+    config: configs/runs/03_diagnosis/baseline/global_silver_multitask.yaml
+    group: DIAGNOSIS
+    description: Global image features with accepted-silver auxiliary heads
+    question: Does accepted report-derived supervision improve the primary PE head?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: native PE plus accepted silver
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Accepted SL02 silver labels
+        experiment: data.silver.hybrid
+        path_key: supervision.silver_labels
+    produces: [silver-multitask diagnosis metrics]
+    status: blocked
+    blockers: ["Depends on C0 and on accepted silver labels."]
+
+  diag.anatomy.concat:
+    config: configs/runs/03_diagnosis/anatomy/single_concat.yaml
+    group: DIAGNOSIS
+    legacy_id: DX18_ANATOMY_FULL
+    description: Anatomy-aware single-task PE diagnosis, the reference model
+    question: Does pooling the feature map into heart/PA/lung branches beat global-only?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+    produces:
+      - anatomy-aware diagnosis checkpoint
+      - the frozen model every counterfactual uses and the teacher every KD student uses
+    status: blocked
+    blockers: ["Depends on C0 and on anatomy masks."]
+
+  diag.anatomy.silver.concat:
+    config: configs/runs/03_diagnosis/anatomy/silver_concat.yaml
+    group: DIAGNOSIS
+    description: Anatomy branches with accepted-silver organ heads, concatenation fusion
+    question: Does supervising each organ branch with its own silver findings improve PE diagnosis?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: true
+    supervision: native PE plus accepted silver on organ branches
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: Accepted SL02 silver labels
+        experiment: data.silver.hybrid
+        path_key: supervision.silver_labels
+    produces: [anatomy silver-multitask metrics, concat cell of the fusion comparison]
+    status: blocked
+    blockers: ["Depends on C0, anatomy masks and accepted silver labels."]
+
+  diag.anatomy.silver.late:
+    config: configs/runs/03_diagnosis/anatomy/silver_late_logit.yaml
+    group: DIAGNOSIS
+    description: Same arm with late-logit fusion over branch decisions
+    question: Is combining branch decisions better than combining branch features?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: true
+    supervision: native PE plus accepted silver on organ branches
+    fusion: late_logit
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: Accepted SL02 silver labels
+        experiment: data.silver.hybrid
+        path_key: supervision.silver_labels
+    produces: [late-logit cell of the fusion comparison]
+    status: blocked
+    blockers: ["Depends on C0, anatomy masks and accepted silver labels."]
+
+  diag.anatomy.silver.moe:
+    config: configs/runs/03_diagnosis/anatomy/silver_soft_moe.yaml
+    group: DIAGNOSIS
+    legacy_id: DX17_MULTITASK_SILVER
+    description: Same arm with Soft-MoE router fusion
+    question: Does a learned per-patient router beat fixed concatenation and logit averaging?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: true
+    supervision: native PE plus accepted silver on organ branches
+    fusion: soft_moe
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: Accepted SL02 silver labels
+        experiment: data.silver.hybrid
+        path_key: supervision.silver_labels
+    produces: [Soft-MoE cell of the fusion comparison]
+    status: blocked
+    blockers: ["Depends on C0, anatomy masks and accepted silver labels."]
+
+  # ----------------------------------------------------------- PROGNOSIS
+  prog.pesi:
+    config: configs/runs/04_prognosis/modality/pesi.yaml
+    group: PROGNOSIS
+    legacy_id: PR26_PESI_ONLY
+    description: PESI/sPESI severity score only
+    question: How much 30-day mortality signal is already in the established clinical score?
+    representation: none (tabular)
+    task: prognosis
+    modalities: [pesi]
+    anatomy: false
+    supervision: native mortality label
+    fusion: none
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [the clinical baseline every imaging arm must beat]
+    status: blocked
+    blockers: ["The confirmed-acute-PE prognosis manifest and its PESI columns are unresolved."]
+
+  prog.ehr:
+    config: configs/runs/04_prognosis/modality/ehr.yaml
+    group: PROGNOSIS
+    legacy_id: PR27_CLINICAL_ONLY
+    description: Raw clinical values plus missingness indicators only
+    question: Does the full clinical record beat the PESI score that summarizes part of it?
+    representation: none (tabular)
+    task: prognosis
+    modalities: [ehr]
+    anatomy: false
+    supervision: native mortality label
+    fusion: none
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+    produces: [clinical-only mortality metrics]
+    status: blocked
+    blockers:
+      - data.ehr_columns is empty; its length must equal task.ehr_input_dim (32).
+
+  prog.image:
+    config: configs/runs/04_prognosis/modality/image.yaml
+    group: PROGNOSIS
+    legacy_id: PR18_IMAGE_FULL
+    description: Global full-CTPA image only
+    question: Does the CTPA itself carry mortality information beyond the clinical baselines?
+    representation: C0
+    task: prognosis
+    modalities: [image]
+    anatomy: false
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+    produces: [image-only mortality metrics]
+    status: blocked
+    blockers: ["Depends on C0 and on the prognosis manifest."]
+
+  prog.ehr_pesi:
+    config: configs/runs/04_prognosis/modality/ehr_pesi.yaml
+    group: PROGNOSIS
+    description: Clinical record plus PESI, no imaging
+    question: What is the best purely tabular model?
+    representation: none (tabular)
+    task: prognosis
+    modalities: [ehr, pesi]
+    anatomy: false
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [the tabular bar every imaging arm must clear]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.image_pesi:
+    config: configs/runs/04_prognosis/modality/image_pesi.yaml
+    group: PROGNOSIS
+    description: Global image plus PESI
+    question: Does imaging add anything on top of the established severity score?
+    representation: C0
+    task: prognosis
+    modalities: [image, pesi]
+    anatomy: false
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [image + score mortality metrics]
+    status: blocked
+    blockers: ["Depends on C0 and on the prognosis manifest."]
+
+  prog.image_ehr:
+    config: configs/runs/04_prognosis/modality/image_ehr.yaml
+    group: PROGNOSIS
+    legacy_id: PR19_IMAGE_CLINICAL_FULL
+    description: Global image plus the raw clinical record
+    question: Does imaging add information beyond the full clinical record?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr]
+    anatomy: false
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+    produces: [image + clinical mortality metrics]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.image_ehr_pesi:
+    config: configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
+    group: PROGNOSIS
+    legacy_id: PR20_IMAGE_CLINICAL_PESI_FULL
+    description: All three modalities, global image, concatenation fusion
+    question: Does the full multimodal model beat every smaller modality subset?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: false
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [full multimodal mortality metrics]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.global.concat:
+    alias_of: prog.image_ehr_pesi
+    config: configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
+    group: PROGNOSIS
+    description: Concat cell of the global fusion comparison - the same run as prog.image_ehr_pesi
+    question: Does concatenation fuse the three modalities better than late-logit or Soft-MoE?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: false
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: See prog.image_ehr_pesi - this name points at the same config on purpose
+        experiment: prog.image_ehr_pesi
+    produces: [nothing new - running prog.image_ehr_pesi produces this cell]
+    status: blocked
+    blockers:
+      - Deliberate alias, not a second run. A separate global/concat.yaml would be a
+        byte-identical duplicate that answers the same question twice at full GPU cost.
+
+  prog.global.late:
+    config: configs/runs/04_prognosis/global/late_logit.yaml
+    group: PROGNOSIS
+    description: Global image plus EHR plus PESI with late-logit fusion
+    question: Is averaging modality decisions better than concatenating modality features?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: false
+    supervision: native mortality label
+    fusion: late_logit
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [late-logit cell of the global fusion comparison]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.global.moe:
+    config: configs/runs/04_prognosis/global/soft_moe.yaml
+    group: PROGNOSIS
+    description: Global image plus EHR plus PESI with Soft-MoE fusion
+    question: Does a learned router over modalities beat fixed fusion?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: false
+    supervision: native mortality label
+    fusion: soft_moe
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [Soft-MoE cell of the global fusion comparison]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.anatomy.concat:
+    config: configs/runs/04_prognosis/anatomy/concat.yaml
+    group: PROGNOSIS
+    legacy_id: PR22_ANATOMY_CLINICAL_PESI
+    description: Anatomy-aware image plus EHR plus PESI, concatenation fusion
+    question: Does anatomy-partitioned image evidence predict mortality better than a global vector?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: true
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [anatomy-aware multimodal mortality metrics]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.anatomy.late:
+    config: configs/runs/04_prognosis/anatomy/late_logit.yaml
+    group: PROGNOSIS
+    description: Anatomy-aware multimodal prognosis with late-logit fusion
+    question: With six branches, is averaging decisions better than concatenating features?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: true
+    supervision: native mortality label
+    fusion: late_logit
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [late-logit cell of the anatomy fusion comparison]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.anatomy.moe:
+    config: configs/runs/04_prognosis/anatomy/soft_moe.yaml
+    group: PROGNOSIS
+    description: Anatomy-aware multimodal prognosis with Soft-MoE fusion
+    question: Does a learned router over anatomy and clinical branches beat fixed fusion?
+    representation: C0
+    task: prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: true
+    supervision: native mortality label
+    fusion: soft_moe
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: EHR columns matching task.ehr_input_dim
+        path_key: supervision.ehr
+        blocker: ehr_columns
+      - what: PESI columns present in the manifest
+        path_key: supervision.pesi
+    produces: [Soft-MoE cell of the anatomy fusion comparison]
+    status: blocked
+    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  # --------------------------------------------------- ANATOMY ANALYSIS
+  anatomy.remove_heart:
+    config: configs/runs/05_anatomy_analysis/counterfactual/remove_heart.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: CF01_REMOVE_HEART
+    description: Frozen-model heart removal (necessity)
+    question: Is heart evidence necessary for the trained model?
+    representation: frozen diag.anatomy.concat
+    task: counterfactual inference
+    modalities: [image]
+    anatomy: true
+    supervision: none (no training)
+    fusion: concat_mlp
+    requires:
+      - what: Trained anatomy-aware reference checkpoint
+        experiment: diag.anatomy.concat
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks (reused as stored, never re-segmented)
+        experiment: data.segmentation
+        path_key: supervision.masks
+    produces: [paired original vs removal probabilities, probability deltas]
+    status: blocked
+    blockers: ["Requires a trained diag.anatomy.concat checkpoint."]
+
+  anatomy.remove_pa:
+    config: configs/runs/05_anatomy_analysis/counterfactual/remove_pa.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: CF02_REMOVE_PA
+    description: Frozen-model pulmonary-artery removal (necessity)
+    question: Is pulmonary-artery evidence necessary for the trained model?
+    representation: frozen diag.anatomy.concat
+    task: counterfactual inference
+    modalities: [image]
+    anatomy: true
+    supervision: none (no training)
+    fusion: concat_mlp
+    requires:
+      - what: Trained anatomy-aware reference checkpoint
+        experiment: diag.anatomy.concat
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks (reused as stored, never re-segmented)
+        experiment: data.segmentation
+        path_key: supervision.masks
+    produces: [paired original vs removal probabilities, probability deltas]
+    status: blocked
+    blockers: ["Requires a trained diag.anatomy.concat checkpoint."]
+
+  anatomy.remove_lung:
+    config: configs/runs/05_anatomy_analysis/counterfactual/remove_lung.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: CF03_REMOVE_LUNG
+    description: Frozen-model lung-parenchyma removal (necessity)
+    question: Is lung-parenchyma evidence necessary for the trained model?
+    representation: frozen diag.anatomy.concat
+    task: counterfactual inference
+    modalities: [image]
+    anatomy: true
+    supervision: none (no training)
+    fusion: concat_mlp
+    requires:
+      - what: Trained anatomy-aware reference checkpoint
+        experiment: diag.anatomy.concat
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks (reused as stored, never re-segmented)
+        experiment: data.segmentation
+        path_key: supervision.masks
+    produces: [paired original vs removal probabilities, probability deltas]
+    status: blocked
+    blockers: ["Requires a trained diag.anatomy.concat checkpoint."]
+
+  anatomy.remove_random:
+    config: configs/runs/05_anatomy_analysis/counterfactual/remove_random.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: CF04_REMOVE_RANDOM
+    description: Frozen-model volume-matched random removal (necessity control)
+    question: How much does erasing any region of that size move the score?
+    representation: frozen diag.anatomy.concat
+    task: counterfactual inference
+    modalities: [image]
+    anatomy: true
+    supervision: none (no training)
+    fusion: concat_mlp
+    requires:
+      - what: Trained anatomy-aware reference checkpoint
+        experiment: diag.anatomy.concat
+        path_key: lineage.source_checkpoint
+      - what: Anatomy masks
+        experiment: data.segmentation
+        path_key: supervision.masks
+      - what: ROI8 matched random control masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [the control deltas the organ removals must be read against]
+    status: blocked
+    blockers: ["Requires a trained diag.anatomy.concat checkpoint and ROI artifacts."]
+
+  anatomy.heart_student:
+    config: configs/runs/05_anatomy_analysis/students/gt/heart.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: RS06_HEART_GT
+    description: Heart-only ROI student trained from C0, ground truth only
+    question: Is the heart region alone sufficient to predict PE?
+    representation: C0
+    task: diagnosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI2 heart masks
+        experiment: data.roi
+        path_key: supervision.rois
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+    produces: [heart-only sufficiency metrics]
+    status: blocked
+    blockers: ["Depends on C0 and on ROI artifacts."]
+
+  anatomy.pa_student:
+    config: configs/runs/05_anatomy_analysis/students/gt/pa.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: RS07_PA_GT
+    description: PA-only ROI student trained from C0, ground truth only
+    question: Is the pulmonary-artery region alone sufficient to predict PE?
+    representation: C0
+    task: diagnosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI4 PA masks
+        experiment: data.roi
+        path_key: supervision.rois
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+    produces: [PA-only sufficiency metrics]
+    status: blocked
+    blockers: ["Depends on C0 and on ROI artifacts."]
+
+  anatomy.lung_student:
+    config: configs/runs/05_anatomy_analysis/students/gt/lung.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: RS08_LUNG_GT
+    description: Lung-only ROI student trained from C0, ground truth only
+    question: Is the lung parenchyma alone sufficient to predict PE?
+    representation: C0
+    task: diagnosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI6 lung parenchyma masks
+        experiment: data.roi
+        path_key: supervision.rois
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+    produces: [lung-only sufficiency metrics]
+    status: blocked
+    blockers: ["Depends on C0 and on ROI artifacts."]
+
+  anatomy.random_student:
+    config: configs/runs/05_anatomy_analysis/students/gt/random.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: RS09_RANDOM_GT
+    description: Volume-matched random-region student (sufficiency control)
+    question: How much of an organ student's score is dataset shortcut rather than anatomy?
+    representation: C0
+    task: diagnosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI8 matched random control masks
+        experiment: data.roi
+        path_key: supervision.rois
+      - what: Diagnosis manifest with patient-level split
+        path_key: data.manifest
+    produces: [the control the organ students must beat]
+    status: blocked
+    blockers: ["Depends on C0 and on ROI artifacts."]
+
+  anatomy.heart_student_kd:
+    config: configs/runs/05_anatomy_analysis/students/kd/heart.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: KD01_HEART
+    description: Heart-only student with frozen-teacher distillation
+    question: Does the full-volume teacher transfer knowledge the heart ROI labels cannot?
+    representation: C0 student, frozen full-model teacher
+    task: diagnosis (ROI student + KD)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label plus teacher logits
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Frozen teacher checkpoint
+        experiment: diag.anatomy.concat
+        path_key: distillation.teacher_checkpoint
+      - what: ROI2 heart masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [distilled heart-only metrics with GT/KD/total loss components]
+    status: blocked
+    blockers: ["Depends on C0, ROI artifacts and a trained teacher."]
+
+  anatomy.pa_student_kd:
+    config: configs/runs/05_anatomy_analysis/students/kd/pa.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: KD02_PA
+    description: PA-only student with frozen-teacher distillation
+    question: How close to the full model can a PA-only student get with a teacher?
+    representation: C0 student, frozen full-model teacher
+    task: diagnosis (ROI student + KD)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label plus teacher logits
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Frozen teacher checkpoint
+        experiment: diag.anatomy.concat
+        path_key: distillation.teacher_checkpoint
+      - what: ROI4 PA masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [distilled PA-only metrics with GT/KD/total loss components]
+    status: blocked
+    blockers: ["Depends on C0, ROI artifacts and a trained teacher."]
+
+  anatomy.lung_student_kd:
+    config: configs/runs/05_anatomy_analysis/students/kd/lung.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: KD03_LUNG
+    description: Lung-only student with frozen-teacher distillation
+    question: Does distillation lift the lung-only student, and by how much?
+    representation: C0 student, frozen full-model teacher
+    task: diagnosis (ROI student + KD)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label plus teacher logits
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Frozen teacher checkpoint
+        experiment: diag.anatomy.concat
+        path_key: distillation.teacher_checkpoint
+      - what: ROI6 lung parenchyma masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [distilled lung-only metrics with GT/KD/total loss components]
+    status: blocked
+    blockers: ["Depends on C0, ROI artifacts and a trained teacher."]
+
+  anatomy.random_student_kd:
+    config: configs/runs/05_anatomy_analysis/students/kd/random.yaml
+    group: ANATOMY ANALYSIS
+    legacy_id: KD04_RANDOM
+    description: Random-region student with frozen-teacher distillation (control)
+    question: How much can distillation lift a student that sees nothing anatomically relevant?
+    representation: C0 student, frozen full-model teacher
+    task: diagnosis (ROI student + KD)
+    modalities: [image]
+    anatomy: true
+    supervision: native PE label plus teacher logits
+    fusion: concat_mlp
+    requires:
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Frozen teacher checkpoint
+        experiment: diag.anatomy.concat
+        path_key: distillation.teacher_checkpoint
+      - what: ROI8 matched random control masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [the control the distilled organ students must beat]
+    status: blocked
+    blockers: ["Depends on C0, ROI artifacts and a trained teacher."]
+
+  # ------------------------------------------------------------ DEFERRED
+  deferred.contour:
+    config: configs/runs/90_deferred/contour/train.yaml
+    group: DEFERRED
+    legacy_id: CT01
+    description: Clot contour / segmentation refinement
+    question: Can the shared representation localize the embolus, not just detect it?
+    representation: C_diag
+    task: contour
+    modalities: [image]
+    anatomy: false
+    supervision: native embolus mask
+    fusion: none
+    requires:
+      - what: Contour manifest with reviewed embolus mask paths
+        path_key: data.manifest
+      - what: Source diagnosis checkpoint
+        path_key: lineage.source_checkpoint
+    produces: [contour checkpoint, Dice/NSD/HD95 metrics]
+    status: deferred
+    blockers:
+      - Deferred from the active pipeline; needs a reviewed embolus-mask manifest.
+
+  deferred.concept_bottleneck:
+    config: configs/runs/90_deferred/concept_bottleneck/prognosis.yaml
+    group: DEFERRED
+    legacy_id: PR17_concept_bottleneck
+    description: Interpretable concept-bottleneck prognosis, disabled by default
+    question: Can mortality be predicted through named clinical concepts instead of latent features?
+    representation: C_diag
+    task: prognosis
+    modalities: [image, ehr]
+    anatomy: true
+    supervision: native labels plus concept targets
+    fusion: none
+    requires:
+      - what: Real reviewed label column for every enabled concept
+        blocker: concept_targets
+    produces: [concept predictions plus mortality prediction]
+    status: deferred
+    blockers:
+      - Deferred and disabled. Every concept needs a real native / validated-silver /
+        expert-reviewed column before concept_bottleneck.enabled may become true.
+      - >-
+        Embolic burden and vascular pruning are intentionally absent because this dataset
+        has no defensible target for either.

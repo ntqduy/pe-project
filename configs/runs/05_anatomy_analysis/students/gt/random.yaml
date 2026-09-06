@@ -1,0 +1,34 @@
+# anatomy.random_student — SUFFICIENCY CONTROL: a volume-matched random region alone.
+#
+# Ground-truth supervision only, no teacher. Input comes from ROI8, the deterministic
+# body-constrained random control volume-matched to the PA region (ROI4).
+# This arm measures how much of any organ-only student's score is just dataset shortcut
+# rather than anatomy: the organ students are only meaningful above this control.
+# Pairs with anatomy.random_student_kd.
+# Output: outputs/roi_students/RS_random_only_gt/
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbone/ct_fm.yaml
+  - ../../../../components/task/diagnosis.yaml
+  - ../../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../../components/training/diagnosis.yaml
+  - ../../../../components/adapter/organ.yaml
+  - ../../../../components/fusion/concat_mlp.yaml
+  - ../../../../components/task/roi_student.yaml
+experiment:
+  id: RS_random_only_gt
+  name: anatomy.random_student
+  stage: roi_student
+  family: roi_student
+data:
+  mask_columns:
+    _replace_: true
+    heart: heart_mask_path
+    pa: pa_mask_path
+    lung: lung_mask_path
+  roi_mask_ids: {random: ROI8}
+  roi_control_for: {random: ROI4}
+task:
+  input_counterfactual: keep_only_random
+  matched_region: pa

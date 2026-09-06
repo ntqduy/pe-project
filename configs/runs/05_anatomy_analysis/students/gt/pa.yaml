@@ -1,0 +1,30 @@
+# anatomy.pa_student — SUFFICIENCY: is the pulmonary-artery region alone enough?
+#
+# Ground-truth supervision only, no teacher. PA input comes from ROI4.
+# This is the arm a PE claim depends on most: if PA-only is nearly as good as the full model,
+# the model is using the anatomy a radiologist would.
+# Pairs with anatomy.pa_student_kd.
+# Output: outputs/roi_students/RS_pa_only_gt/
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbone/ct_fm.yaml
+  - ../../../../components/task/diagnosis.yaml
+  - ../../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../../components/training/diagnosis.yaml
+  - ../../../../components/adapter/organ.yaml
+  - ../../../../components/fusion/concat_mlp.yaml
+  - ../../../../components/task/roi_student.yaml
+experiment:
+  id: RS_pa_only_gt
+  name: anatomy.pa_student
+  stage: roi_student
+  family: roi_student
+data:
+  mask_columns:
+    _replace_: true
+    heart: heart_mask_path
+    lung: lung_mask_path
+  roi_mask_ids: {pa: ROI4}
+task:
+  input_counterfactual: keep_only_pa

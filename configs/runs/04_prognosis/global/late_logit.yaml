@@ -1,0 +1,37 @@
+# prog.global.late — global image + EHR + PESI, late-logit fusion.
+#
+# Question: is it better to average modality *decisions* than to concatenate modality
+# *features*? Late fusion also degrades gracefully: a patient missing the clinical record
+# drops that branch from the average instead of feeding it zeros.
+# Identical to prog.image_ehr_pesi (= prog.global.concat) except for the fusion component.
+# Output: outputs/prognosis/PR_global_late_logit/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+  - ../../../components/fusion/late_logit.yaml
+experiment:
+  id: PR_global_late_logit
+  name: prog.global.late
+  stage: prognosis
+  family: prognosis
+task:
+  modalities: [image, ehr, pesi]
+  regions: []
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_ehr: true
+  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  require_pesi: true
+  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi

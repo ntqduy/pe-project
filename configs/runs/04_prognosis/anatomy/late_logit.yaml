@@ -1,0 +1,44 @@
+# prog.anatomy.late — anatomy-aware image + EHR + PESI, late-logit fusion.
+#
+# Question: with six branches (global, heart, PA, lung, EHR, PESI), is averaging branch
+# decisions better than concatenating branch features?
+# Branch weights are masked and renormalized, so a missing organ mask or a missing clinical
+# record removes that branch instead of zeroing it.
+# Identical to prog.anatomy.concat except for the fusion component.
+# Output: outputs/prognosis/PR_anatomy_late_logit/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+  - ../../../components/adapter/organ.yaml
+  - ../../../components/fusion/late_logit.yaml
+experiment:
+  id: PR_anatomy_late_logit
+  name: prog.anatomy.late
+  stage: prognosis
+  family: prognosis
+data:
+  mask_columns:
+    heart: heart_mask_path
+    pa: pa_mask_path
+    lung: lung_mask_path
+task:
+  modalities: [image, ehr, pesi]
+  regions: [heart, pa, lung]
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: true
+  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  require_ehr: true
+  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  require_pesi: true
+  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi

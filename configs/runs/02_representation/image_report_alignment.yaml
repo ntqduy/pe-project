@@ -1,0 +1,32 @@
+# repr.align — symmetric InfoNCE image-report alignment. Produces C0.
+#
+# Question: does aligning volume features with report embeddings improve the representation
+# beyond self-supervised DAPT alone?
+# C0 is the shared starting point for diagnosis, prognosis, ROI students and silver adaptation.
+# Reports enter as precomputed embedding columns; no text encoder runs here.
+# BLOCKER: alignment.report_embedding_columns is empty and must name real manifest columns.
+# Output: outputs/pretraining/alignment/AL_image_report_c0/
+#   best.ckpt is C0: the aligned image encoder every downstream task starts from
+_base_:
+  - ../../paths.yaml
+  - ../../compute/default.yaml
+  - ../../components/backbone/ct_fm.yaml
+  - ../../components/alignment/image_report.yaml
+  - ../../components/training/alignment.yaml
+experiment:
+  id: AL_image_report_c0
+  name: repr.align
+  stage: alignment
+  family: alignment
+data:
+  mode: full
+  manifest: manifests/paired_reports.csv
+  file_column: image_path
+  label_columns: []
+lineage:
+  initialization: C_SSL
+  source_experiment: D_dapt_dino
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt
+  dapt: DINO
+  alignment: true
+  supervision_type: image_report_alignment

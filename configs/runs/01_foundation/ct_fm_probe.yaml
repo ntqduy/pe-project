@@ -1,0 +1,52 @@
+# repr.foundation.ct_fm — frozen public CT-FM encoder under the fixed PE probe.
+#
+# Question: how much PE signal does the public CT-FM representation already carry, before
+# any in-domain adaptation? This is the screening baseline every adaptation must beat.
+# Frozen encoder -> global average pool -> fixed linear head -> PE +/-.
+# CT-FM is an image-only encoder, so it is screened with a probe and never with zero-shot
+# text prompting.
+# BLOCKER: configs/components/backbone/ct_fm.yaml still needs factory / output_adapter /
+# feature_dim from the inspected checkpoint, and the weights must be staged locally.
+# Output: outputs/diagnosis/DX_probe_ct_fm/
+_base_:
+  - ../../paths.yaml
+  - ../../compute/default.yaml
+  - ../../components/backbone/ct_fm.yaml
+  - ../../components/task/diagnosis.yaml
+  - ../../components/training/probe.yaml
+experiment:
+  id: DX_probe_ct_fm
+  name: repr.foundation.ct_fm
+  stage: diagnosis
+  family: diagnosis
+model:
+  load_pretrained: true
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns:
+    _replace_: true
+task:
+  architecture: frozen_probe
+  targets:
+    _replace_: true
+    pe_present: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  backbone: CT-FM
+  initialization: public
+  source_experiment: null
+  source_checkpoint: null
+  transfer_modules: []
+  dapt: none
+  alignment: false
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+  silver_labels: null

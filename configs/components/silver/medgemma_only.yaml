@@ -1,0 +1,16 @@
+silver:
+  method: SL00
+  reports: reports.parquet
+  medgemma:
+    # provider: medgemma | gemma4 | ... - informational; swap the LLM by changing
+    # model_path/model_id/provider_kwargs, never by hardcoding it in training code.
+    provider: medgemma
+    model_path: third_party/weights/silver/medgemma
+    model_id: null
+    provider_factory: source.silver.providers:build_transformers_provider
+    provider_kwargs:
+      auto_model_class: AutoModelForCausalLM
+      tokenizer_class: AutoTokenizer
+      device_map: auto
+      torch_dtype: bfloat16
+      local_files_only: true

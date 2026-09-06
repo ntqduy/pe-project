@@ -1,0 +1,24 @@
+# repr.dapt.mae — D01: masked-autoencoder domain-adaptive pretraining on INSPECT CTPA.
+#
+# Question: does masked reconstruction improve the fixed downstream probes?
+# Compare against repr.dapt.none with probe.diag / probe.prog, never by pretraining loss.
+# Output: outputs/pretraining/dapt/D_dapt_mae/  (best.ckpt, lineage.json, result.json)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/dapt/mae.yaml
+  - ../../../components/training/dapt.yaml
+experiment:
+  id: D_dapt_mae
+  name: repr.dapt.mae
+  stage: dapt
+  family: dapt
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+lineage:
+  initialization: public
+  supervision_type: self_supervised

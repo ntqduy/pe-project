@@ -1,0 +1,47 @@
+# data.segmentation — pseudo-anatomy masks for every CTPA study.
+#
+# Question: which studies have usable anatomy masks?
+# TotalSegmentator is the canonical mask source; LungMask only contributes an independent
+# lung Dice cross-check and never replaces a TotalSegmentator mask.
+# Support artifact: consumed by anatomy-aware training, ROI construction and counterfactuals.
+#
+# Output: outputs/segmentation/SEG_pseudo_anatomy/
+#   masks/<study_id>/canonical/<anatomy>.nii.gz   19 masks per study: lung, heart,
+#       strict_heart, myocardium, mediastinum, central_pa, lung_arteries, lung_veins,
+#       lung_vessels, airways, pa_tree, hilar_vessels, body, body_wall, rv, lv, ra, la,
+#       lung_lungmask (the independent LungMask cross-check)
+#   manifest.parquet   one row per (study, anatomy): QC status, volume, geometry, provenance
+#   previews/<study_id>/<anatomy>_overlay.png     PNG overlays for the first preview_cases
+#   state/<study_id>.json                         resume state, so a partial run continues
+#   result.json, logs/                            run summary and log
+# The id says "pseudo": these are public-model masks, not expert-validated segmentations.
+_base_:
+  - ../../paths.yaml
+  - ../../compute/default.yaml
+experiment:
+  id: SEG_pseudo_anatomy
+  name: data.segmentation
+  stage: segmentation
+  family: segmentation
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+segmentation:
+  backend: totalsegmentator
+  executable: TotalSegmentator
+  repository: third_party/repos/TotalSegmentator
+  weights_directory: third_party/weights/segmentation/totalsegmentator
+  fast: false
+  preview_cases: 5
+  devices: []
+  lungmask:
+    enabled: true
+    executable: lungmask
+    checkpoint: third_party/weights/segmentation/lungmask/R231.pth
+    model_name: R231
+    force_cpu: false
+  lung_cross_model_qc:
+    accept_dice: 0.90
+    fail_below_dice: 0.70
+seed: 42

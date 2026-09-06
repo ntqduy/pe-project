@@ -1,0 +1,50 @@
+# diag.global.native_multitask — global image features, native multitask heads.
+#
+# Question: does training on the reviewed native PE attributes (acuity, location, RV/LV,
+# effusions, chronic lung disease) improve the primary PE +/- head?
+# Same representation, split, optimizer and fusion as diag.global.single; only the heads
+# and label columns differ, so the comparison isolates multitask supervision.
+# BLOCKER: every native auxiliary column and its class encoding must be verified in the
+# real manifest first. Missing targets are never synthesized; unlabelled rows are masked out.
+# Output: outputs/diagnosis/DX_global_native_multitask/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: DX_global_native_multitask
+  name: diag.global.native_multitask
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present, acuity, central, lobar, segmental, subsegmental, saddle,
+                  rv_enlargement, rv_lv_abnormal, septal_bowing, reflux, pleural_effusion,
+                  pericardial_effusion, chronic_lung_disease]
+  mask_columns:
+    _replace_: true
+task:
+  # Heads come from components/task/diagnosis.yaml: pe_present plus the native attributes.
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  dapt: DINO
+  alignment: true
+  silver_method: null
+  supervision_type: native_organ_multitask
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+  silver_labels: null

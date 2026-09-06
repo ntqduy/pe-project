@@ -1,0 +1,33 @@
+# data.roi — ROI1..ROI8 support artifacts derived from a finished segmentation run.
+#
+# Question: which studies have usable ROI masks and volume-matched random controls?
+# Reads the stored segmentation run only; it never re-runs segmentation.
+# Runs on CPU workers (roi.workers), not on the GPU launcher.
+#
+# Output: outputs/roi/ROI_anatomy_and_controls/
+#   masks/<study_id>/ROI{1..8}[_for_ROI{2,4,6}].nii.gz  the eight ROI definitions:
+#       ROI1 heart+mediastinum   ROI2 strict heart        ROI3 dilated central PA (removal)
+#       ROI4 PA tree             ROI5 whole lung          ROI6 lung parenchyma minus vessels
+#       ROI7 heart+hilar (removal)                        ROI8 volume-matched random control,
+#                                                              one per ROI2/ROI4/ROI6 target
+#   manifest.parquet   per study: mask paths, recipe, QC flags, feasibility, control seed
+#   previews/, state/, result.json, logs/
+_base_:
+  - ../../paths.yaml
+  - ../../compute/cpu.yaml
+experiment:
+  id: ROI_anatomy_and_controls
+  name: data.roi
+  stage: roi
+  family: roi
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+roi:
+  segmentation_run: segmentation/SEG_pseudo_anatomy
+  workers: 4
+  preview_cases: 5
+  body_threshold_hu: -900
+  hilar_mask_names: []
+seed: 42

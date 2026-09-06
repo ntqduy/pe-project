@@ -1,0 +1,34 @@
+# anatomy.remove_pa — NECESSITY: is pulmonary-artery evidence necessary?
+#
+# Frozen inference only, same model and same stored masks as every other removal arm; only
+# the erased region differs. This is the arm expected to matter most for PE, so it is the
+# sharpest test of whether the model actually uses PA evidence.
+# Requires diag.anatomy.concat to have been trained first.
+# Output: outputs/counterfactual/CF_remove_pa/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/adapter/organ.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: CF_remove_pa
+  name: anatomy.remove_pa
+  stage: counterfactual
+  family: counterfactual
+task:
+  base_stage: diagnosis
+  input_counterfactual: remove_pa
+  masking_policy: {type: local_mean, local_radius_voxels: 3}
+lineage:
+  backbone: CT-FM
+  initialization: C_full
+  source_experiment: DX_anatomy_concat
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
+  transfer_modules: [image_encoder, roi, organ_adapters, fusion, heads]
+  dapt: DINO
+  alignment: true
+  supervision_type: frozen_counterfactual_inference

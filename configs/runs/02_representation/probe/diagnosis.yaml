@@ -1,0 +1,54 @@
+# probe.diag — fixed frozen-encoder PE diagnosis probe.
+#
+# Question: which representation checkpoint carries the most PE information?
+# Frozen encoder -> global average pool -> fixed linear head -> PE +/-.
+# Nothing about the probe may be tuned per checkpoint; see components/training/probe.yaml.
+# The best epoch is selected on validation; the test split is never used for selection.
+#
+# To probe a different representation, override the checkpoint AND the experiment id so
+# runs never overwrite each other, for example:
+#   python run.py run probe.diag --gpus 0 \
+#     --set lineage.source_experiment=D_dapt_dino \
+#     --set lineage.source_checkpoint='${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt' \
+#     --set experiment.id=DX_probe_diagnosis_dapt_dino
+# Probeable checkpoints: public FM (repr.foundation.*), each DAPT arm, C0 (repr.align),
+# RSPECT transfer (repr.rspect.*) and C_silver (repr.silver.*).
+# Output: outputs/diagnosis/DX_probe_diagnosis/  (one directory per probed checkpoint)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/training/probe.yaml
+experiment:
+  id: DX_probe_diagnosis
+  name: probe.diag
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns:
+    _replace_: true
+task:
+  architecture: frozen_probe
+  targets:
+    _replace_: true
+    pe_present: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+  silver_labels: null

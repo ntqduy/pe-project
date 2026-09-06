@@ -1,0 +1,21 @@
+# data.silver.medgemma — SL00: report-derived silver labels from MedGemma only.
+#
+# Question: what report-derived supervision can a single medical LLM extract?
+# Support artifact. Only rows with status=accepted may ever be used for training, and
+# silver labels are never used as gold evaluation labels.
+# Output: outputs/silver_label/SL_medgemma_only/
+#   labels.parquet  one row per (report, target): value, status, confidence
+#   audit.jsonl     full per-decision audit trail with evidence spans
+#   result.json     QC summary: prevalence, accept/abstain rates, impossible-value checks
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/silver/medgemma_only.yaml
+experiment:
+  id: SL_medgemma_only
+  name: data.silver.medgemma
+  stage: silver
+  family: silver
+data:
+  mode: full
+seed: 42

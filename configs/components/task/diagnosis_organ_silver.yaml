@@ -1,0 +1,39 @@
+# Organ-branch auxiliary heads supervised by ACCEPTED silver labels.
+#
+# Each auxiliary target is attached to the organ branch whose anatomy it describes, so the
+# gradient reaches the branch that should encode it. Target names are the canonical silver
+# schema names (source/silver/schema.py), which intentionally differ from some native column
+# names (rv_lv_ratio_abnormal vs rv_lv_abnormal, contrast_reflux vs reflux).
+# Preflight rejects any auxiliary target that has no configured supervision source.
+task:
+  auxiliary_default_source: silver
+  auxiliary_targets:
+    heart:
+      rv_enlargement: {type: binary, source: silver}
+      rv_lv_ratio_abnormal: {type: binary, source: silver}
+      septal_bowing: {type: binary, source: silver}
+      contrast_reflux: {type: binary, source: silver}
+      pericardial_effusion: {type: binary, source: silver}
+    pa:
+      acuity: {type: multiclass, classes: 4, source: silver}
+      central: {type: binary, source: silver}
+      lobar: {type: binary, source: silver}
+      segmental: {type: binary, source: silver}
+      subsegmental: {type: binary, source: silver}
+      saddle: {type: binary, source: silver}
+    lung:
+      pleural_effusion: {type: binary, source: silver}
+      chronic_lung_disease: {type: binary, source: silver}
+      fibrosis: {type: binary, source: silver}
+      emphysema: {type: binary, source: silver}
+  auxiliary_organ_weights:
+    heart: 0.2
+    pa: 0.2
+    lung: 0.2
+  # Silver supervision reaches the model only through the organ auxiliary heads above, so
+  # the main-head silver term stays off and auxiliary_organ_weights is the effective weight.
+  silver_loss_weight: 0.0
+  silver_targets:
+    [rv_enlargement, rv_lv_ratio_abnormal, septal_bowing, contrast_reflux,
+     pericardial_effusion, acuity, central, lobar, segmental, subsegmental,
+     saddle, pleural_effusion, chronic_lung_disease, fibrosis, emphysema]

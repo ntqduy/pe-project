@@ -1,0 +1,13 @@
+# Adds frozen-teacher knowledge distillation on top of the ROI-only student contract.
+#
+# The teacher is the trained full-volume reference model (diag.anatomy.concat). It stays in
+# eval mode, never enters the student optimizer, and only its primary PE logit is distilled.
+# Total loss = alpha_supervised * ground-truth loss + alpha_distill * KD loss, so the paired
+# GT-only and GT+KD arms isolate exactly what the teacher adds.
+# Requires diag.anatomy.concat to have been trained first.
+distillation:
+  enabled: true
+  teacher_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
+  temperature: 2.0
+  alpha_supervised: 1.0
+  alpha_distill: 1.0

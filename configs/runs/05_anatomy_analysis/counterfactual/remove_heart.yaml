@@ -1,0 +1,38 @@
+# anatomy.remove_heart — NECESSITY: is heart evidence necessary for the trained model?
+#
+# Frozen inference only. The reference model (diag.anatomy.concat) is loaded, every
+# parameter is frozen, and each patient is scored twice: once on the original volume and
+# once with the heart region erased by the local-mean replacement policy. The paired
+# probability delta on the same patients is the result. Nothing is trained or re-segmented,
+# and the original masks are reused exactly as stored.
+# Requires diag.anatomy.concat to have been trained first.
+# Output: outputs/counterfactual/CF_remove_heart/
+#   counterfactual_predictions.parquet  original and region-erased probability per patient
+#   result.json                         paired bootstrap deltas, ROI volume, no checkpoint
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/task/diagnosis_anatomy_reference.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/adapter/organ.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: CF_remove_heart
+  name: anatomy.remove_heart
+  stage: counterfactual
+  family: counterfactual
+task:
+  base_stage: diagnosis
+  input_counterfactual: remove_heart
+  masking_policy: {type: local_mean, local_radius_voxels: 3}
+lineage:
+  backbone: CT-FM
+  initialization: C_full
+  source_experiment: DX_anatomy_concat
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
+  transfer_modules: [image_encoder, roi, organ_adapters, fusion, heads]
+  dapt: DINO
+  alignment: true
+  supervision_type: frozen_counterfactual_inference

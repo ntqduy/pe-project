@@ -1,0 +1,7 @@
+paths:
+  cloud_root: ${PE_CLOUD_ROOT}
+  cloud_project_root: ${PE_CLOUD_ROOT}/pe-project
+  data_root: ${PE_CLOUD_ROOT}/data
+  raw_inspect: ${PE_CLOUD_ROOT}/data/Stanford_INSPECT_dataset
+  derived_data: ${PE_CLOUD_ROOT}/data/derived
+  output_root: ${PE_CLOUD_ROOT}/pe-project/outputs

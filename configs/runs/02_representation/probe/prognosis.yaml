@@ -1,0 +1,46 @@
+# probe.prog — fixed frozen-encoder 30-day mortality probe.
+#
+# Question: which representation checkpoint carries the most outcome-relevant information?
+# Frozen encoder -> global average pool -> fixed small prognosis head -> 30-day mortality.
+# Image only: no EHR and no PESI, so the score reflects the representation alone.
+# Probe hyperparameters are fixed by components/training/probe.yaml and must not be tuned
+# per checkpoint. Checkpoint selection uses validation, never test.
+#
+# To probe another representation, override lineage.source_experiment,
+# lineage.source_checkpoint and experiment.id (see probe/diagnosis.yaml for an example).
+# Output: outputs/prognosis/PR_probe_prognosis/  (one directory per probed checkpoint)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/training/probe.yaml
+experiment:
+  id: PR_probe_prognosis
+  name: probe.prog
+  stage: prognosis
+  family: prognosis
+data:
+  mode: full
+  cohort: confirmed_acute_pe
+  manifest: manifests/prognosis.csv
+  file_column: image_path
+  label_columns: [mortality_30d]
+  mask_columns:
+    _replace_: true
+task:
+  architecture: frozen_probe
+  modalities: [image]
+  regions: []
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_ehr: false
+  require_pesi: false

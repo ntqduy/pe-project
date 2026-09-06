@@ -1,0 +1,8 @@
+compute:
+  accelerator: cpu
+  strategy: cpu
+  devices: []
+  num_nodes: 1
+  precision: fp32
+  distributed_backend: gloo
+  num_workers: 4

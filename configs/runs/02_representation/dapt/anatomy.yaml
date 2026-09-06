@@ -1,0 +1,30 @@
+# repr.dapt.anatomy — D04: anatomy-aware domain-adaptive pretraining.
+#
+# Question: does contrasting the whole volume against its PA-only view teach the encoder
+# anatomy-sensitive features that the fixed probes can detect?
+# This is the only DAPT arm that consumes anatomy masks (data.segmentation must exist).
+# Output: outputs/pretraining/dapt/D_dapt_anatomy/  (best.ckpt, lineage.json, result.json)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/dapt/anatomy_dapt.yaml
+  - ../../../components/training/dapt.yaml
+experiment:
+  id: D_dapt_anatomy
+  name: repr.dapt.anatomy
+  stage: dapt
+  family: dapt
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+  mask_columns:
+    pa: pa_mask_path
+lineage:
+  initialization: public
+  supervision_type: self_supervised
+supervision:
+  require_masks: true
+  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy

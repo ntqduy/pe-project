@@ -1,0 +1,50 @@
+# diag.anatomy.silver.late — same arm as diag.anatomy.silver.concat, late-logit fusion.
+#
+# Question: is it better to combine branch *decisions* than branch *features*?
+# Each branch (global / heart / PA / lung) gets its own PE head and the logits are averaged
+# with masked, renormalized weights, so a branch whose mask is missing drops out of the
+# average instead of contributing zeros. Everything else is identical to the concat arm.
+# Output: outputs/diagnosis/DX_anatomy_silver_late_logit/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/task/diagnosis_organ_silver.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/adapter/organ.yaml
+  - ../../../components/fusion/late_logit.yaml
+experiment:
+  id: DX_anatomy_silver_late_logit
+  name: diag.anatomy.silver.late
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns:
+    heart: heart_mask_path
+    pa: pa_mask_path
+    lung: lung_mask_path
+task:
+  targets:
+    _replace_: true
+    pe_present: 1
+  regions: [heart, pa, lung]
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  dapt: DINO
+  alignment: true
+  silver_method: SL02
+  supervision_type: native_pe_and_accepted_silver_organ_multitask
+supervision:
+  require_masks: true
+  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  require_silver_labels: true
+  silver_labels: ${PE_CLOUD_ROOT}/pe-project/outputs/silver_label/SL_hybrid_adjudicated/labels.parquet

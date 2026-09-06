@@ -1,0 +1,34 @@
+# prog.image_pesi — global image plus PESI.
+#
+# Question: does imaging add anything on top of the established severity score?
+# The cheapest clinically plausible multimodal arm: one score plus the scan.
+# Output: outputs/prognosis/PR_image_pesi/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: PR_image_pesi
+  name: prog.image_pesi
+  stage: prognosis
+  family: prognosis
+task:
+  modalities: [image, pesi]
+  regions: []
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_ehr: false
+  require_pesi: true
+  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi

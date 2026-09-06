@@ -1,0 +1,40 @@
+# prog.image_ehr_pesi — all three modalities, global image, concatenation fusion.
+#
+# Question: does the full multimodal model beat every smaller modality subset?
+# This run is ALSO the concat cell of the global fusion comparison, registered as
+# prog.global.concat. There is deliberately no separate global/concat.yaml: it would be a
+# byte-identical duplicate that burns GPU hours to answer the same question twice.
+# Compare with prog.global.late and prog.global.moe (fusion only) and with the smaller
+# modality arms (modalities only).
+# BLOCKER: data.ehr_columns is empty; its length must match task.ehr_input_dim (32).
+# Output: outputs/prognosis/PR_image_ehr_pesi/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/prognosis.yaml
+  - ../../../components/task/prognosis_primary_cohort.yaml
+  - ../../../components/training/prognosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: PR_image_ehr_pesi
+  name: prog.image_ehr_pesi
+  stage: prognosis
+  family: prognosis
+task:
+  modalities: [image, ehr, pesi]
+  regions: []
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  source_experiment: AL_image_report_c0
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_ehr: true
+  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  require_pesi: true
+  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi

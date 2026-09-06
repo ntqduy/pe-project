@@ -1,0 +1,29 @@
+# repr.silver.rules_falcon — adapt C0 with accepted SL01 (rules + Falcon) silver labels.
+#
+# Question: does the rule-first silver source produce a better adapted representation than
+# the LLM-only or adjudicated sources? Identical to the other two silver_adaptation arms
+# except for silver_training.silver_source.
+# Output: outputs/pretraining/silver/SE_c_silver_rules_falcon/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/task/silver_adaptation.yaml
+experiment:
+  id: SE_c_silver_rules_falcon
+  name: repr.silver.rules_falcon
+  stage: silver_encoder_adaptation
+  family: silver_encoder_adaptation
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+silver_training:
+  silver_source: SL01
+lineage:
+  backbone: CT-FM
+  initialization: C0
+  dapt: DINO
+  alignment: true
+  supervision_type: silver_multitask

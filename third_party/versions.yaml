@@ -1,0 +1,66 @@
+schema_version: 2
+
+# Repositories are clean local clones. Their contents are intentionally ignored
+# by the parent project; this manifest is the reproducible source of truth.
+components:
+  ct_fm:
+    status: repo_ready_weight_missing_adapter_pending
+    repo_path: third_party/repos/CT-FM
+    repo_url: https://github.com/project-lighter/CT-FM.git
+    commit: f58c89a75ff0270ba6e339027e40bf04a221735d
+    expected_weight: third_party/weights/foundation/ct_fm/model.ckpt
+    checksum_sha256: null
+    note: current upstream recommends its Lighter/Hugging Face API; inspect the exact checkpoint before setting factory/output_adapter
+
+  ct_clip:
+    status: repo_ready_weight_missing_adapter_pending
+    repo_path: third_party/repos/CT-CLIP
+    import_root: third_party/repos/CT-CLIP/CT_CLIP
+    repo_url: https://github.com/ibrahimethemhamamci/CT-CLIP.git
+    commit: a2a155c601987820433c01db69b64d701d3d229d
+    expected_weight: third_party/weights/foundation/ct_clip/model.pt
+    checksum_sha256: null
+    note: set factory/output_adapter only after matching the checkpoint architecture
+
+  totalfm:
+    status: repo_ready_weight_missing_adapter_pending
+    repo_path: third_party/repos/TotalFM
+    repo_url: https://github.com/jichi-labo/TotalFM.git
+    commit: 3a104a56e87735f209210f34e084fa2eba6aab55
+    expected_weight: third_party/weights/foundation/totalfm/totalfm_en_checkpoint_best_loss.pt
+    checksum_sha256: null
+    note: upstream is organ-patch based and is not assumed to be a drop-in whole-volume encoder
+
+  totalsegmentator:
+    status: repo_ready_weights_missing_install_required
+    repo_path: third_party/repos/TotalSegmentator
+    repo_url: https://github.com/wasserth/TotalSegmentator.git
+    commit: 0e65a448d557382b1e925276212b3bec7f5aff83
+    describe: v2.18.0-9-g0e65a44
+    expected_weight_directory: third_party/weights/segmentation/totalsegmentator
+    checksum_sha256: null
+    note: primary pseudo-anatomy backend; install the pinned local package and stage its task weights offline
+
+  lungmask:
+    status: repo_ready_weight_missing_install_required
+    repo_path: third_party/repos/lungmask
+    repo_url: https://github.com/JoHof/lungmask.git
+    commit: 87fc9f2b701458a6d38f5e64d59a5e60bc68c884
+    describe: v0.2.21-4-g87fc9f2
+    expected_weight: third_party/weights/segmentation/lungmask/R231.pth
+    checksum_sha256: null
+    note: independent secondary lung QC only; it never replaces the TotalSegmentator canonical lung mask
+
+  falcon:
+    status: weight_missing
+    expected_weight_directory: third_party/weights/silver/falcon
+    exact_model_id: null
+    revision: null
+    checksum_sha256: null
+
+  medgemma:
+    status: weight_missing
+    expected_weight_directory: third_party/weights/silver/medgemma
+    exact_model_id: null
+    revision: null
+    checksum_sha256: null
