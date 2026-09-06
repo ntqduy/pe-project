@@ -22,7 +22,6 @@ outputs/
 *.parquet
 
 # Third-party clones and weights are local assets pinned by versions.yaml.
-third_party/repos/*
 !third_party/repos/.gitkeep
 third_party/weights/*
 !third_party/weights/.gitkeep
