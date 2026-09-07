@@ -1,0 +1,29 @@
+# test_500_sample — the same clean cohort, then 500 patients sampled patient-level.
+#
+# This is a rehearsal cohort, not a different experiment: it runs the identical
+# preprocessing implementation as full_inspect (see _common.yaml). Only `sampling`
+# differs, so anything that works here works unchanged at full scale.
+_base_: [_common.yaml]
+profile:
+  name: test_500_sample
+  description: >-
+    The full_inspect eligible cohort reduced to 500 patients, drawn inside each official
+    split in proportion to that split's size, stratified on the PE and mortality labels.
+    Sampling is patient-level and a sampled patient keeps all of their studies, so no
+    patient is split across the subset boundary and no patient changes split.
+  scope: 500 patients
+sampling:
+  enabled: true
+  seed: 20260704
+  # Allocated across train/validation/test in official split proportion.
+  total_patients: 500
+  per_split: null
+  strata:
+    - pe_positive_nlp
+    - pe_acute
+    - pe_subsegmentalonly
+    - 1_month_mortality
+  # Leave null to preserve the natural prevalence of the full cohort. Set a fraction
+  # (with balance_column) only for a deliberately enriched rehearsal.
+  balance_column: pe_positive_nlp
+  positive_fraction: null

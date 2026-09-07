@@ -1,0 +1,37 @@
+# Backbone registry — one contract per public CT encoder, in one place.
+#
+# Every backbone component inherits this file and then selects one entry by name, so
+# `model.backbone` is a genuine config variable: any run config can be pointed at a
+# different encoder with `--set model.backbone=ct_clip` and the contract travels with it.
+# `source/utils/config.resolve_backbone` copies the selected entry into `model` and drops
+# this registry from the resolved config, so one backbone's contract never changes another
+# experiment's config hash.
+#
+# BLOCKER (docs/BLOCKERS.md §1): factory / output_adapter / feature_dim are empty for all
+# three encoders. They must come from the actually inspected checkpoint, never from a
+# repository name and never copied between backbones. Preflight fails until they are filled.
+backbones:
+  ct_fm:
+    display_name: CT-FM
+    repo: third_party/repos/CT-FM
+    checkpoint: third_party/weights/foundation/ct_fm/model.ckpt
+    factory: ""
+    output_adapter: ""
+    feature_dim: 0
+    strict_load: true
+  ct_clip:
+    display_name: CT-CLIP
+    repo: third_party/repos/CT-CLIP/CT_CLIP
+    checkpoint: third_party/weights/foundation/ct_clip/model.pt
+    factory: ""
+    output_adapter: ""
+    feature_dim: 0
+    strict_load: true
+  totalfm:
+    display_name: TotalFM
+    repo: third_party/repos/TotalFM
+    checkpoint: third_party/weights/foundation/totalfm/totalfm_en_checkpoint_best_loss.pt
+    factory: ""
+    output_adapter: ""
+    feature_dim: 0
+    strict_load: true

@@ -8,6 +8,7 @@ _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
   - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/encoder/from_pretrained.yaml
   - ../../../components/dapt/anatomy_dapt.yaml
   - ../../../components/training/dapt.yaml
 experiment:
@@ -23,7 +24,6 @@ data:
   mask_columns:
     pa: pa_mask_path
 lineage:
-  initialization: public
   supervision_type: self_supervised
 supervision:
   require_masks: true

@@ -104,7 +104,9 @@ def _checksum_check(
     return actual
 
 
-def _artifact_path(paths: ProjectPaths, value: Any, *, output: bool = False) -> Path | None:
+def _artifact_path(
+    paths: ProjectPaths, value: Any, *, output: bool = False, profile: str | None = None
+) -> Path | None:
     if value is None or not str(value).strip():
         return None
     candidate = Path(str(value))
@@ -113,9 +115,22 @@ def _artifact_path(paths: ProjectPaths, value: Any, *, output: bool = False) -> 
     if output:
         return paths.output_asset(candidate)
     try:
-        return (paths.dataset_root("full") / candidate).resolve()
+        return (paths.dataset_root("full", profile) / candidate).resolve()
     except PathConfigurationError:
         return paths.code_asset(candidate)
+
+
+def _is_inspect_dataset(name: str) -> bool:
+    """Every active dataset profile is an INSPECT cohort, so the leakage guard must
+    recognise the profile names as well as the historical bare ``inspect``."""
+    normalized = str(name or "").strip().lower()
+    if normalized in {"inspect", "stanford_inspect"}:
+        return True
+    try:
+        from source.dataset import ACTIVE_PROFILES
+    except Exception:  # noqa: BLE001 - preflight must not fail on an import
+        return "inspect" in normalized
+    return normalized in {value.lower() for value in ACTIVE_PROFILES} or "inspect" in normalized
 
 
 def checkpoint_lineage_errors(
@@ -150,7 +165,7 @@ def checkpoint_lineage_errors(
     source_task = str(source_lineage.get("task") or "").lower()
     source_supervision = str(source_lineage.get("supervision_type") or "").lower()
     inspect_supervised_diagnosis = (
-        source_dataset == "inspect"
+        _is_inspect_dataset(source_dataset)
         and (source_stage == "diagnosis" or "diagnos" in source_task)
         and source_supervision not in {"none", "public", "self_supervised", "image_report_alignment"}
     )
@@ -207,7 +222,35 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         checks.append(Check("OUTPUT", "persistent_write", "FAIL", str(exc)))
     _exists(checks, "PROJECT", "cloud_project_root", paths.cloud_project_root, True)
     _exists(checks, "DATA", "raw_inspect_read_only", paths.raw_inspect_root, mode == "full")
-    _exists(checks, "DATA", "derived", paths.derived_root, mode == "full")
+    # For the dataset stage the derived tree is the *output*; the destination check below
+    # covers it. Every other stage reads from it, so it has to exist already.
+    building_dataset = str((config.get("experiment") or {}).get("stage") or "") == "dataset"
+    _exists(checks, "DATA", "derived", paths.derived_root, mode == "full" and not building_dataset)
+    profile = str((config.get("data") or {}).get("profile") or "")
+    if profile and str((config.get("experiment") or {}).get("stage") or "") != "dataset":
+        try:
+            built = paths.dataset_root_for(config)
+        except PathConfigurationError as exc:
+            checks.append(Check("DATA", "dataset_profile", "FAIL", str(exc)))
+        else:
+            provenance = built / "dataset.json"
+            _exists(checks, "DATA", "dataset_profile", provenance, True)
+            if provenance.is_file():
+                try:
+                    payload = json.loads(provenance.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    checks.append(Check("DATA", "dataset_provenance", "FAIL", str(exc)))
+                else:
+                    cohort = dict(payload.get("cohort") or {})
+                    fingerprint = str((payload.get("preprocessing") or {}).get("fingerprint") or "")
+                    checks.append(
+                        Check(
+                            "DATA", "dataset_provenance", "PASS",
+                            f"{profile}: {cohort.get('patients')} patients, "
+                            f"{cohort.get('studies')} studies, "
+                            f"preprocessing={fingerprint[:16] or 'unrecorded'}",
+                        )
+                    )
     stage = str((config.get("experiment") or {}).get("stage") or "")
     data_config = dict(config.get("data") or {})
     task = dict(config.get("task") or {})
@@ -227,7 +270,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         report_path = Path(str(report_value)) if report_value else None
         if report_path is not None and not report_path.is_absolute():
             try:
-                report_path = paths.dataset_root(mode) / report_path
+                report_path = paths.dataset_root_for(config) / report_path
             except PathConfigurationError:
                 report_path = None
         _exists(checks, "DATA", "reports", report_path, True)
@@ -243,6 +286,32 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 )
             except ManifestError as exc:
                 checks.append(Check("DATA", "report_table_schema", "FAIL", str(exc)))
+    elif stage == "dataset":
+        # This stage *produces* the manifests, so there is nothing to audit yet. What must
+        # hold beforehand is that the profile exists, that it shares the preprocessing
+        # contract with the other active profile, and that the read-only release is there.
+        profile_name = str(data_config.get("profile") or "")
+        try:
+            from source.dataset import assert_shared_preprocessing, require_active_profile
+
+            profile = require_active_profile(profile_name)
+            checks.append(
+                Check("DATA", "dataset_profile", "PASS",
+                      f"{profile_name}: {str((profile.get('profile') or {}).get('scope') or '')}")
+            )
+            checks.append(
+                Check("DATA", "shared_preprocessing", "PASS",
+                      f"sha256={assert_shared_preprocessing()[:16]} across the active profiles")
+            )
+            release = None
+            if paths.raw_inspect_root is not None:
+                source_block = dict(profile.get("source") or {})
+                release = paths.raw_inspect_root / str(source_block.get("modality") or "CT") / str(
+                    source_block.get("release") or "full"
+                )
+            _exists(checks, "DATA", "inspect_release", release, True)
+        except Exception as exc:  # noqa: BLE001 - report the contract failure, never crash
+            checks.append(Check("DATA", "dataset_profile", "FAIL", f"{type(exc).__name__}: {exc}"))
     elif not manifest_path:
         checks.append(
             Check(
@@ -255,13 +324,13 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
     else:
         manifest = Path(str(manifest_path))
         if not manifest.is_absolute():
-            manifest = paths.dataset_root(mode) / manifest
+            manifest = paths.dataset_root_for(config) / manifest
         try:
             audit = audit_manifest(
                 manifest,
                 label_columns=tuple(data_config.get("label_columns") or ()),
                 file_column=(None if report_only_contract else data_config.get("file_column", "image_path")),
-                data_root=paths.dataset_root(mode),
+                data_root=paths.dataset_root_for(config),
                 split_aliases=data_config.get("split_aliases"),
                 required_columns=tuple(
                     dict.fromkeys(
@@ -375,7 +444,8 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         initialization = specific.get("public_initialization_checkpoint")
         _exists(
             checks, "SUPERVISION", "annotation_manifest",
-            _artifact_path(paths, annotation), available,
+            _artifact_path(paths, annotation, profile=(config.get("data") or {}).get("profile")),
+            available,
         )
         _exists(
             checks, "MODEL", "public_initialization_checkpoint",
@@ -876,7 +946,24 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
             checks.append(Check("COMPUTE", "cuda_devices", "FAIL", "PyTorch is not installed"))
     else:
         checks.append(Check("COMPUTE", "cpu", "PASS", "CPU engineering mode"))
-    if paths.output_root is not None:
+    if str((config.get("experiment") or {}).get("stage") or "") == "dataset":
+        # A dataset build writes to the derived data root, not to the experiment output
+        # root, so the output-family collision rule does not apply to it. What matters is
+        # whether this profile has already been built.
+        try:
+            destination = paths.dataset_root_for(config)
+        except PathConfigurationError as exc:
+            checks.append(Check("OUTPUT", "dataset_destination", "FAIL", str(exc)))
+        else:
+            built = (destination / "dataset.json").is_file()
+            rebuild_ok = not built or bool(config.get("overwrite"))
+            checks.append(
+                Check(
+                    "OUTPUT", "dataset_destination", "PASS" if rebuild_ok else "FAIL",
+                    f"{destination} ({'already built; pass --overwrite to rebuild' if built else 'clear'})",
+                )
+            )
+    elif paths.output_root is not None:
         experiment = dict(config.get("experiment") or {})
         family = str(experiment.get("family") or experiment.get("stage"))
         experiment_id = str((config.get("experiment") or {}).get("id") or "")

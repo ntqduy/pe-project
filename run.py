@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 REGISTRY_PATH = ROOT / "configs" / "experiments.yaml"
 GROUP_ORDER = (
+    "DATASET",
     "DATA",
     "FOUNDATION",
     "REPRESENTATION",
@@ -42,8 +43,9 @@ GROUP_ORDER = (
 # does not know them: each has its own CLI with its own worker model (GPU study sharding for
 # segmentation, CPU workers for ROI construction).
 DATA_STAGE_TOOLS = {
-    "segmentation": {"tool": "tools/create_masks/generate_masks.py", "gpus": True},
-    "roi": {"tool": "tools/build_rois/build_rois.py", "gpus": False},
+    "dataset": {"tool": "tools/data/build_dataset.py", "gpus": False, "set": True},
+    "segmentation": {"tool": "tools/create_masks/generate_masks.py", "gpus": True, "set": True},
+    "roi": {"tool": "tools/build_rois/build_rois.py", "gpus": False, "set": True},
 }
 # Artifact paths are stored relative to different roots depending on the key.
 OUTPUT_RELATIVE_KEYS = ("roi.segmentation_run", "init.checkpoint")
@@ -132,7 +134,7 @@ def artifact_path(config: dict[str, Any], key: str) -> Path | str | None:
         if key in CODE_RELATIVE_KEYS:
             return paths.code_asset(candidate)
         if key in DATASET_RELATIVE_KEYS:
-            return paths.dataset_root(str((config.get("data") or {}).get("mode") or "full")) / candidate
+            return paths.dataset_root_for(config) / candidate
         return paths.code_asset(candidate)
     except Exception as exc:  # noqa: BLE001 - path roots may be unconfigured
         return f"unresolved ({type(exc).__name__})"
@@ -322,7 +324,8 @@ def delegate(entry: dict[str, Any], name: str, args: argparse.Namespace, *, mode
             print(f"  python run.py run {name} --allow-full")
             return 3
         tool = ROOT / data_stage["tool"]
-        accepts = {"gpus": data_stage["gpus"], "set": False, "state": False, "selection": True}
+        accepts = {"gpus": data_stage["gpus"], "set": data_stage["set"], "state": False,
+                   "selection": True}
     else:
         tool = ROOT / "tools" / "launch.py"
         accepts = {"gpus": True, "set": True, "state": True, "selection": True}

@@ -1,0 +1,29 @@
+# data.dataset.full_inspect — build the whole eligible INSPECT cohort.
+#
+# Question: which patients does this project actually train and evaluate on?
+# Reads the read-only release, applies the shared eligibility/noise-removal rules, checks
+# CT integrity, adjudicates labels per patient, verifies that the official split is
+# preserved and that no patient crosses it, then writes every derived manifest.
+# The cohort contract itself lives in source/dataset/profiles/, not here.
+# Output: ${PE_CLOUD_ROOT}/data/derived/datasets/full_inspect/
+#   manifests/{ctpa,diagnosis,prognosis,paired_reports,reports}.csv
+#   exclusions.csv, integrity.json, split_audit.json, dataset.json, volumes/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/cpu.yaml
+experiment:
+  id: DS_full_inspect
+  name: data.dataset.full_inspect
+  stage: dataset
+  family: dataset
+  # This run *is* the full_inspect cohort, so its own profile is its baseline
+  # and its id is not variant-stamped.
+  baseline_dataset: full_inspect
+data:
+  mode: full
+  profile: full_inspect
+dataset:
+  # Write the preprocessed volume cache and point the manifests at it. Set false to build
+  # manifests only, referencing the raw read-only NIfTI files.
+  preprocess: true
+seed: 42

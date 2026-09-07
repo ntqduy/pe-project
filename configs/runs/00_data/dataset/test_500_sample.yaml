@@ -1,0 +1,30 @@
+# data.dataset.test_500_sample — build the 500-patient rehearsal cohort.
+#
+# Question: does the whole pipeline run end to end before it is run at full cost?
+# Identical code path and identical preprocessing to data.dataset.full_inspect -- the only
+# difference is the sampling block in source/dataset/profiles/test_500_sample.yaml, which
+# draws 500 patients inside the official split. Sampling is patient-level, so a sampled
+# patient keeps all of their studies and never changes split.
+# The cohort contract itself lives in source/dataset/profiles/, not here.
+# Output: ${PE_CLOUD_ROOT}/data/derived/datasets/test_500_sample/
+#   manifests/{ctpa,diagnosis,prognosis,paired_reports,reports}.csv
+#   exclusions.csv, integrity.json, split_audit.json, dataset.json, volumes/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/cpu.yaml
+experiment:
+  id: DS_test_500_sample
+  name: data.dataset.test_500_sample
+  stage: dataset
+  family: dataset
+  # This run *is* the test_500_sample cohort, so its own profile is its baseline
+  # and its id is not variant-stamped.
+  baseline_dataset: test_500_sample
+data:
+  mode: full
+  profile: test_500_sample
+dataset:
+  # Write the preprocessed volume cache and point the manifests at it. Set false to build
+  # manifests only, referencing the raw read-only NIfTI files.
+  preprocess: true
+seed: 42

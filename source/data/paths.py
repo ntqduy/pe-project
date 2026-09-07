@@ -73,12 +73,15 @@ class ProjectPaths:
         data_root = _path(configuration.get("data_root")) or (
             (cloud_root / "data").resolve() if cloud_root is not None else None
         )
-        raw = _path(configuration.get("raw_inspect")) or (
-            (data_root / "Stanford_INSPECT_dataset").resolve() if data_root is not None else None
-        )
-        derived = _path(configuration.get("derived_data")) or (
-            (data_root / "derived").resolve() if data_root is not None else None
-        )
+        # PE_RAW_INSPECT_ROOT / PE_DERIVED_ROOT are deliberate overrides: paths.yaml can only
+        # express a template under PE_CLOUD_ROOT, and the read-only release does not always
+        # sit inside it. An explicitly exported override therefore wins over the template.
+        raw = _path(
+            environment.get("PE_RAW_INSPECT_ROOT") or configuration.get("raw_inspect")
+        ) or ((data_root / "Stanford_INSPECT_dataset").resolve() if data_root is not None else None)
+        derived = _path(
+            environment.get("PE_DERIVED_ROOT") or configuration.get("derived_data")
+        ) or ((data_root / "derived").resolve() if data_root is not None else None)
         output = _path(configuration.get("output_root")) or (
             (cloud_project / "outputs").resolve() if cloud_project is not None else None
         )
@@ -116,12 +119,25 @@ class ProjectPaths:
             )
         return self.output_root
 
-    def dataset_root(self, mode: str) -> Path:
-        if mode == "full" and self.derived_root is not None:
-            return self.derived_root
-        if mode == "full":
+    def dataset_root(self, mode: str, profile: str | None = None) -> Path:
+        """Root of the derived dataset the run reads from.
+
+        ``mode`` stays ``full`` (full-data manifests, never a pilot code path). ``profile``
+        selects one dataset profile built by ``source/data_preprocessing`` -- the cohort
+        under ``derived/datasets/<profile>/``. Without a profile this is the historical
+        flat derived root, so pre-profile manifests keep resolving unchanged.
+        """
+        if mode != "full":
+            raise PathConfigurationError(f"unsupported data mode: {mode}")
+        if self.derived_root is None:
             raise PathConfigurationError("full mode requires PE_CLOUD_ROOT/data/derived")
-        raise PathConfigurationError(f"unsupported data mode: {mode}")
+        name = str(profile or "").strip()
+        return (self.derived_root / "datasets" / name) if name else self.derived_root
+
+    def dataset_root_for(self, config: Mapping[str, Any] | None) -> Path:
+        """Resolve the dataset root from a resolved config's ``data`` block."""
+        data = dict((config or {}).get("data") or {})
+        return self.dataset_root(str(data.get("mode") or "full"), data.get("profile"))
 
     def code_asset(self, value: Any) -> Path | None:
         """Resolve a repository-local model/config asset independently of the shell CWD."""

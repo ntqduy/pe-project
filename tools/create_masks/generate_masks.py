@@ -37,12 +37,20 @@ def main() -> int:
     )
     selection.add_argument("--max-cases", type=int, help="process the first N manifest studies")
     selection.add_argument("--allow-full", action="store_true", help="process the complete manifest")
+    parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="config override, repeatable; this is how the dataset profile is selected",
+    )
     parser.add_argument("--gpus", help="physical GPU IDs for independent study workers, e.g. 0,1")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     if args.max_cases is not None and args.max_cases < 1:
         raise SystemExit("--max-cases must be positive")
-    config = load_config(args.config)
+    config = load_config(args.config, args.overrides)
     config["overwrite"] = bool(args.overwrite)
     config["resume"] = not args.overwrite
     paths = ProjectPaths.resolve(config)
@@ -71,11 +79,11 @@ def main() -> int:
     )
     manifest_path = Path(str(config["data"]["manifest"]))
     if not manifest_path.is_absolute():
-        manifest_path = paths.dataset_root(str(config["data"]["mode"])) / manifest_path
+        manifest_path = paths.dataset_root_for(config) / manifest_path
     source_rows = select_patient_rows(read_rows(manifest_path), args.patient_ids)
     generated, evaluation = generate_pseudo_anatomy(
         source_rows,
-        data_root=paths.dataset_root(str(config["data"]["mode"])),
+        data_root=paths.dataset_root_for(config),
         image_column=str(config["data"].get("file_column", "image_path")),
         run_dir=run_dir,
         segmentation_config=segmentation,

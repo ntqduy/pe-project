@@ -13,6 +13,7 @@ _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
   - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/encoder/from_c0.yaml
   - ../../../components/task/diagnosis.yaml
   - ../../../components/training/diagnosis.yaml
 experiment:
@@ -37,10 +38,6 @@ task:
   silver_targets: []
   silver_loss_weight: 0.0
 lineage:
-  backbone: CT-FM
-  initialization: C0
-  source_experiment: AL_image_report_c0
-  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
   transfer_modules: [image_encoder]
   supervision_type: native_labels
 supervision:

@@ -1,3 +1,13 @@
+# Data and output roots.
+#
+# PE_CLOUD_ROOT is the one variable everything hangs off. Two optional overrides exist for
+# the case where the read-only release or the derived tree does not live under it:
+#
+#   PE_RAW_INSPECT_ROOT   directory that contains CT/full and CT/sample
+#   PE_DERIVED_ROOT       where dataset profiles are built
+#
+# An exported override wins over the templates below, because a template cannot express a
+# path outside PE_CLOUD_ROOT.
 paths:
   cloud_root: ${PE_CLOUD_ROOT}
   cloud_project_root: ${PE_CLOUD_ROOT}/pe-project

@@ -1,0 +1,12 @@
+# Start from C0, the image-report aligned encoder.
+#
+# This is the historical default for the downstream tasks, so a config that inherits this
+# file keeps exactly the output directory it has today. Switching a run to another
+# initialization (`--set encoder.init_source=dapt`) gives it its own directory instead.
+_base_:
+  - sources.yaml
+encoder:
+  init_source: c0
+  dapt_method: DINO
+experiment:
+  baseline_init: c0

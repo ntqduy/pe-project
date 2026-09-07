@@ -44,7 +44,7 @@ def resolve_cli_config(args: argparse.Namespace) -> dict[str, Any]:
 def resolve_manifest(config: Mapping[str, Any], paths: ProjectPaths) -> Path:
     data = dict(config.get("data") or {})
     manifest = Path(str(data["manifest"]))
-    return manifest if manifest.is_absolute() else paths.dataset_root(str(data["mode"])) / manifest
+    return manifest if manifest.is_absolute() else paths.dataset_root_for(config) / manifest
 
 
 def select_patient_rows(
@@ -124,7 +124,7 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
     if silver_path:
         silver_path = Path(str(silver_path))
         if not silver_path.is_absolute():
-            silver_path = paths.dataset_root(str(data["mode"])) / silver_path
+            silver_path = paths.dataset_root_for(config) / silver_path
     silver_targets = (
         tuple((silver_training.get("targets") or {}).keys())
         if stage == "silver_encoder_adaptation"
@@ -137,7 +137,7 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
             roi_manifest = paths.output_asset(roi_manifest)
     return CTPADataset(
         resolve_manifest(config, paths),
-        paths.dataset_root(str(data["mode"])),
+        paths.dataset_root_for(config),
         split,
         transform=Compose(transforms) if transforms else None,
         image_column=str(data.get("file_column", "image_path")),

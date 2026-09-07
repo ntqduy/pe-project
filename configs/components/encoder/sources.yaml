@@ -1,0 +1,33 @@
+# Where each kind of encoder checkpoint lives.
+#
+# One diagnosis/prognosis model, four possible initializations. Nothing here selects one;
+# `from_pretrained.yaml`, `from_dapt.yaml` and `from_c0.yaml` do that, and any run can be
+# moved between them with `--set encoder.init_source=...`.
+#
+#   pretrained  the original public backbone weights, loaded through the backbone contract
+#   dapt        an encoder after domain-adaptive pretraining on INSPECT CTPA
+#   c0          the image-report aligned encoder (this project's C0)
+#   silver      C0 after accepted-silver adaptation (C_silver)
+#
+# The defaults point at the canonical run of each stage. Any other checkpoint --
+# a different backbone's DAPT run, a different DAPT method, a different silver source --
+# is selected with `--set encoder.checkpoint=<path>` plus the matching
+# `encoder.source_experiment`, so the checkpoint's provenance stays recorded in lineage.
+encoder:
+  # Defaults to the run's model.backbone; set it to move backbone and weights together.
+  backbone: null
+  init_source: null
+  checkpoint: null
+  source_experiment: null
+  # Recorded in checkpoint lineage so a result says which upstream adaptation produced it.
+  dapt_method: null
+  silver_source: null
+  sources:
+    pretrained: null
+    dapt: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt
+    c0: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+    silver: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/silver/SE_c_silver_hybrid/best.ckpt
+  source_experiments:
+    dapt: D_dapt_dino
+    c0: AL_image_report_c0
+    silver: SE_c_silver_hybrid

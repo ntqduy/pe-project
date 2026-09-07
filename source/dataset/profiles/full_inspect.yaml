@@ -1,0 +1,11 @@
+# full_inspect — the whole eligible cohort after filtering and QC. No sampling.
+_base_: [_common.yaml]
+profile:
+  name: full_inspect
+  description: >-
+    Every INSPECT study that survives the shared eligibility, noise-removal and CT
+    integrity contract. The official train/valid/test split is preserved exactly as the
+    release assigns it; no patient is resampled, reassigned or dropped for balance.
+  scope: full cohort
+sampling:
+  enabled: false

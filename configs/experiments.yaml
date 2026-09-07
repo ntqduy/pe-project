@@ -30,10 +30,54 @@ project_blockers:
   - id: inspect_manifests
     what: >-
       manifests/ctpa.csv, manifests/diagnosis.csv, manifests/prognosis.csv and
-      manifests/paired_reports.csv must exist under the derived data root with a
-      patient-level split. No split is ever created implicitly.
+      manifests/paired_reports.csv must exist under the derived data root for the
+      selected dataset profile. They are produced by data.dataset.<profile>, which
+      preserves the official INSPECT split; no split is ever created implicitly.
 
 experiments:
+
+  # -------------------------------------------------------------- DATASET
+  # Two active dataset profiles, one implementation. They share every eligibility, QC,
+  # adjudication, manifest and preprocessing rule (source/dataset/profiles/_common.yaml);
+  # only the sampling block differs. Every later stage selects one of them with
+  # `--set data.profile=<name>`, and the run id records the choice.
+  data.dataset.full_inspect:
+    config: configs/runs/00_data/dataset/full_inspect.yaml
+    group: DATASET
+    description: Build the whole eligible INSPECT cohort - filtering, QC, split audit, manifests
+    question: Which patients and studies does this project actually train and evaluate on?
+    representation: none
+    task: dataset
+    modalities: [image, reports, labels]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: The read-only Stanford INSPECT release (checked by preflight, not by plan)
+    produces:
+      - ctpa/diagnosis/prognosis/paired_reports/reports manifests
+      - exclusions.csv (every dropped study and the rule that dropped it)
+      - integrity.json, split_audit.json, dataset.json (provenance + preprocessing hash)
+      - preprocessed volume cache
+    status: ready
+
+  data.dataset.test_500_sample:
+    config: configs/runs/00_data/dataset/test_500_sample.yaml
+    group: DATASET
+    description: The same cohort reduced to 500 patients, sampled patient-level inside the official split
+    question: Does the whole pipeline run end to end before it is run at full cost?
+    representation: none
+    task: dataset
+    modalities: [image, reports, labels]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: The read-only Stanford INSPECT release (checked by preflight, not by plan)
+    produces:
+      - the same manifest set as full_inspect, for 500 patients
+      - subset_metadata inside dataset.json (seed, per-split targets, strata summary)
+    status: ready
 
   # ----------------------------------------------------------------- DATA
   data.segmentation:
@@ -50,6 +94,7 @@ experiments:
     fusion: none
     requires:
       - what: CTPA manifest with a patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: TotalSegmentator CLI, repository and offline task weights
         blocker: segmentation_backend
@@ -89,6 +134,7 @@ experiments:
     fusion: none
     requires:
       - what: Report table with report_id and report_text
+        experiment: data.dataset.full_inspect
         path_key: silver.reports
       - what: Local MedGemma weights
         blocker: silver_model_weights
@@ -111,6 +157,7 @@ experiments:
     fusion: none
     requires:
       - what: Report table with report_id and report_text
+        experiment: data.dataset.full_inspect
         path_key: silver.reports
       - what: Local Falcon weights
         blocker: silver_model_weights
@@ -133,6 +180,7 @@ experiments:
     fusion: none
     requires:
       - what: Report table with report_id and report_text
+        experiment: data.dataset.full_inspect
         path_key: silver.reports
       - what: Local Falcon and MedGemma weights (both loaded per GPU rank)
         blocker: silver_model_weights
@@ -155,6 +203,7 @@ experiments:
     fusion: none (fixed linear head)
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: CT-FM weights plus inspected factory/adapter/feature_dim
         path_key: model.checkpoint
@@ -177,6 +226,7 @@ experiments:
     fusion: none (fixed linear head)
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: CT-CLIP weights plus inspected factory/adapter/feature_dim
         path_key: model.checkpoint
@@ -199,6 +249,7 @@ experiments:
     fusion: none (fixed linear head)
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: TotalFM weights plus inspected factory/adapter/feature_dim
         path_key: model.checkpoint
@@ -249,6 +300,7 @@ experiments:
     fusion: none
     requires:
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: Public backbone contract and weights
         blocker: backbone_contract
@@ -270,6 +322,7 @@ experiments:
     fusion: none
     requires:
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: Public backbone contract and weights
         blocker: backbone_contract
@@ -291,6 +344,7 @@ experiments:
     fusion: none
     requires:
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: Public backbone contract and weights
         blocker: backbone_contract
@@ -312,6 +366,7 @@ experiments:
     fusion: none
     requires:
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: Public backbone contract and weights
         blocker: backbone_contract
@@ -333,6 +388,7 @@ experiments:
     fusion: none
     requires:
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: Anatomy masks
         experiment: data.segmentation
@@ -357,6 +413,7 @@ experiments:
     fusion: none
     requires:
       - what: Paired report manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: Selected DAPT checkpoint
         experiment: repr.dapt.dino
@@ -381,6 +438,7 @@ experiments:
     fusion: none (fixed linear head)
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: The representation checkpoint under test (default C0)
         experiment: repr.align
@@ -486,6 +544,7 @@ experiments:
       - what: Accepted SL02 silver labels
         experiment: data.silver.hybrid
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
     produces: [C_silver checkpoint - an optional side branch, never a prerequisite]
     status: blocked
@@ -509,6 +568,7 @@ experiments:
       - what: Accepted SL00 silver labels
         experiment: data.silver.medgemma
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
     produces: [C_silver (SL00) checkpoint]
     status: blocked
@@ -532,6 +592,7 @@ experiments:
       - what: Accepted SL01 silver labels
         experiment: data.silver.rules_falcon
       - what: CTPA manifest
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
     produces: [C_silver (SL01) checkpoint]
     status: blocked
@@ -573,6 +634,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -618,6 +680,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -643,6 +706,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -669,6 +733,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -696,6 +761,7 @@ experiments:
     fusion: late_logit
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -724,6 +790,7 @@ experiments:
     fusion: soft_moe
     requires:
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -753,6 +820,7 @@ experiments:
     fusion: none
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: PESI columns present in the manifest
         path_key: supervision.pesi
@@ -774,6 +842,7 @@ experiments:
     fusion: none
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
@@ -797,6 +866,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -818,6 +888,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
@@ -841,6 +912,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -865,6 +937,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -890,6 +963,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -937,6 +1011,7 @@ experiments:
     fusion: late_logit
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -963,6 +1038,7 @@ experiments:
     fusion: soft_moe
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -990,6 +1066,7 @@ experiments:
     fusion: concat_mlp
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -1019,6 +1096,7 @@ experiments:
     fusion: late_logit
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -1048,6 +1126,7 @@ experiments:
     fusion: soft_moe
     requires:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
       - what: C0 checkpoint
         experiment: repr.align
@@ -1180,6 +1259,7 @@ experiments:
         experiment: data.roi
         path_key: supervision.rois
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
     produces: [heart-only sufficiency metrics]
     status: blocked
@@ -1205,6 +1285,7 @@ experiments:
         experiment: data.roi
         path_key: supervision.rois
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
     produces: [PA-only sufficiency metrics]
     status: blocked
@@ -1230,6 +1311,7 @@ experiments:
         experiment: data.roi
         path_key: supervision.rois
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
     produces: [lung-only sufficiency metrics]
     status: blocked
@@ -1255,6 +1337,7 @@ experiments:
         experiment: data.roi
         path_key: supervision.rois
       - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
         path_key: data.manifest
     produces: [the control the organ students must beat]
     status: blocked

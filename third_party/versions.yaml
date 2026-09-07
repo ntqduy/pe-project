@@ -52,15 +52,38 @@ components:
     note: independent secondary lung QC only; it never replaces the TotalSegmentator canonical lung mask
 
   falcon:
-    status: weight_missing
-    expected_weight_directory: third_party/weights/silver/falcon
-    exact_model_id: null
-    revision: null
+    status: weight_staged
+    # Verified from the staged directory: config.json declares FalconForCausalLM and the
+    # README identifies tiiuae/falcon-7b. The revision is the Hugging Face commit recorded
+    # by the downloader in .cache/huggingface/trees/.
+    weight_directory: third_party/weights/falcon-7b
+    exact_model_id: tiiuae/falcon-7b
+    revision: 8782b5c5d8c9290412416618f36a133653e85285
+    architectures: [FalconForCausalLM]
+    auto_model_class: AutoModelForCausalLM
+    tokenizer_class: AutoTokenizer
+    weight_files: [model-00001-of-00002.safetensors, model-00002-of-00002.safetensors]
     checksum_sha256: null
+    note: >-
+      Text-only causal LM; AutoModelForCausalLM + AutoTokenizer is the correct pair.
+      Per-shard SHA-256 is still unrecorded; compute it once and pin it here.
 
   medgemma:
-    status: weight_missing
-    expected_weight_directory: third_party/weights/silver/medgemma
-    exact_model_id: null
-    revision: null
+    status: weight_staged
+    # Verified from the staged directory: config.json declares Gemma3ForConditionalGeneration
+    # with a siglip vision tower, and the README is the MedGemma 1.5 4B multimodal
+    # instruction-tuned card (google/medgemma-1.5-4b-it).
+    weight_directory: third_party/weights/medgemma
+    exact_model_id: google/medgemma-1.5-4b-it
+    revision: 91850547d9f0b2fdd21aa7c5f4f3d1a8a52c243b
+    architectures: [Gemma3ForConditionalGeneration]
+    # NOT AutoModelForCausalLM: this checkpoint is an image-text-to-text model, and
+    # AutoModelForCausalLM does not resolve Gemma3ForConditionalGeneration. Report mining
+    # is text-only, so the plain text tokenizer is the right input path.
+    auto_model_class: AutoModelForImageTextToText
+    tokenizer_class: AutoTokenizer
+    weight_files: [model-00001-of-00002.safetensors, model-00002-of-00002.safetensors]
     checksum_sha256: null
+    note: >-
+      Gated Health AI Developer Foundations licence. Per-shard SHA-256 is unrecorded.
+      transformers>=4.57 is required for the gemma3 model type declared in config.json.

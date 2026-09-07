@@ -6,6 +6,7 @@ _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
   - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/encoder/from_pretrained.yaml
   - ../../../components/dapt/simclr.yaml
   - ../../../components/training/dapt.yaml
 experiment:
@@ -19,5 +20,4 @@ data:
   file_column: image_path
   label_columns: []
 lineage:
-  initialization: public
   supervision_type: self_supervised

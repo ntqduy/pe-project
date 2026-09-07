@@ -159,6 +159,8 @@ def build_checkpoint_lineage(
         "alignment": lineage.get("alignment"),
     }
     for optional in (
+        "encoder_init_source",
+        "encoder_silver_source",
         "train_patient_ids",
         "validation_patient_ids",
         "test_patient_ids",

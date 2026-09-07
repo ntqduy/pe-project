@@ -11,6 +11,7 @@ _base_:
   - ../../../../paths.yaml
   - ../../../../compute/default.yaml
   - ../../../../components/backbone/ct_fm.yaml
+  - ../../../../components/encoder/from_c0.yaml
   - ../../../../components/task/diagnosis.yaml
   - ../../../../components/task/diagnosis_anatomy_reference.yaml
   - ../../../../components/training/diagnosis.yaml

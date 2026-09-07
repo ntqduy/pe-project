@@ -20,8 +20,34 @@ tools/
 ├── silver_labels/generate_silver_labels.py
 ├── pretrain_model/{materialize_foundation,train_dapt,train_alignment,train_silver_encoder}.py
 ├── tasks/{train_task,evaluate,counterfactual}.py
-└── data/create_split.py
+└── data/{build_dataset,create_split}.py
 ```
+
+## `data/build_dataset.py`
+
+Builds one dataset profile from the read-only INSPECT release. It holds no scientific logic:
+it resolves the run config, loads the profile it names from `source/dataset/profiles/`, and
+calls `source/data_preprocessing/pipeline.build_dataset`, which is the single implementation
+both profiles share.
+
+```bash
+python run.py run data.dataset.test_500_sample --max-cases 10   # smoke
+python run.py run data.dataset.test_500_sample --allow-full     # the whole 500-patient subset
+python run.py run data.dataset.full_inspect    --allow-full     # the whole cohort
+```
+
+Extra flags this CLI accepts that `run.py` does not forward:
+
+| flag | effect |
+|---|---|
+| `--no-preprocess` | write manifests pointing at the raw read-only volumes, skipping the cache |
+| `--metadata-only` | skip file-existence rules; validate the cohort from metadata alone |
+
+Stages inside `source/data_preprocessing/`, in order: `sources` (join the official tables),
+`filters` (eligibility, noise removal, exclusion ledger), `integrity` (corrupted/missing CT),
+`adjudication` (per-patient label reconciliation), `sampling` (patient-level, inside the
+official split), `leakage` (split preservation), `manifests`, `volumes` (the shared
+preprocessing contract).
 
 ## `preflight.py`
 
@@ -44,6 +70,7 @@ The launcher reads `experiment.stage` and picks the single matching entrypoint:
 
 | Stage | Entrypoint |
 |---|---|
+| `dataset` | `data/build_dataset.py` (own CLI, not via `launch.py`) |
 | `foundation` | `pretrain_model/materialize_foundation.py` |
 | `dapt` | `pretrain_model/train_dapt.py` |
 | `alignment` | `pretrain_model/train_alignment.py` |
@@ -113,13 +140,31 @@ patient/study sets or targets.
 Not DAPT-specific: it accepts any config `launch.py` supports and splits the GPU list into
 disjoint groups.
 
-```bash
-python tools/launch_parallel.py --config configs/parallel/experiments.yaml --dry-run
-python tools/launch_parallel.py --config configs/parallel/experiments.yaml
+The batch file is yours to write — there is none in this repository — and
+`parallel.enabled: true` is an explicit opt-in the launcher refuses to run without:
+
+```yaml
+parallel:
+  enabled: true
+  devices: [0, 1, 2, 3]
+  gpus_per_job: 1
+  jobs:
+    - config: configs/runs/03_diagnosis/anatomy/single_concat.yaml
+    - config: configs/runs/03_diagnosis/baseline/global_single.yaml
+    - config: configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
 ```
 
-Per-job `args` are only for selection options and `--resume`; scientific changes belong in a
-run config. Do not schedule two stages in one wave when one waits on the other's checkpoint.
+```bash
+python tools/launch_parallel.py --config sweep.yaml --dry-run
+python tools/launch_parallel.py --config sweep.yaml
+```
+
+Per-job `args` accept only `--patient-id`, `--max-reports`, `--allow-full` and `--resume`;
+scientific changes belong in a run config. **`--set` is not accepted per job**, so one
+parallel sweep cannot vary `encoder.init_source` or `data.profile` across jobs — every job
+must name a distinct config. Run an encoder-initialization comparison sequentially through
+`scripts/` instead, or give each cell its own run config. Do not schedule two stages in one
+wave when one waits on the other's checkpoint.
 
 ## Direct nested entrypoints
 

@@ -8,6 +8,7 @@ _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
   - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/encoder/from_c0.yaml
   - ../../../components/task/silver_adaptation.yaml
 experiment:
   id: SE_c_silver_medgemma
@@ -22,8 +23,4 @@ data:
 silver_training:
   silver_source: SL00
 lineage:
-  backbone: CT-FM
-  initialization: C0
-  dapt: DINO
-  alignment: true
   supervision_type: silver_multitask

@@ -18,6 +18,7 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _REPLACE_KEY = "_replace_"
 _DELETE_KEY = "_delete_"
 _STAGE_PREFIXES = {
+    "dataset": ("DS",),
     "segmentation": ("SEG",),
     "roi": ("ROI",),
     "silver": ("SL",),
@@ -193,24 +194,264 @@ def infer_compute_strategy(devices: Iterable[int]) -> str:
     return "cpu" if count == 0 else "single" if count == 1 else "ddp"
 
 
+DEFAULT_DATASET_PROFILE = "full_inspect"
+
+# Encoder initialization sources. These are the checkpoint kinds a downstream task may be
+# initialized from; the task model itself is identical across all of them, which is the
+# whole point -- the comparison is between representations, not between architectures.
+ENCODER_INIT_SOURCES = ("pretrained", "dapt", "c0", "silver")
+_ENCODER_INIT_ALIASES = {
+    "public": "pretrained",
+    "original": "pretrained",
+    "alignment": "c0",
+    "c_0": "c0",
+    "c_silver": "silver",
+    "silver_adaptation": "silver",
+}
+_ENCODER_INITIALIZATION = {
+    "pretrained": "public",
+    "dapt": "C_SSL",
+    "c0": "C0",
+    "silver": "C_silver",
+}
+
+
+def active_dataset_profiles() -> tuple[str, ...]:
+    """The dataset profiles a run may point at. Imported lazily to avoid a config cycle."""
+    try:
+        from source.dataset import ACTIVE_PROFILES
+    except Exception:  # noqa: BLE001 - config must stay usable without the dataset package
+        return ("test_500_sample", "full_inspect")
+    return tuple(ACTIVE_PROFILES)
+
+
+def resolve_backbone(config: dict[str, Any]) -> dict[str, Any]:
+    """Fill ``model`` from the selected entry of the inherited backbone registry.
+
+    ``configs/components/backbone/registry.yaml`` holds one contract per backbone; the
+    per-backbone component files only select one by name. That makes the backbone a
+    config variable -- ``--set model.backbone=ct_clip`` works from any run config,
+    because the registry travels with it -- while each contract still lives in exactly
+    one place. Explicit ``model`` keys always win, so a targeted override is still possible.
+
+    The registry itself is removed from the resolved config: it is inherited identically
+    everywhere, and leaving it in would make one backbone's contract change the config
+    hash of every experiment.
+    """
+    registry = config.pop("backbones", None)
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return config
+    name = str(model.get("backbone") or "").strip().lower().replace("-", "_")
+    if not name:
+        return config
+    model["backbone"] = name
+    if not isinstance(registry, Mapping):
+        return config
+    entry = registry.get(name)
+    if entry is None:
+        raise ConfigError(
+            f"unknown backbone {name!r}; the registry defines {sorted(registry)}"
+        )
+    if not isinstance(entry, Mapping):
+        raise ConfigError(f"backbone registry entry for {name!r} must be a mapping")
+    for key, value in entry.items():
+        if key == "display_name":
+            continue
+        model.setdefault(key, value)
+    display = str(entry.get("display_name") or name)
+    lineage = config.setdefault("lineage", {})
+    if isinstance(lineage, dict):
+        # The selected backbone is authoritative: a swapped backbone must never inherit
+        # the previous backbone's name into its checkpoint lineage.
+        lineage["backbone"] = display
+    return config
+
+
+def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
+    """Turn ``encoder.init_source`` into the concrete checkpoint the stage will load.
+
+    Diagnosis, prognosis, the probes and the ROI students all consume an image encoder.
+    Which weights that encoder starts from is an experiment variable, not a code path:
+    one task model, four possible initializations.
+
+        encoder:
+          backbone: ct_fm          # selects the registry entry (same key as model.backbone)
+          init_source: pretrained | dapt | c0 | silver
+          checkpoint: <explicit path, or null to use encoder.sources[init_source]>
+
+    ``pretrained`` loads the public weights through the backbone contract and transfers
+    nothing; the other three transfer ``lineage.transfer_modules`` out of a project
+    checkpoint. Either way the model built afterwards is the same model.
+    """
+    encoder = config.get("encoder")
+    if not isinstance(encoder, dict):
+        return config
+    raw = str(encoder.get("init_source") or "").strip().lower().replace("-", "_")
+    if not raw:
+        return config
+    source = _ENCODER_INIT_ALIASES.get(raw, raw)
+    if source not in ENCODER_INIT_SOURCES:
+        raise ConfigError(
+            f"encoder.init_source must be one of {ENCODER_INIT_SOURCES}; got {raw!r}"
+        )
+    encoder["init_source"] = source
+    lineage_block = config.setdefault("lineage", {})
+    if isinstance(lineage_block, dict):
+        # Recorded in every checkpoint and every result, so a number always says which
+        # kind of weights the encoder started from.
+        lineage_block["encoder_init_source"] = source
+
+    backbone = str(encoder.get("backbone") or "").strip().lower().replace("-", "_")
+    if backbone:
+        model = config.setdefault("model", {})
+        if isinstance(model, dict):
+            model["backbone"] = backbone
+
+    sources = dict(encoder.get("sources") or {})
+    unknown = sorted(set(sources) - set(ENCODER_INIT_SOURCES))
+    if unknown:
+        raise ConfigError("unknown encoder.sources key(s): " + ", ".join(unknown))
+    explicit = encoder.get("checkpoint") not in (None, "")
+    checkpoint = encoder.get("checkpoint") or sources.get(source)
+    checkpoint = str(checkpoint).strip() if checkpoint not in (None, "") else None
+    if checkpoint and not explicit and source != "pretrained":
+        # encoder.sources holds the canonical run of each adaptation stage, and that run
+        # belongs to one backbone. Silently handing a CT-FM DAPT checkpoint to a TotalFM
+        # experiment would produce a number nobody could interpret.
+        baseline = str((config.get("experiment") or {}).get("baseline_backbone") or "").strip()
+        selected = str((config.get("model") or {}).get("backbone") or "").strip()
+        if baseline and selected and selected != baseline:
+            raise ConfigError(
+                f"encoder.init_source={source} would load the default {baseline} checkpoint "
+                f"into a {selected} run. Point encoder.checkpoint at the {selected} "
+                f"{source} checkpoint (and set encoder.source_experiment to match)."
+            )
+
+    lineage = config.setdefault("lineage", {})
+    if not isinstance(lineage, dict):
+        raise ConfigError("lineage must be a mapping")
+    model = config.setdefault("model", {})
+    if not isinstance(model, dict):
+        raise ConfigError("model must be a mapping")
+
+    if source == "pretrained":
+        if checkpoint:
+            raise ConfigError(
+                "encoder.init_source=pretrained loads the public backbone weights; "
+                "it must not also name an adapted checkpoint"
+            )
+        lineage["source_checkpoint"] = None
+        lineage["source_experiment"] = None
+        lineage["initialization"] = _ENCODER_INITIALIZATION[source]
+        lineage["dapt"] = "none"
+        lineage["alignment"] = False
+        model["load_pretrained"] = True
+    else:
+        if not checkpoint:
+            raise ConfigError(
+                f"encoder.init_source={source} needs a checkpoint: set encoder.checkpoint "
+                f"or encoder.sources.{source}"
+            )
+        lineage["source_checkpoint"] = checkpoint
+        lineage["initialization"] = _ENCODER_INITIALIZATION[source]
+        experiments = dict(encoder.get("source_experiments") or {})
+        lineage["source_experiment"] = encoder.get("source_experiment") or experiments.get(source)
+        lineage.setdefault("transfer_modules", ["image_encoder"])
+        lineage["alignment"] = source in {"c0", "silver"}
+        if encoder.get("dapt_method"):
+            lineage["dapt"] = encoder["dapt_method"]
+        if source == "silver":
+            # Distinct from lineage.silver_source, which names the silver labels a task is
+            # *supervised* with. This one names the silver source the encoder was adapted on.
+            lineage["encoder_silver_source"] = encoder.get("silver_source")
+        model.setdefault("load_pretrained", False)
+        stage = str((config.get("experiment") or {}).get("stage") or "")
+        if stage == "silver_encoder_adaptation":
+            # This stage reads its starting encoder from init.checkpoint, not from lineage.
+            initialization = config.setdefault("init", {})
+            if isinstance(initialization, dict):
+                initialization["checkpoint"] = checkpoint
+                initialization.setdefault("experiment", lineage.get("source_experiment"))
+    return config
+
+
+def stamp_experiment_variant(config: dict[str, Any]) -> dict[str, Any]:
+    """Give every (dataset, backbone, encoder-initialization) combination its own run id.
+
+    Two runs that differ only in which weights the encoder started from are different
+    experiments and must not overwrite each other's output directory. Each backbone and
+    encoder component records its own baseline; only a deviation from that baseline is
+    stamped, so a config left at its defaults keeps exactly the id it has today.
+
+        DX_anatomy_concat                     baseline
+        DX_anatomy_concat__enc_dapt           same model, DAPT initialization
+        DX_anatomy_concat__ds_test_500_sample__bb_ct_clip__enc_silver
+    """
+    experiment = config.get("experiment")
+    if not isinstance(experiment, dict) or experiment.get("variant_stamp") is False:
+        return config
+    identifier = str(experiment.get("id") or "").strip()
+    if not identifier:
+        return config
+    parts: list[str] = []
+
+    profile = str((config.get("data") or {}).get("profile") or "").strip()
+    if profile and profile != str(experiment.get("baseline_dataset") or DEFAULT_DATASET_PROFILE):
+        parts.append(f"ds_{profile}")
+
+    baseline_backbone = str(experiment.get("baseline_backbone") or "").strip()
+    backbone = str((config.get("model") or {}).get("backbone") or "").strip()
+    if baseline_backbone and backbone and backbone != baseline_backbone:
+        parts.append(f"bb_{backbone}")
+
+    baseline_init = str(experiment.get("baseline_init") or "").strip()
+    init_source = str((config.get("encoder") or {}).get("init_source") or "").strip()
+    if baseline_init and init_source and init_source != baseline_init:
+        parts.append(f"enc_{init_source}")
+
+    for part in parts:
+        suffix = f"__{part}"
+        if suffix not in identifier:
+            identifier += suffix
+    experiment["id"] = identifier
+    return config
+
+
 def validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(dict(config))
     experiment = result.get("experiment")
     if not isinstance(experiment, dict):
         raise ConfigError("experiment mapping is required")
-    experiment_id = str(experiment.get("id") or "").strip()
     stage = str(experiment.get("stage") or "").strip().lower()
     if stage not in _STAGE_PREFIXES:
         raise ConfigError(f"unsupported experiment stage: {stage!r}")
-    if not experiment_id or not any(experiment_id.startswith(prefix) for prefix in _STAGE_PREFIXES[stage]):
-        raise ConfigError(f"experiment id {experiment_id!r} does not match stage {stage!r}")
     mode = str((result.get("data") or {}).get("mode") or "").lower()
     if mode != "full":
         raise ConfigError("data.mode must be full; use CLI patient selection for small runs")
     data = result.setdefault("data", {})
     if not isinstance(data, dict):
         raise ConfigError("data must be a mapping")
-    data.setdefault("dataset", "unspecified")
+    # Which cohort this run reads. data.mode stays "full" -- it means "full-data code
+    # path", never a pilot shortcut; the cohort size is the dataset profile's business.
+    data.setdefault("profile", DEFAULT_DATASET_PROFILE)
+    profile = str(data.get("profile") or "").strip()
+    if profile not in active_dataset_profiles():
+        raise ConfigError(
+            f"data.profile must be one of {active_dataset_profiles()}; got {profile!r}"
+        )
+    data["profile"] = profile
+    result = resolve_backbone(result)
+    result = resolve_encoder_initialization(result)
+    result = stamp_experiment_variant(result)
+    experiment = result["experiment"]
+    data = result["data"]
+    experiment_id = str(experiment.get("id") or "").strip()
+    if not experiment_id or not any(experiment_id.startswith(prefix) for prefix in _STAGE_PREFIXES[stage]):
+        raise ConfigError(f"experiment id {experiment_id!r} does not match stage {stage!r}")
+    # The cohort a checkpoint was trained/adapted on is part of its lineage, so it
+    # defaults to the dataset profile rather than to a placeholder.
+    data.setdefault("dataset", profile)
     data.setdefault("cohort", "unspecified")
     data.setdefault("patient_id_column", "patient_id")
     data.setdefault("study_id_column", "study_id")

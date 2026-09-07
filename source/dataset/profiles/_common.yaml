@@ -1,0 +1,81 @@
+# Shared cohort contract for every active dataset profile.
+#
+# THIS FILE IS THE REASON test_500_sample AND full_inspect ARE COMPARABLE.
+# Filtering, CT integrity, label adjudication, manifest construction and volume
+# preprocessing are defined once, here. A profile may add a `sampling` block; a profile
+# that changes anything below makes its results incomparable with the other profile, and
+# `source.dataset.assert_shared_preprocessing()` will refuse it.
+
+source:
+  # <raw_inspect>/<modality>/<release>; the raw release is READ-ONLY.
+  modality: CT
+  release: full
+  volume_suffix: .nii.gz
+
+governance:
+  # Repeatable CSV/TSV of person_id / patient_id to drop before any study-level rule,
+  # so a governance-excluded patient is never partially present.
+  exclude_patients_from: []
+
+eligibility:
+  # Set false for a metadata-only pass when the volumes are not mounted.
+  check_files: true
+  rules:
+    require_ct_file: true
+    require_report: true
+    require_labels: true
+    require_series_metadata: true
+    # The EHR crosswalk is required by the prognosis arms, not by the cohort itself.
+    require_ehr_crosswalk: false
+    allowed_modalities: [CT]
+    # Noise removal. Thresholds are configuration, not constants: these defaults come
+    # from the /mnt/pe_study readiness buckets (num_slices <=1, SliceThickness >3mm,
+    # PixelSpacing >1mm were the review buckets) widened to the acquisition limits that
+    # are indefensible rather than merely unusual. Every drop lands in exclusions.csv.
+    minimum_slices: 2
+    maximum_slices: null
+    minimum_slice_thickness_mm: null
+    maximum_slice_thickness_mm: 5.0
+    minimum_pixel_spacing_mm: null
+    maximum_pixel_spacing_mm: 2.0
+
+integrity:
+  # path   file exists and is non-trivially sized      (metadata speed)
+  # header NIfTI header parses, plausible 3-D geometry  (default; ~ms per study)
+  # volume voxels decode and are finite                 (slow; opt in for a full audit)
+  level: header
+  limit: null
+  minimum_slices: 2
+
+adjudication:
+  # Reduced per patient with TRUE > CENSORED > FALSE > MISSING precedence.
+  columns:
+    - pe_positive_nlp
+    - pe_acute
+    - pe_subsegmentalonly
+    - 1_month_mortality
+
+manifests:
+  # INSPECT column -> project target. Only native labels appear here; every richer
+  # attribute is silver-derived (SL00/SL01/SL02) and is never invented at build time.
+  label_map:
+    pe_positive_nlp: pe_present
+    pe_acute: pe_acute
+    pe_subsegmentalonly: pe_subsegmental_only
+  prognosis_label: 1_month_mortality
+  prognosis_conditions:
+    pe_positive_nlp: TRUE
+    pe_acute: TRUE
+  include_report_text: true
+
+preprocessing:
+  # IDENTICAL FOR BOTH PROFILES. Changing anything here invalidates every cached volume
+  # and every checkpoint trained on them; the fingerprint is stamped into dataset.json.
+  target_shape: [128, 128, 128]
+  clip_min_hu: -1000.0
+  clip_max_hu: 1000.0
+  normalize: minmax
+  dtype: float32
+  orientation: RAS
+  resample_spacing_mm: null
+  output_format: npy

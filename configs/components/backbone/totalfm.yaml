@@ -1,8 +1,11 @@
+# Select the totalfm entry of the shared backbone registry.
+#
+# The contract itself lives in registry.yaml; this file only says which one to use, and
+# records that choice as the run's baseline so that overriding `model.backbone` gives the
+# run its own output directory instead of overwriting this one.
+_base_:
+  - registry.yaml
 model:
   backbone: totalfm
-  repo: third_party/repos/TotalFM
-  checkpoint: third_party/weights/foundation/totalfm/totalfm_en_checkpoint_best_loss.pt
-  factory: ""
-  output_adapter: ""
-  feature_dim: 0
-  strict_load: true
+experiment:
+  baseline_backbone: totalfm

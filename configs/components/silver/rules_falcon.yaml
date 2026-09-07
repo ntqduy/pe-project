@@ -1,11 +1,13 @@
 silver:
   method: SL01
-  reports: reports.parquet
+  # Written by data.dataset.<profile> as CSV; read_rows also accepts .parquet/.jsonl.
+  reports: reports.csv
   confidence_threshold: 0.8
   falcon:
     provider: falcon
-    model_path: third_party/weights/silver/falcon
-    model_id: null
+    model_path: third_party/weights/falcon-7b
+    # Exact revision and architecture: third_party/versions.yaml (components.falcon).
+    model_id: tiiuae/falcon-7b
     provider_factory: source.silver.providers:build_transformers_provider
     provider_kwargs:
       auto_model_class: AutoModelForCausalLM

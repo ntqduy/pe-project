@@ -4,7 +4,8 @@
 configs/
 ├── experiments.yaml    the registry: semantic name -> config, question, requirements, status
 ├── components/         reusable fragments; never run directly
-│   ├── backbone/         CT-FM / CT-CLIP / TotalFM integration contracts
+│   ├── backbone/         registry.yaml holds all three contracts; ct_fm/ct_clip/totalfm select one
+│   ├── encoder/          which checkpoint the encoder starts from (pretrained/dapt/c0/silver)
 │   ├── dapt/             self-supervised objectives (none, MAE, DINO, SimCLR, anatomy)
 │   ├── alignment/        image-report objective
 │   ├── task/             task and cohort contracts (diagnosis, prognosis, organ silver
@@ -14,7 +15,7 @@ configs/
 │   ├── silver/           SL00 / SL01 / SL02 provider settings
 │   └── training/         optimization + evaluation contracts per family, incl. the probe
 ├── runs/               one file per runnable experiment
-│   ├── 00_data/           segmentation, ROI, silver generation
+│   ├── 00_data/           dataset build, segmentation, ROI, silver generation
 │   ├── 01_foundation/     frozen public-encoder probes + the zero-shot contract
 │   ├── 02_representation/ DAPT, alignment, probes, RSPECT transfer, silver adaptation
 │   ├── 03_diagnosis/      baseline/ and anatomy/
@@ -22,7 +23,6 @@ configs/
 │   ├── 05_anatomy_analysis/ counterfactual/ and students/{gt,kd}/
 │   └── 90_deferred/       contour, concept bottleneck
 ├── compute/            GPU default or CPU
-├── parallel/           batch scheduler (not an experiment config)
 ├── paths.yaml          data/output roots
 ```
 
@@ -93,23 +93,73 @@ Never reuse one id for two scientific configurations.
 If the change is large enough to be a different scientific experiment, write a new run config
 rather than a long chain of `--set` overrides that nobody can trace.
 
+## The three config variables that make experiments comparable
+
+### `data.profile` — which cohort
+
+`test_500_sample` or `full_inspect`. Both are built by the same code from the same rules
+(`source/dataset/profiles/`); only sampling differs. Defaults to `full_inspect` when a config
+does not say. Manifest paths resolve under
+`${PE_CLOUD_ROOT}/data/derived/datasets/<profile>/`, so the two cohorts never mix.
+
+### `model.backbone` — which encoder architecture
+
+`configs/components/backbone/registry.yaml` holds one contract per backbone (repo, checkpoint,
+factory, output adapter, feature dim). The per-backbone files only *select* one, and carry the
+registry with them, so `--set model.backbone=ct_clip` works from any run config. The registry
+is dropped from the resolved config, so editing one backbone's contract does not change every
+other experiment's config hash.
+
+### `encoder.init_source` — which weights the encoder starts from
+
+`pretrained` | `dapt` | `c0` | `silver`. The resolver turns that into
+`lineage.source_checkpoint` (or `init.checkpoint` for the silver-adaptation stage),
+`lineage.initialization`, `lineage.dapt`, `lineage.alignment` and
+`lineage.encoder_init_source`. The task model itself never changes — that is the point.
+
+```bash
+python run.py run diag.anatomy.concat --gpus 0 --set encoder.init_source=dapt
+```
+
+Defaults come from `components/encoder/sources.yaml`, which points at the canonical run of
+each stage. Any other checkpoint is named explicitly with `encoder.checkpoint` +
+`encoder.source_experiment`; switching `model.backbone` without doing so is refused, because
+the default DAPT/C0/C_silver checkpoints belong to one backbone.
+
+### Run ids are stamped, so nothing collides
+
+Each of the three variables records its baseline in the component that sets it
+(`experiment.baseline_dataset` / `baseline_backbone` / `baseline_init`). Only a deviation is
+appended to `experiment.id`:
+
+```text
+DX_anatomy_concat                                              baseline
+DX_anatomy_concat__enc_dapt                                    DAPT initialization
+DX_anatomy_concat__ds_test_500_sample__bb_ct_clip__enc_silver  all three changed
+```
+
+A config left at its defaults keeps exactly the id it had before. Set
+`experiment.variant_stamp: false` to opt out, and then own the collision yourself.
+
 ## Small overrides
 
 ```bash
-python run.py run probe.diag --gpus 0 \
-  --set lineage.source_checkpoint='${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt' \
-  --set experiment.id=DX_probe_diagnosis_dapt_dino
+python run.py run probe.diag --gpus 0 --set encoder.init_source=dapt
 ```
 
 Overrides are applied before environment expansion, so `${PE_CLOUD_ROOT}` works inside them.
-When overriding a checkpoint, always override `experiment.id` too, otherwise two different
-runs write to the same directory.
+Overriding `data.profile`, `model.backbone` or `encoder.init_source` stamps the run id for
+you. Overriding `lineage.source_checkpoint` directly does not — if you go around the encoder
+resolver, override `experiment.id` yourself or two runs will write to the same directory.
 
 ## Compute
 
 `compute/default.yaml` is one GPU (`strategy: auto`, `devices: [0]`); `--gpus` overrides
-devices/strategy/accelerator. `compute/cpu.yaml` is for ROI construction, which parallelizes
-via `roi.workers` rather than DDP.
+devices/strategy/accelerator. `compute/cpu.yaml` is for the dataset build and for ROI
+construction, which parallelize over CPU workers rather than DDP.
+
+A batch sweep across GPU groups is not a config in this tree: write a `parallel:` file
+wherever you like and pass it to `tools/launch_parallel.py` (schema in the root README).
 
 ## Unresolved contracts
 

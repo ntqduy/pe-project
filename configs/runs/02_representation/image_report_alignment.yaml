@@ -11,6 +11,7 @@ _base_:
   - ../../paths.yaml
   - ../../compute/default.yaml
   - ../../components/backbone/ct_fm.yaml
+  - ../../components/encoder/from_dapt.yaml
   - ../../components/alignment/image_report.yaml
   - ../../components/training/alignment.yaml
 experiment:
@@ -24,9 +25,4 @@ data:
   file_column: image_path
   label_columns: []
 lineage:
-  initialization: C_SSL
-  source_experiment: D_dapt_dino
-  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt
-  dapt: DINO
-  alignment: true
   supervision_type: image_report_alignment

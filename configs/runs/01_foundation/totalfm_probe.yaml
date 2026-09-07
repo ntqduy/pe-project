@@ -9,6 +9,7 @@ _base_:
   - ../../paths.yaml
   - ../../compute/default.yaml
   - ../../components/backbone/totalfm.yaml
+  - ../../components/encoder/from_pretrained.yaml
   - ../../components/task/diagnosis.yaml
   - ../../components/training/probe.yaml
 experiment:
@@ -34,13 +35,7 @@ task:
   silver_targets: []
   silver_loss_weight: 0.0
 lineage:
-  backbone: TotalFM
-  initialization: public
-  source_experiment: null
-  source_checkpoint: null
   transfer_modules: []
-  dapt: none
-  alignment: false
   supervision_type: native_labels
 supervision:
   require_masks: false

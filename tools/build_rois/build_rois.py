@@ -32,12 +32,20 @@ def main() -> int:
     )
     selection.add_argument("--max-cases", type=int, help="process the first N segmented studies")
     selection.add_argument("--allow-full", action="store_true", help="process the complete segmentation run")
+    parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="config override, repeatable; this is how the dataset profile is selected",
+    )
     parser.add_argument("--segmentation-run", type=Path, help="existing completed segmentation run")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     if args.max_cases is not None and args.max_cases < 1:
         raise SystemExit("--max-cases must be positive")
-    config = load_config(args.config)
+    config = load_config(args.config, args.overrides)
     config["overwrite"] = bool(args.overwrite)
     config["resume"] = not args.overwrite
     roi_config = dict(config.get("roi") or {})

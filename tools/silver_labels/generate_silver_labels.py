@@ -165,7 +165,7 @@ def main() -> int:
         method = str(silver_config.get("method") or experiment_id.split("_", 1)[0])
         report_path = Path(str(silver_config.get("reports") or ""))
         if not report_path.is_absolute():
-            report_path = paths.dataset_root(str(config["data"]["mode"])) / report_path
+            report_path = paths.dataset_root_for(config) / report_path
         reports = select_patient_rows(read_rows(report_path), args.patient_ids)
         if args.max_reports is not None:
             reports = reports[: args.max_reports]

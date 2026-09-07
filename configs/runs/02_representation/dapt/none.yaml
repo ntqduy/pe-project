@@ -8,6 +8,7 @@ _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
   - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/encoder/from_pretrained.yaml
   - ../../../components/dapt/none.yaml
 experiment:
   id: D_dapt_none
@@ -20,7 +21,6 @@ data:
   file_column: image_path
   label_columns: []
 lineage:
-  initialization: public
   supervision_type: none
 peft:
   method: frozen
