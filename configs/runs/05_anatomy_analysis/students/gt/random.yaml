@@ -23,11 +23,6 @@ experiment:
   stage: roi_student
   family: roi_student
 data:
-  mask_columns:
-    _replace_: true
-    heart: heart_mask_path
-    pa: pa_mask_path
-    lung: lung_mask_path
   roi_mask_ids: {random: ROI8}
   roi_control_for: {random: ROI4}
 task:

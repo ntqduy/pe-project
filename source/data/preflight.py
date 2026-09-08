@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import shutil
 from collections import Counter
@@ -310,6 +311,31 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     source_block.get("release") or "full"
                 )
             _exists(checks, "DATA", "inspect_release", release, True)
+            if release is not None:
+                for module in ("numpy", "nibabel", "pyarrow"):
+                    present = importlib.util.find_spec(module) is not None
+                    checks.append(
+                        Check(
+                            "DEPENDENCY",
+                            module,
+                            "PASS" if present else "FAIL",
+                            "installed" if present else "install requirements.txt before building the dataset",
+                        )
+                    )
+                ehr_config = dict(profile.get("ehr") or {})
+                if bool(ehr_config.get("enabled", True)):
+                    archive = release / "EHR" / str(ehr_config.get("archive") or "")
+                    _exists(checks, "DATA", "ehr_archive", archive, True)
+                    policy = Path(str(ehr_config.get("prohibited_config") or ""))
+                    if not policy.is_absolute():
+                        policy = paths.code_root / policy
+                    _exists(checks, "DATA", "ehr_prohibited_policy", policy, True)
+                pesi_config = dict(profile.get("pesi") or {})
+                if bool(pesi_config.get("enabled", True)):
+                    mapping = Path(str(pesi_config.get("mapping_config") or ""))
+                    if not mapping.is_absolute():
+                        mapping = paths.code_root / mapping
+                    _exists(checks, "DATA", "pesi_mapping_contract", mapping, True)
         except Exception as exc:  # noqa: BLE001 - report the contract failure, never crash
             checks.append(Check("DATA", "dataset_profile", "FAIL", f"{type(exc).__name__}: {exc}"))
     elif not manifest_path:
@@ -589,16 +615,28 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     Check("LINEAGE", "source_checkpoint_compatibility", "FAIL", str(exc))
                 )
     supervision = dict(config.get("supervision") or {})
-    for key in ("masks", "rois", "silver_labels", "ehr", "pesi"):
+    # masks / rois / silver_labels are produced by earlier stages under the output root;
+    # ehr / pesi are stage-0 artifacts inside the dataset profile. Relative values resolve
+    # against the right root so no supervision path has to be hard-coded.
+    supervision_roots = {
+        "masks": True, "rois": True, "silver_labels": True, "ehr": False, "pesi": False,
+    }
+    for key, in_output in supervision_roots.items():
         requested = bool(supervision.get(f"require_{key}", False))
         configured = supervision.get(key)
         if stage == "silver_encoder_adaptation" and key == "silver_labels":
             silver_training = dict(config.get("silver_training") or {})
             source = str(silver_training.get("silver_source") or "").upper()
             configured = dict(silver_training.get("sources") or {}).get(source)
-            configured = paths.output_asset(configured) if configured else None
             requested = True
-        _exists(checks, "SUPERVISION", key, Path(str(configured)) if configured else None, requested)
+        try:
+            configured = _artifact_path(
+                paths, configured, output=in_output, profile=data_config.get("profile")
+            )
+        except PathConfigurationError as exc:
+            checks.append(Check("SUPERVISION", key, "FAIL", str(exc)))
+            continue
+        _exists(checks, "SUPERVISION", key, configured, requested)
         if key == "silver_labels" and requested and configured and Path(str(configured)).is_file():
             try:
                 from source.silver.schema import TARGETS, canonical_target
@@ -755,6 +793,40 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     f"manifest_columns={count} encoder_input_dim={expected}",
                 )
             )
+            score_columns = tuple(data_config.get("pesi_columns") or ())
+            status_path = paths.dataset_root_for(config) / "clinical" / "pesi_status.json"
+            status: dict[str, Any] = {}
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                checks.append(Check("DATA", "pesi_readiness", "FAIL", f"{status_path}: {exc}"))
+            else:
+                valid_by_split: Counter[str] = Counter()
+                invalid_values = 0
+                for row in manifest_rows or []:
+                    try:
+                        values = [float(row.get(column) or "nan") for column in score_columns]
+                        valid = all(value == value and value not in {float("inf"), float("-inf")} for value in values)
+                    except (TypeError, ValueError):
+                        valid = False
+                    if valid:
+                        valid_by_split[str(row.get("split") or "")] += 1
+                    else:
+                        invalid_values += 1
+                required_splits = ("train", "validation", "test")
+                coverage_ok = all(valid_by_split[split] > 0 for split in required_splits)
+                status_ok = status.get("status") == "built"
+                checks.append(
+                    Check(
+                        "DATA",
+                        "pesi_readiness",
+                        "PASS" if status_ok and coverage_ok else "FAIL",
+                        f"status={status.get('status', 'missing')}; "
+                        f"valid_by_split={dict(sorted(valid_by_split.items()))}; "
+                        f"invalid_or_missing_rows={invalid_values}; "
+                        f"reason={status.get('reason', '')}",
+                    )
+                )
         ehr_full = list(dict.fromkeys(data_config.get("ehr_columns_full") or ()))
         ehr_common = list(dict.fromkeys(data_config.get("ehr_columns_common") or ()))
         if ehr_full or ehr_common:

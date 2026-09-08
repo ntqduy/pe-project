@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import torch
 from torch import Tensor, nn
 
 from .preprocessing import ClinicalPreprocessor
@@ -50,7 +51,7 @@ class ClinicalEncoder(nn.Module):
     def forward(self, values: Tensor, missing: Tensor | None = None) -> Tensor:
         normalized, missing_mask = self.preprocessor(values, missing)
         inputs = (
-            __import__("torch").cat((normalized, missing_mask.to(normalized.dtype)), dim=1)
+            torch.cat((normalized, missing_mask.to(normalized.dtype)), dim=1)
             if self.include_missingness
             else normalized
         )

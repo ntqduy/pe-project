@@ -1,182 +1,114 @@
-# Blockers
+# Blockers — the contracts that are deliberately empty
 
-Every unresolved real-data or checkpoint contract in one place. These are deliberate: the
-configs refuse to guess a column name, a feature dimension or a checkpoint factory, so
-preflight fails loudly instead of producing a number nobody can trust.
+Every entry below is a data or checkpoint contract that **must be filled in from a real,
+inspected artifact**. They are left empty on purpose so `run.py preflight` fails loudly
+instead of a guessed value silently producing a number nobody can defend.
 
-Nothing here is a code bug. Each item needs a decision or an artifact from outside the repo.
+`configs/experiments.yaml` is the machine-readable source: each experiment lists the
+blocker id it waits on, and `project_blockers` at the top of that file carries the two
+project-wide ones. This page explains what filling one in actually means.
 
-`python run.py plan <experiment>` marks a requirement `BLOCKED` when it maps to one of these,
-and `MISSING` when the artifact simply has not been produced yet.
+| id | where | blocks |
+|---|---|---|
+| `backbone_contract` | `configs/components/backbone/registry.yaml` | every image experiment |
+| `segmentation_backend` | `third_party/`, `configs/runs/00_data/segmentation.yaml` | `data.segmentation`, therefore `data.roi` and every anatomy-aware arm |
+| `silver_model_weights` | `third_party/weights/`, `configs/components/silver/*.yaml` | `data.silver.*`, therefore every silver-supervised arm |
+| `report_embedding_columns` | `configs/components/alignment/image_report.yaml` | `repr.align`, `diag.report_only` |
+| `ehr_columns` | `configs/components/task/prognosis_primary_cohort.yaml` | every prognosis arm with `ehr` |
+| `pesi_clinical_approval` | `configs/clinical/pesi_spesi_mapping.yaml` | every prognosis arm with `pesi` |
+| `native_attribute_columns` | `configs/runs/03_diagnosis/baseline/global_native_multitask.yaml` | `diag.global.native_multitask` |
+| `rspect_manifest` | `configs/runs/02_representation/rspect/*.yaml` | the external RSPECT transfer side branch |
+| `concept_targets` | `configs/runs/90_deferred/concept_bottleneck/prognosis.yaml` | deferred, disabled on purpose |
+| `zero_shot_contract` | `configs/runs/01_foundation/ct_clip_zero_shot.yaml` | unavailable by design, documented not implemented |
 
-## 1. Public encoder contracts — blocks every image experiment
+---
 
-**Where:** `configs/components/backbone/registry.yaml` (one entry per backbone)
-**State:** `factory: ""`, `output_adapter: ""`, `feature_dim: 0` for all three
-**Also:** `third_party/repos/{CT-FM,CT-CLIP,TotalFM}` are empty directories and
-`third_party/weights/foundation/` does not exist. Neither the code nor the weights are here.
+## 1. `backbone_contract`
 
-Each registry entry needs, from the actual inspected checkpoint:
+`factory`, `output_adapter` and `feature_dim` are empty (`feature_dim: 0`) for **all three**
+public encoders in `configs/components/backbone/registry.yaml`. They must be read off the
+checkpoint you actually staged:
 
-- `factory` — import path that builds the model
-- `output_adapter` — import path mapping upstream output to `ImageFeatures`
-  (5-D `feature_map`, 2-D `global_embedding`)
-- `feature_dim` — the real channel count of that feature map
-- the weights staged locally under `third_party/weights/foundation/<backbone>/`
-- SHA-256 and exact commit/revision recorded in `third_party/versions.yaml`
+* `factory` — the import path that constructs the encoder module.
+* `output_adapter` — how that module's output becomes a `[B, C, D, H, W]` feature map.
+* `feature_dim` — `C` of that feature map. `source/components/anatomy.py` compares it with
+  the observed channel count and raises if they disagree, so a wrong value fails fast.
 
-Do not copy values between backbones and do not infer them from repository names. The
-registry keeps the three contracts side by side precisely so a wrong value is visible. TotalFM is
-organ-patch based upstream, so its whole-volume pooling behaviour must be verified before its
-probe means anything.
+Never copy a value between backbones, and never infer one from a repository name. The
+`third_party/repos/{CT-FM,CT-CLIP,TotalFM}` clones are also still empty — see
+[`third_party/versions.yaml`](../third_party/versions.yaml) for the pinned commits.
 
-**Unblocks:** every foundation probe, every DAPT arm, alignment, both fixed probes, all
-diagnosis and prognosis image arms, and everything downstream of them.
+## 2. `segmentation_backend`
 
-## 2. INSPECT manifests and the patient-level split — RESOLVED as a contract, not yet built
+`third_party/repos/TotalSegmentator` and `third_party/repos/lungmask` are empty clones and
+the offline task weights under `third_party/weights/segmentation/` are absent. Without them
+`data.segmentation` cannot run, so `data.roi` cannot run, so no anatomy-aware arm has masks.
 
-**Where:** `${PE_CLOUD_ROOT}/data/derived/datasets/<profile>/manifests/`
-**Produced by:** `data.dataset.full_inspect` / `data.dataset.test_500_sample`
+This is the longest dependency chain in the repository:
 
-This is no longer a manual step. `source/data_preprocessing` reads the read-only release,
-applies the shared eligibility/QC contract and writes `ctpa.csv`, `diagnosis.csv`,
-`prognosis.csv`, `paired_reports.csv` and `reports.csv` with `patient_id`, `study_id`,
-`split`, `image_path`.
-
-**The split is not created — it is preserved.** INSPECT's official `train/valid/test`
-assignment is carried through unchanged (`valid` is renamed to `validation` to match the
-project schema), and `split_audit.json` fails the build if any patient crosses a split or
-any study's split differs from the release.
-
-```bash
-DATASET=full_inspect ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh
+```text
+data.dataset.<profile> -> data.segmentation -> data.roi -> diag.anatomy.* / prog.anatomy.*
+                                                        -> anatomy.remove_* / anatomy.*_student*
 ```
 
-`tools/data/create_split.py` remains for cohorts that arrive with no split of their own
-(the external RSPECT cohort, §8). It is never invoked implicitly, and the test split is
-never used to select checkpoints or thresholds.
+## 3. `silver_model_weights`
 
-**Still outstanding:** the datasets have not been built yet, so every downstream `plan`
-reports MISSING until one of the two profiles has been run.
+MedGemma and Falcon ids and revisions are recorded, and Falcon weights are staged under
+`third_party/weights/falcon-7b/`. Confirm both providers load before running `data.silver.*`;
+`SL02` loads **both** models on every rank.
 
-## 3. Native auxiliary label columns
+## 4. `report_embedding_columns`
 
-**Where:** `configs/runs/03_diagnosis/baseline/global_native_multitask.yaml`,
-`configs/runs/02_representation/rspect/multitask.yaml`
+`alignment.report_embedding_columns` is `[]`. It must name real numeric columns present in
+`manifests/paired_reports.csv`, produced by whichever report encoder you commit to.
+`repr.align` (C0) and the `diag.report_only` text baseline both fail preflight until then.
 
-Each native attribute column (`acuity`, `central`, `lobar`, `segmental`, `subsegmental`,
-`saddle`, `rv_enlargement`, `rv_lv_abnormal`, `septal_bowing`, `reflux`, `pleural_effusion`,
-`pericardial_effusion`, `chronic_lung_disease`) must be confirmed present in the real manifest
-with its class encoding checked — `acuity` in particular is declared as 4-class. Rows without
-a label are masked out of the loss; a missing target is never synthesized.
+## 5. `ehr_columns`
 
-## 4. Report embedding columns
+`data.ehr_columns` is `[]` and `task.ehr_input_dim` is 32, and preflight fails unless
+`len(ehr_columns) == ehr_input_dim`. The candidate columns are the ones stage 0 writes to
+`clinical/ehr_features.csv` and merges into the manifests. Choosing 32 of them is a
+scientific decision; `data.ehr_columns_full` / `data.ehr_columns_common` record the full set
+and the high-availability subset, and preflight checks that common is a subset of full.
 
-**Where:** `configs/components/alignment/image_report.yaml` (`report_embedding_columns: []`)
+## 6. `pesi_clinical_approval`
 
-Blocks `repr.align` (and therefore C0 and everything after it) and `diag.report_only`. The
-columns must be precomputed report embeddings present in the manifest; no text encoder runs
-inside these stages.
+Stage 0 always writes `clinical/pesi_status.json` and `clinical/pesi_mapping_audit.json`.
+It writes `clinical/pesi_features.csv` **only** when both of these hold:
 
-## 5. Prognosis cohort, EHR and PESI contract
+1. `configs/clinical/pesi_spesi_mapping.yaml` has `clinical_approval.status: approved` and
+   all eleven components at `status: approved`; and
+2. `pesi.components_table` in the profile points at an approved study-level CSV with a
+   `study_id` column plus each component's `input_column`.
 
-**Where:** `configs/components/task/prognosis_primary_cohort.yaml`
+Today the mapping is `pending`: there are candidates for birth/sex, heart rate, respiratory
+rate, temperature and oxygen saturation, but no verified systolic-BP source, no approved
+cancer / heart-failure / chronic-lung / altered-mental-status phenotype, and no unit or
+pre-CTPA window review. So a default build ends normally with
+`clinical/pesi_status.json: blocked` and no score is fabricated.
 
-- `ehr_columns` — the EHR variables fed to the clinical encoder. Preflight fails unless the
-  count equals `task.ehr_input_dim` (currently 32).
-- `ehr_columns_full` — every configured EHR variable.
-- `ehr_columns_common` — the dataset-defined high-availability subset; preflight fails if it
-  is not a subset of `ehr_columns_full`.
-- `pesi_columns` — `[pesi, spesi]` is the historical contract; confirm both exist.
-- The `confirmed_acute_pe` cohort manifest itself, with 30-day mortality.
-- An acquisition-date column, only if temporal hold-out is ever wanted; leave
-  `evaluation.split_strategy: patient_holdout` until such a column is verified.
+## 7. `native_attribute_columns`
 
-Fill these once here and all thirteen prognosis arms pick them up.
+`diag.global.native_multitask` trains on thirteen native attribute columns beyond
+`pe_present`. Each column name and its class encoding must be verified against the built
+manifest before the arm is meaningful. Unlabelled rows are masked out of the loss; they are
+never turned into zeros.
 
-## 6. Silver-label model weights — mostly resolved
+## 8. `rspect_manifest`, `concept_targets`, `zero_shot_contract`
 
-**Where:** `third_party/weights/falcon-7b/`, `third_party/weights/medgemma/`
+* **RSPECT** — the external transfer branch needs its own manifest with the project column
+  schema, including the `*_mask_path` columns its configs name. Nothing downstream depends
+  on it.
+* **Concept bottleneck** — deferred and disabled. Every concept must point at a real
+  reviewed column before `concept_bottleneck.enabled` may become `true`.
+* **CT-CLIP zero-shot** — documented as `unavailable` on purpose. The public checkpoints
+  carry no PE head, so the `pretrained_eval` arms fit a fixed linear probe; that is a probe,
+  not zero-shot classification, and must never be reported as one.
 
-Both are staged as complete local Hugging Face directories and the configs now point at
-them. Verified from the files on disk, not inferred:
+---
 
-| model | id | revision | architecture |
-|---|---|---|---|
-| Falcon | `tiiuae/falcon-7b` | `8782b5c5d8c9290412416618f36a133653e85285` | `FalconForCausalLM` |
-| MedGemma | `google/medgemma-1.5-4b-it` | `91850547d9f0b2fdd21aa7c5f4f3d1a8a52c243b` | `Gemma3ForConditionalGeneration` |
+## What is *not* a blocker
 
-MedGemma 1.5 is an image-text-to-text checkpoint, so `auto_model_class` is
-`AutoModelForImageTextToText`; `AutoModelForCausalLM` does not resolve
-`Gemma3ForConditionalGeneration`. Report mining is text-only, so `AutoTokenizer` stays.
-
-**Still outstanding:** per-shard SHA-256 is unrecorded in `third_party/versions.yaml`
-(`checksum_sha256: null`), and neither model has been loaded once to confirm the JSON
-response contract. SL02 loads both on every GPU rank — check VRAM before a full run.
-
-## 7. Segmentation backend
-
-**Where:** `configs/runs/00_data/segmentation.yaml`
-
-**Only TotalSegmentator + LungMask are supported.** There is no `SEG02`, no segmentation
-fine-tuning and no supervised segmentation training arm, because there are no expert masks
-(see §11). TotalSegmentator produces the canonical pseudo-anatomy masks; LungMask is an
-independent lung cross-check and never replaces a mask.
-
-Needs the pinned TotalSegmentator package installed and its task weights staged offline under
-`third_party/weights/segmentation/totalsegmentator/`, plus the LungMask CLI and its exact
-`R231.pth` checkpoint. TotalSegmentator is the canonical mask source; a low LungMask Dice flags
-a case for review but never replaces the mask.
-
-## 8. External RSPECT / RSNA-STR cohort
-
-**Where:** `configs/runs/02_representation/rspect/single_task.yaml` and `multitask.yaml`
-(`manifests/rsna_diagnosis.csv`)
-
-A historical placeholder, not a verified contract. Confirm the real external manifest, its
-patient-level split, and how its labels map onto this project's target names before running
-either arm. Both are optional side branches.
-
-## 9. CT-CLIP zero-shot
-
-**Where:** `configs/runs/01_foundation/ct_clip_zero_shot.yaml` (status `unavailable`)
-
-Needs all four of: an inspected text tower and tokenizer contract; a reviewed PE prompt set
-frozen before evaluation; an explicit similarity-to-probability definition with a calibration
-split; and a zero-shot evaluation entrypoint. Foundation materialization loads and profiles an
-encoder — it does not classify, and must not be presented as a zero-shot result. Preflight
-fails on `zero_shot.available` and `run.py` refuses to launch this arm.
-
-## 10. Concept-bottleneck targets
-
-**Where:** `configs/runs/90_deferred/concept_bottleneck/prognosis.yaml`
-(`concept_bottleneck.enabled: false`)
-
-Every enabled concept needs a real native / validated-silver / expert-reviewed column that is
-also listed in `data.label_columns`. Embolic burden and vascular pruning are intentionally
-absent: this dataset has no defensible target for either, and a bottleneck built on proxies
-produces confident explanations of nothing.
-
-## 11. Expert-validated CTPA segmentation
-
-`data.segmentation` produces **public-model pseudo-anatomy**, not expert-validated CTPA
-segmentation. A CTPA-specific fine-tuning/validation contract needs expert-reviewed
-annotations, an inspected model/trainer factory and a frozen evaluation checkpoint; none
-exist, so there is deliberately no such experiment in the active pipeline. Before adding one,
-supply: an expert-reviewed annotation manifest, an inspected model/trainer factory and output
-adapter, a public initialization checkpoint, and tuning restricted to train + validation.
-`source/data/preflight.py` already validates that contract under the
-`segmentation_validation` stage, and fails while any part of it is missing.
-
-## What is deliberately absent
-
-- No `tests/` directory and no pytest workflow in this repository yet.
-- No `SEG02`, no segmentation fine-tuning, no supervised segmentation training.
-- No per-model diagnosis code (`diagnosis_pretrained_model.py` and friends): the encoder
-  checkpoint is a config variable, so one model serves every initialization.
-- No batch/step limit for training stages. A training arm's scope is its dataset profile;
-  inventing a `--max-cases` for it would create a pilot-only code path.
-- No embolic-burden or vascular-pruning target.
-- No zero-shot arm for CT-FM or TotalFM: they are image-only encoders.
-- No implicit split creation, no test-split model selection, no fabricated labels, and silver
-  labels are never treated as gold evaluation labels.
+The dataset stage. `data.dataset.smoke_30`, `data.dataset.test_500_sample` and
+`data.dataset.full_inspect` are `ready` and need only `numpy`, `nibabel`, `pyarrow` and the
+read-only release. Build one first — every other stage reads its manifests.

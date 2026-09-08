@@ -9,10 +9,13 @@ data:
   manifest: manifests/diagnosis.csv
   file_column: image_path
   label_columns: [pe_present]
-  mask_columns:
-    heart: heart_mask_path
-    pa: pa_mask_path
-    lung: lung_mask_path
+  # Anatomy masks come from the stored ROI run, not from manifest columns; see
+  # components/data/anatomy_masks.yaml for the ROI ids and the reasoning.
+  roi_manifest: roi/ROI_anatomy_and_controls/manifest.parquet
+  roi_mask_ids:
+    heart: ROI2
+    pa: ROI4
+    lung: ROI6
 task:
   targets:
     _replace_: true
@@ -22,6 +25,8 @@ task:
   silver_loss_weight: 0.0
 supervision:
   require_masks: true
-  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  masks: segmentation/SEG_pseudo_anatomy
+  require_rois: true
+  rois: roi/ROI_anatomy_and_controls
   require_silver_labels: false
   silver_labels: null

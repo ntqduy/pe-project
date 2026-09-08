@@ -12,6 +12,7 @@ configs/
 │   │                     supervision, anatomy reference architecture, ROI students, ...)
 │   ├── fusion/           concat_mlp / late_logit / soft_moe
 │   ├── adapter/          per-branch organ adapters
+│   ├── data/             anatomy_masks.yaml: where the heart/PA/lung masks are read from
 │   ├── silver/           SL00 / SL01 / SL02 provider settings
 │   └── training/         optimization + evaluation contracts per family, incl. the probe
 ├── runs/               one file per runnable experiment
@@ -22,6 +23,7 @@ configs/
 │   ├── 04_prognosis/      modality/, global/, anatomy/
 │   ├── 05_anatomy_analysis/ counterfactual/ and students/{gt,kd}/
 │   └── 90_deferred/       contour, concept bottleneck
+├── clinical/           PESI/sPESI mapping contract and the EHR feature policy
 ├── compute/            GPU default or CPU
 ├── paths.yaml          data/output roots
 ```
@@ -97,10 +99,10 @@ rather than a long chain of `--set` overrides that nobody can trace.
 
 ### `data.profile` — which cohort
 
-`test_500_sample` or `full_inspect`. Both are built by the same code from the same rules
-(`source/dataset/profiles/`); only sampling differs. Defaults to `full_inspect` when a config
-does not say. Manifest paths resolve under
-`${PE_CLOUD_ROOT}/data/derived/datasets/<profile>/`, so the two cohorts never mix.
+`smoke_30`, `test_500_sample` or `full_inspect`. All are built by the same code from the same
+rules (`source/dataset/profiles/`); only sampling differs. Defaults to `full_inspect` when a
+config does not say. Manifest paths resolve under `${PE_DERIVED_ROOT}/datasets/<profile>/`, so
+the cohorts never mix.
 
 ### `model.backbone` — which encoder architecture
 

@@ -31,7 +31,7 @@ supervision:
   require_masks: false
   require_ehr: false
   require_pesi: true
-  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi
+  pesi: clinical/pesi_features.csv
 peft:
   _replace_: true
   method: full

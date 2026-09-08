@@ -25,8 +25,8 @@ data:
   manifest: manifests/diagnosis.csv
   file_column: image_path
   label_columns: [pe_present]
-  mask_columns:
-    _replace_: true
+  # No anatomy branches: this arm reads no masks.
+  mask_columns: {}
 task:
   architecture: frozen_probe
   targets:

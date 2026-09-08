@@ -14,6 +14,7 @@ tools/
 ├── launch.py               one training or generation job on CPU / one GPU / DDP
 ├── launch_parallel.py      several independent jobs across GPU groups, in waves
 ├── build_summary.py        aggregate existing result.json files
+├── build_experiment_map.py regenerate docs/EXPERIMENT_MAP.md from the registry
 ├── sync_project.py         copy source/configs/scripts to the cloud project root
 ├── create_masks/generate_masks.py    TotalSegmentator + LungMask QC
 ├── build_rois/build_rois.py          ROI1-ROI8 from a stored segmentation run
@@ -28,10 +29,10 @@ tools/
 Builds one dataset profile from the read-only INSPECT release. It holds no scientific logic:
 it resolves the run config, loads the profile it names from `source/dataset/profiles/`, and
 calls `source/data_preprocessing/pipeline.build_dataset`, which is the single implementation
-both profiles share.
+all profiles share.
 
 ```bash
-python run.py run data.dataset.test_500_sample --max-cases 10   # smoke
+python run.py run data.dataset.smoke_30 --allow-full            # technical smoke
 python run.py run data.dataset.test_500_sample --allow-full     # the whole 500-patient subset
 python run.py run data.dataset.full_inspect    --allow-full     # the whole cohort
 ```
@@ -46,8 +47,10 @@ Extra flags this CLI accepts that `run.py` does not forward:
 Stages inside `source/data_preprocessing/`, in order: `sources` (join the official tables),
 `filters` (eligibility, noise removal, exclusion ledger), `integrity` (corrupted/missing CT),
 `adjudication` (per-patient label reconciliation), `sampling` (patient-level, inside the
-official split), `leakage` (split preservation), `manifests`, `volumes` (the shared
-preprocessing contract).
+official split), `leakage` (split preservation), then `volumes`: reorientation, optional
+physical resampling, body crop, full-FOV fitting, provenance sidecars and cache QC. The
+derived NPY remains compatible with current dense-model loaders; its sidecar and optional
+patch grid are the audited geometry record.
 
 ## `preflight.py`
 

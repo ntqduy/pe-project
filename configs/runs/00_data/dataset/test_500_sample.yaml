@@ -6,9 +6,9 @@
 # draws 500 patients inside the official split. Sampling is patient-level, so a sampled
 # patient keeps all of their studies and never changes split.
 # The cohort contract itself lives in source/dataset/profiles/, not here.
-# Output: ${PE_CLOUD_ROOT}/data/derived/datasets/test_500_sample/
+# Output: ${PE_DERIVED_ROOT}/datasets/test_500_sample/
 #   manifests/{ctpa,diagnosis,prognosis,paired_reports,reports}.csv
-#   exclusions.csv, integrity.json, split_audit.json, dataset.json, volumes/
+#   data_quality.{md,json}, dataset.json, volumes/, audit/
 _base_:
   - ../../../paths.yaml
   - ../../../compute/cpu.yaml

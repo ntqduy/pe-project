@@ -31,7 +31,7 @@ eligibility:
     # Noise removal. Thresholds are configuration, not constants: these defaults come
     # from the /mnt/pe_study readiness buckets (num_slices <=1, SliceThickness >3mm,
     # PixelSpacing >1mm were the review buckets) widened to the acquisition limits that
-    # are indefensible rather than merely unusual. Every drop lands in exclusions.csv.
+    # are indefensible rather than merely unusual. Every drop lands in audit/exclusions.csv.
     minimum_slices: 2
     maximum_slices: null
     minimum_slice_thickness_mm: null
@@ -69,13 +69,66 @@ manifests:
   include_report_text: true
 
 preprocessing:
-  # IDENTICAL FOR BOTH PROFILES. Changing anything here invalidates every cached volume
-  # and every checkpoint trained on them; the fingerprint is stamped into dataset.json.
+  # IDENTICAL FOR EVERY PROFILE.  Changing anything here invalidates every cache and
+  # checkpoint; the complete contract hash is stamped into dataset.json and each
+  # volume sidecar.  This is a dense-model cache, not a replacement for raw NIfTI.
   target_shape: [128, 128, 128]
   clip_min_hu: -1000.0
   clip_max_hu: 1000.0
   normalize: minmax
   dtype: float32
   orientation: RAS
-  resample_spacing_mm: null
+  # Geometry is canonicalised in physical space before body cropping.  `fit` then
+  # retains the whole cropped field of view in the fixed tensor instead of silently
+  # discarding superior/inferior or peripheral anatomy with a centre crop.
+  resample_spacing_mm: [1.5, 1.5, 1.5]
+  foreground_strategy: external_body
+  foreground_threshold_hu: -900.0
+  foreground_margin_mm: 10.0
+  spatial_strategy: fit
   output_format: npy
+  # The dense model does not consume these patches yet, but persisting the complete
+  # world-coordinate grid makes future MIL/CT-FM work traceable to this exact cache.
+  emit_patch_grid: true
+  patch_shape: [64, 64, 64]
+  patch_overlap: 0.5
+
+# Validate every written or reused cache entry before it reaches a manifest. The detailed
+# findings are under audit/cache_qc.json; the aggregate count appears in data_quality.md.
+cache_qc:
+  enabled: true
+  limit: null
+
+# EHR readiness is part of the stage-0 gate. It materializes the raw MEDS/OMOP archive
+# into the local cache, then writes a patient-linked, pre-CTPA utilization feature table
+# and an aggregate leakage/missingness audit under each profile's clinical/ directory.
+# The raw event archive is never copied into the dataset profile or a manifest.
+ehr:
+  enabled: true
+  archive: meds_omop_inspect.tar.gz
+  cache_namespace: inspect_meds_omop
+  batch_size: 250000
+  end_before_ctpa_hours: 0.0
+  windows_days: [365, 30]
+  train_vocabulary:
+    prior: 1000
+    window365: 500
+    window30: 500
+  prohibited_config: configs/clinical/ehr_prohibited_features.json
+
+# Stage 0 audits PESI candidates against the INSPECT codebook. It only writes score
+# columns after every component has clinical approval *and* an approved study-level
+# component table is supplied. Until then it writes a blocked, reviewable status rather
+# than manufacturing a plausible score from pattern-matched events.
+pesi:
+  enabled: true
+  mapping_config: configs/clinical/pesi_spesi_mapping.yaml
+  # Aggregate (no patient IDs/values) audit of candidate code availability, units and
+  # pre-CTPA timing. This runs even while scoring remains blocked.
+  audit_candidate_coverage: true
+  audit_batch_size: 250000
+  # Fill with an approved, study-level table only after the mapping audit is approved.
+  # An absolute path under /mnt/pe-storage is appropriate; leaving it null keeps PESI
+  # safely blocked while the rest of stage 0 is fully runnable.
+  components_table: null
+  required_columns: [pesi, spesi]

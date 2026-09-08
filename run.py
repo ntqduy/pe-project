@@ -48,9 +48,26 @@ DATA_STAGE_TOOLS = {
     "roi": {"tool": "tools/build_rois/build_rois.py", "gpus": False, "set": True},
 }
 # Artifact paths are stored relative to different roots depending on the key.
-OUTPUT_RELATIVE_KEYS = ("roi.segmentation_run", "init.checkpoint")
+# How a relative `path_key` from the registry is resolved. These three sets must agree with
+# source/data/preflight._artifact_path, or `plan` and `preflight` would disagree about where
+# an artifact lives.
+OUTPUT_RELATIVE_KEYS = (
+    "roi.segmentation_run",
+    "init.checkpoint",
+    "supervision.masks",
+    "supervision.rois",
+    "supervision.silver_labels",
+    "data.roi_manifest",
+    "distillation.teacher_checkpoint",
+    "lineage.source_checkpoint",
+)
 CODE_RELATIVE_KEYS = ("model.checkpoint", "model.repo", "segmentation.weights_directory")
-DATASET_RELATIVE_KEYS = ("data.manifest", "silver.reports")
+DATASET_RELATIVE_KEYS = (
+    "data.manifest",
+    "silver.reports",
+    "supervision.ehr",
+    "supervision.pesi",
+)
 
 
 def fail(message: str) -> NoReturn:

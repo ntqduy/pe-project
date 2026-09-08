@@ -28,9 +28,9 @@ lineage:
 supervision:
   require_masks: false
   require_ehr: true
-  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  ehr: clinical/ehr_features.csv
   require_pesi: true
-  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi
+  pesi: clinical/pesi_features.csv
 peft:
   _replace_: true
   method: full

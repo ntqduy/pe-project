@@ -5,9 +5,8 @@
 # local-mean policy, so the student never sees the rest of the chest. Its score answers
 # "is this region alone sufficient?", which the counterfactual arms cannot answer.
 # The ROI masks come from the stored data.roi artifacts (ROI2 heart, ROI4 PA, ROI6 lung
-# parenchyma, ROI8 matched random control); segmentation is never re-run.
-data:
-  roi_manifest: ${PE_CLOUD_ROOT}/pe-project/outputs/roi/ROI_anatomy_and_controls/manifest.parquet
+# parenchyma, ROI8 matched random control) through components/data/anatomy_masks.yaml, which
+# every anatomy-aware arm shares; segmentation is never re-run.
 task:
   base_stage: diagnosis
   masking_policy: {type: local_mean, local_radius_voxels: 3}
@@ -24,4 +23,4 @@ distillation:
   enabled: false
 supervision:
   require_rois: true
-  rois: ${PE_CLOUD_ROOT}/pe-project/outputs/roi/ROI_anatomy_and_controls
+  rois: roi/ROI_anatomy_and_controls

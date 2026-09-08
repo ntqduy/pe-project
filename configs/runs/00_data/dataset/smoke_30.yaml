@@ -1,0 +1,20 @@
+# data.dataset.smoke_30 — build a deterministic technical smoke cohort.
+#
+# This is deliberately separate from test_500_sample so a small verification run never
+# occupies or overwrites the rehearsal dataset's provenance directory.
+# Output: ${PE_DERIVED_ROOT}/datasets/smoke_30/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/cpu.yaml
+experiment:
+  id: DS_smoke_30
+  name: data.dataset.smoke_30
+  stage: dataset
+  family: dataset
+  baseline_dataset: smoke_30
+data:
+  mode: full
+  profile: smoke_30
+dataset:
+  preprocess: true
+seed: 42

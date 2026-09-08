@@ -1,0 +1,28 @@
+# smoke_30 — a deterministic all-split technical smoke cohort.
+#
+# This profile exists only to verify the exact production code path and artifact layout
+# before a 500-patient rehearsal or full build.  It is not an analytical cohort and must
+# never be used to select or report a scientific model.
+_base_: [_common.yaml]
+profile:
+  name: smoke_30
+  description: >-
+    Thirty eligible patients: ten sampled independently from each official split. This
+    makes every split, manifest type, CT cache write and leakage guard observable at low
+    cost before the 500-patient rehearsal or full build.
+  scope: technical smoke cohort (30 patients; 10 per official split)
+sampling:
+  enabled: true
+  seed: 20260703
+  total_patients: null
+  per_split:
+    train: 10
+    validation: 10
+    test: 10
+  strata:
+    - pe_positive_nlp
+    - pe_acute
+    - pe_subsegmentalonly
+    - 1_month_mortality
+  balance_column: pe_positive_nlp
+  positive_fraction: null

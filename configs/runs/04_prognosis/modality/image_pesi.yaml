@@ -28,4 +28,4 @@ supervision:
   masks: null
   require_ehr: false
   require_pesi: true
-  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi
+  pesi: clinical/pesi_features.csv

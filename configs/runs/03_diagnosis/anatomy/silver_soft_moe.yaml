@@ -15,6 +15,7 @@ _base_:
   - ../../../components/task/diagnosis_organ_silver.yaml
   - ../../../components/training/diagnosis.yaml
   - ../../../components/adapter/organ.yaml
+  - ../../../components/data/anatomy_masks.yaml
   - ../../../components/fusion/soft_moe.yaml
 experiment:
   id: DX_anatomy_silver_soft_moe
@@ -26,10 +27,6 @@ data:
   manifest: manifests/diagnosis.csv
   file_column: image_path
   label_columns: [pe_present]
-  mask_columns:
-    heart: heart_mask_path
-    pa: pa_mask_path
-    lung: lung_mask_path
 task:
   targets:
     _replace_: true
@@ -41,6 +38,6 @@ lineage:
   supervision_type: native_pe_and_accepted_silver_organ_multitask
 supervision:
   require_masks: true
-  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  masks: segmentation/SEG_pseudo_anatomy
   require_silver_labels: true
-  silver_labels: ${PE_CLOUD_ROOT}/pe-project/outputs/silver_label/SL_hybrid_adjudicated/labels.parquet
+  silver_labels: silver_label/SL_hybrid_adjudicated/labels.parquet

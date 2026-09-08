@@ -27,5 +27,5 @@ supervision:
   require_masks: false
   masks: null
   require_ehr: true
-  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  ehr: clinical/ehr_features.csv
   require_pesi: false

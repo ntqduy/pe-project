@@ -445,59 +445,6 @@ def _process_study(
     return rows
 
 
-def compact_roi_manifest(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Convert normalized ROI QC rows to one canonical recipe record per study."""
-
-    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
-    for row in rows:
-        grouped[(str(row.get("patient_id") or ""), str(row.get("study_id") or ""))].append(row)
-    output: list[dict[str, Any]] = []
-    for (patient_id, study_id), items in sorted(grouped.items()):
-        first = items[0]
-        compact: dict[str, Any] = {
-            "patient_id": patient_id,
-            "study_id": study_id,
-            "split": first.get("split"),
-            "full_ctpa_path": first.get("full_ctpa_path") or first.get("image_path"),
-            "basic_mask_paths": first.get("basic_mask_paths"),
-            "source_segmentation_run": first.get("source_segmentation_run"),
-            "source_segmentation_manifest": first.get("source_segmentation_manifest"),
-        }
-        qc_flags: dict[str, Any] = {}
-        feasibility: dict[str, bool] = {}
-        for item in items:
-            roi_id = str(item["roi_id"])
-            control_for = str(item.get("control_for") or "")
-            suffix = (
-                "_heart"
-                if control_for == "ROI2"
-                else "_pa"
-                if control_for == "ROI4"
-                else "_lung"
-                if control_for == "ROI6"
-                else ""
-            )
-            key = f"{roi_id}{suffix}"
-            compact[f"{key}_mask_path"] = item.get("roi_path")
-            compact[f"{key}_recipe"] = item.get("recipe")
-            if item.get("seed") is not None:
-                compact[f"{key}_seed"] = item.get("seed")
-            try:
-                flags = json.loads(str(item.get("qc_flags") or "[]"))
-            except json.JSONDecodeError:
-                flags = [str(item.get("qc_flags"))]
-            qc_flags[key] = {
-                "status": item.get("status"),
-                "reason": item.get("reason"),
-                "flags": flags,
-            }
-            feasibility[key] = bool(item.get("feasible", False))
-        compact["qc_flags"] = json.dumps(qc_flags, sort_keys=True)
-        compact["feasibility_flags"] = json.dumps(feasibility, sort_keys=True)
-        output.append(compact)
-    return output
-
-
 def build_roi_dataset(
     segmentation_rows: Sequence[Mapping[str, Any]],
     *,

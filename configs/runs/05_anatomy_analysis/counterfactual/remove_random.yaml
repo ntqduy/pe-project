@@ -21,7 +21,6 @@ experiment:
   stage: counterfactual
   family: counterfactual
 data:
-  roi_manifest: ${PE_CLOUD_ROOT}/pe-project/outputs/roi/ROI_anatomy_and_controls/manifest.parquet
   roi_mask_ids: {random: ROI8}
   roi_control_for: {random: ROI4}
 task:
@@ -41,4 +40,4 @@ lineage:
   supervision_type: frozen_counterfactual_inference
 supervision:
   require_rois: true
-  rois: ${PE_CLOUD_ROOT}/pe-project/outputs/roi/ROI_anatomy_and_controls
+  rois: roi/ROI_anatomy_and_controls

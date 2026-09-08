@@ -27,8 +27,8 @@ data:
   file_column: image_path
   # Native labels: PE presence only. Everything else arrives as accepted silver.
   label_columns: [pe_present]
-  mask_columns:
-    _replace_: true
+  # No anatomy branches: this arm reads no masks.
+  mask_columns: {}
 task:
   # Heads and silver_targets come from components/task/diagnosis.yaml.
   regions: []
@@ -41,4 +41,4 @@ supervision:
   require_masks: false
   masks: null
   require_silver_labels: true
-  silver_labels: ${PE_CLOUD_ROOT}/pe-project/outputs/silver_label/SL_hybrid_adjudicated/labels.parquet
+  silver_labels: silver_label/SL_hybrid_adjudicated/labels.parquet

@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from source.data.paths import ProjectPaths
+from source.data.preflight import require_preflight
 from source.data_preprocessing.pipeline import build_dataset
 from source.dataset import require_active_profile
 from source.utils.config import load_config, validate_config
@@ -59,6 +60,9 @@ def main() -> int:
     name = str(config["data"]["profile"])
     profile = require_active_profile(name)
     paths = ProjectPaths.resolve(config)
+    # Data stages bypass tools/launch.py, so enforce the same dependency/source/output
+    # gate here before creating a destination or extracting the large EHR archive.
+    require_preflight(config, paths)
     dataset_config = dict(config.get("dataset") or {})
     payload = build_dataset(
         profile,

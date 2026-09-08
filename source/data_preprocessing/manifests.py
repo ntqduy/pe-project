@@ -82,6 +82,8 @@ def build_manifests(
     prognosis_conditions: Mapping[str, str] | None = None,
     image_paths: Mapping[str, str] | None = None,
     include_report_text: bool = True,
+    clinical_features: Mapping[str, Mapping[str, Any]] | None = None,
+    clinical_columns: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Write every derived manifest for one cohort. Returns a per-manifest summary.
 
@@ -93,6 +95,12 @@ def build_manifests(
     mapping = dict(label_map or DEFAULT_LABEL_MAP)
     conditions = dict(DEFAULT_PROGNOSIS_CONDITIONS if prognosis_conditions is None else prognosis_conditions)
     overrides = dict(image_paths or {})
+    feature_values = dict(clinical_features or {})
+    feature_columns = tuple(str(column) for column in clinical_columns)
+    reserved = set(IDENTITY_COLUMNS) | set(TRACE_COLUMNS) | {"provenance", "has_ehr_crosswalk"}
+    collisions = sorted(reserved & set(feature_columns))
+    if collisions:
+        raise ValueError("clinical columns collide with manifest columns: " + ", ".join(collisions))
     summary: dict[str, Any] = {}
 
     label_columns = list(mapping.values())
@@ -104,11 +112,15 @@ def build_manifests(
     for record in records:
         image_path = overrides.get(record.study_id, record.image_path)
         base = _base_row(record, image_path)
+        clinical = {
+            column: feature_values.get(record.study_id, {}).get(column, "")
+            for column in feature_columns
+        }
         ctpa_rows.append({**base, "provenance": record.provenance,
-                          "has_ehr_crosswalk": "TRUE" if record.has_ehr_crosswalk else "FALSE"})
+                          "has_ehr_crosswalk": "TRUE" if record.has_ehr_crosswalk else "FALSE", **clinical})
         labels = {target: _binary(record.labels.get(source)) for source, target in mapping.items()}
         diagnosis_rows.append({**base, **labels,
-                               "has_ehr_crosswalk": "TRUE" if record.has_ehr_crosswalk else "FALSE"})
+                               "has_ehr_crosswalk": "TRUE" if record.has_ehr_crosswalk else "FALSE", **clinical})
         paired = {**base, "report_id": record.impression_id}
         if include_report_text:
             paired["report_text"] = record.report_text
@@ -123,11 +135,11 @@ def build_manifests(
             }
         )
 
-    summary["ctpa"] = _write(directory / "ctpa.csv", ctpa_rows, ctpa_fields)
+    summary["ctpa"] = _write(directory / "ctpa.csv", ctpa_rows, [*ctpa_fields, *feature_columns])
     summary["diagnosis"] = _write(
         directory / "diagnosis.csv",
         diagnosis_rows,
-        [*IDENTITY_COLUMNS, *TRACE_COLUMNS[2:], *label_columns, "has_ehr_crosswalk"],
+        [*IDENTITY_COLUMNS, *TRACE_COLUMNS[2:], *label_columns, "has_ehr_crosswalk", *feature_columns],
     )
     paired_fields = [*IDENTITY_COLUMNS, *TRACE_COLUMNS[2:], "report_id"]
     if include_report_text:
@@ -157,6 +169,7 @@ def build_manifests(
                 "is_censored_mortality": record.labels.get("is_censored_mortality", ""),
                 "has_ehr_crosswalk": "TRUE" if record.has_ehr_crosswalk else "FALSE",
                 **{target: _binary(record.labels.get(source)) for source, target in mapping.items()},
+                **{column: feature_values.get(record.study_id, {}).get(column, "") for column in feature_columns},
             }
         )
     if len({row["patient_id"] for row in prognosis_rows}) != len(prognosis_rows):
@@ -176,6 +189,7 @@ def build_manifests(
             "tte_mortality",
             "is_censored_mortality",
             "has_ehr_crosswalk",
+            *feature_columns,
         ],
     )
     summary["cohort_definitions"] = {
@@ -188,6 +202,7 @@ def build_manifests(
         "paired_reports": "every eligible study paired with its impression",
         "label_map": mapping,
         "prognosis_label": prognosis_label,
+        "clinical_columns": list(feature_columns),
     }
     return summary
 

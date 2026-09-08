@@ -1,298 +1,208 @@
-# Pipeline
+# Pipeline build dataset INSPECT
 
-```text
-DATASET
- └─> DATA (masks, ROIs, silver labels)
-      └─> SHARED ENCODER
-           └─> DIAGNOSIS / PROGNOSIS
-                └─> ANATOMY ANALYSIS
-```
-
-Each stage produces an artifact the next stage consumes. Nothing runs a prerequisite for you:
-`python run.py plan <experiment>` tells you what is missing, and preflight refuses to start a
-run whose inputs are absent.
-
-## Four independent axes
-
-Every experiment below is one point in a four-dimensional space, and the four dimensions are
-kept independent on purpose — otherwise no two results are comparable.
-
-| axis | where it is set | values |
-|---|---|---|
-| **dataset** | `data.profile` | `test_500_sample`, `full_inspect` |
-| **method** | which experiment you run | one config each |
-| **encoder weight** | `model.backbone` × `encoder.init_source` | `ct_fm`/`ct_clip`/`totalfm` × `pretrained`/`dapt`/`c0`/`silver` |
-| **run scope** | CLI | `--patient-id`, `--max-cases`, `--allow-full` |
-
-None of them is a code path. Changing one changes a config value and gives the run its own
-output directory: the run id is stamped with whatever deviates from the config's baseline
-(`DX_anatomy_concat__enc_dapt`, `DX_anatomy_concat__ds_test_500_sample__bb_ct_clip__enc_silver`).
-
-## DATASET
-
-Two profiles, one implementation.
-
-```text
-Raw INSPECT release (READ-ONLY)
-        │
-        ▼  source/data_preprocessing  -- eligibility, noise removal, CT integrity,
-        │                                label adjudication, split audit, manifests
-        ├──────────────────────────────┐
-        ▼                              ▼
-  test_500_sample                 full_inspect
-  (clean cohort + 500 patients)   (whole eligible cohort, no sampling)
-```
-
-- `data.dataset.full_inspect` — every study that survives the shared eligibility and QC
-  contract. The official train/valid/test split is preserved exactly as the release
-  assigns it.
-- `data.dataset.test_500_sample` — the *same* cohort, then 500 patients drawn inside each
-  official split in proportion to that split's size, stratified on the PE and mortality
-  labels. Sampling is patient-level and a sampled patient keeps all of their studies, so no
-  patient is split across the subset boundary and no patient changes split.
-
-Both profiles inherit `source/dataset/profiles/_common.yaml`, which is what makes them
-comparable: filtering, integrity, adjudication, manifest construction and volume
-preprocessing are defined once. `source.dataset.assert_shared_preprocessing()` fails if they
-ever diverge, and the preprocessing fingerprint is written into each dataset's
-`dataset.json`. There is deliberately no pilot-only and no full-only scientific code.
-
-Each build writes, next to the manifests, `exclusions.csv` (every dropped study and the rule
-that dropped it), `integrity.json` (corrupted/missing CT), `split_audit.json` (leakage and
-official-split preservation) and `dataset.json` (full provenance).
-
-## DATA
-
-Three **support artifacts** built on top of a dataset profile:
-
-- `data.segmentation` — TotalSegmentator pseudo-anatomy masks, with LungMask contributing an
-  independent lung Dice cross-check only. These are pseudo-labels from a public model, not
-  expert-validated CTPA segmentations.
-- `data.roi` — ROI1–ROI8 derived from the stored segmentation run: ROI2 heart, ROI4 PA,
-  ROI6 lung parenchyma, ROI8 a volume-matched, body-constrained random control.
-- `data.silver.*` — report-derived silver labels (SL00 MedGemma, SL01 rules+Falcon,
-  SL02 adjudicated hybrid), each row `accepted | abstained | no_result`.
-
-**Support artifacts are inputs, never results.** Masks and silver labels are independent of
-each other: ROI construction reads a finished segmentation run and never re-segments; silver
-generation reads only report text and never touches a mask. Only `accepted` silver rows are
-ever trained on, and silver is never used as an evaluation label.
-
-## SHARED ENCODER
-
-```text
-ORIGINAL PRETRAINED BACKBONE  (ct_fm | ct_clip | totalfm)
-        │
-        ├── pretrained_eval ──> baseline metrics for the public weights
-        │
-        └── DAPT (none | MAE | DINO | SimCLR | anatomy)
-                 ↓
-            image-report alignment
-                 ↓
-                 C0
-                 ↓
-            silver adaptation
-                 ↓
-             C_silver
-```
-
-Backbone and DAPT method are independent: any of `ct_fm`, `ct_clip`, `totalfm` crossed with
-any DAPT method is a valid run, and each combination gets its own checkpoint directory.
-**DAPT loads the original public weights itself** (`components/encoder/from_pretrained.yaml`),
-so no foundation-materialization stage has to be run first.
-
-Every checkpoint records its own lineage: backbone, source checkpoint and its SHA-256,
-`encoder_init_source`, DAPT method, alignment flag, silver source, the dataset profile it was
-adapted on, and the seed. A downstream result therefore always says which weights it came
-from.
-
-### Pretrained baseline evaluation
-
-`scripts/3_shared_encoder/pretrained_eval/{ct_fm,ct_clip,totalfm}.sh` measure the public
-weights **before** any adaptation, so every adaptation has something to beat.
-
-For an **image-only encoder the screening protocol is: frozen encoder → linear probe.** That
-is the only claim the model supports. The public checkpoints have no PE head, so a metric is
-impossible without fitting one; what these arms fit is the fixed probe head from
-`components/training/probe.yaml`, with `peft.method: frozen`. **No pretrained weight is
-updated** — the backbone is not fine-tuned, and the probe contract is identical for every
-checkpoint so the numbers stay comparable. CT-FM and TotalFM are image-only, so they get probes
-and nothing else — there is no "CT-FM zero-shot PE classification" arm, because the model has
-no text head to prompt.
-
-CT-CLIP is a joint image/text model, so zero-shot PE prediction is conceivable. It is
-registered as `repr.foundation.ct_clip_zero_shot` with status `unavailable`: the text tower,
-prompt set, score calibration and evaluation entrypoint do not exist here, and foundation
-materialization is not a substitute for them. The contract is written down; nothing is faked.
-
-### Adaptation arms
-
-Main line: public encoder → DAPT → image-report alignment → **C0**.
-
-- `repr.dapt.none` is the explicit no-adaptation control; `mae`, `dino`, `simclr` and
-  `anatomy` are the adaptation methods (only `anatomy` consumes masks).
-- `repr.align` produces **C0**, the shared starting point for diagnosis, prognosis and the
-  ROI students.
-
-Two **side branches** — neither is a prerequisite for any downstream task:
-
-- `repr.rspect.*` — supervised transfer from the external RSPECT/RSNA-STR cohort,
-  single-task versus multitask.
-- `repr.silver.*` — adapt C0 with accepted silver labels, producing **C_silver**
-  (one arm per silver source). C0 remains intact and is never overwritten.
-
-### Choosing a representation: the fixed probes
-
-Representations are compared with two fixed probes, not by pretraining loss:
-
-- `probe.diag` — frozen encoder → global pool → fixed linear head → PE +/-
-- `probe.prog` — frozen encoder → global pool → fixed small head → 30-day mortality
-
-The probe contract lives in `configs/components/training/probe.yaml`. The patient split,
-preprocessing, head architecture, optimizer, epochs, batch size, seed and metrics are fixed
-for every probed checkpoint; the only things that may differ are the checkpoint under test and
-the experiment id. Break that and the comparison is meaningless.
-
-The same probes apply to the public FM, each DAPT arm, C0, an RSPECT-transferred encoder and
-C_silver:
+Tài liệu này mô tả chính xác luồng mã được gọi bởi ba dataset wrapper:
 
 ```bash
-python run.py run probe.diag --gpus 0 --set encoder.init_source=dapt
-python run.py run probe.diag --gpus 0 --set encoder.init_source=pretrained
-python run.py run probe.diag --gpus 0 --set encoder.init_source=silver
+bash scripts/0_data_preprocessing/build_full_inspect.sh
+bash scripts/0_data_preprocessing/build_test_500_sample.sh
+bash scripts/0_data_preprocessing/build_smoke_30.sh
 ```
 
-`encoder.init_source` resolves the checkpoint *and* stamps the run id, so the three commands
-above cannot overwrite each other. A non-canonical checkpoint (another DAPT method, another
-backbone's run) is selected explicitly:
+Ba profile dùng **cùng một implementation** cho việc đọc dữ liệu, lọc, kiểm tra CT,
+adjudicate nhãn, tạo manifest và tiền xử lý volume. Chúng chỉ khác ở bước sampling.
+Raw INSPECT release chỉ được đọc, không bị sửa.
+
+## Lưu ý: hai lệnh nguyên văn không build gì
+
+`scripts/_lib.sh` yêu cầu một scope rõ ràng cho data-generation stage. Vì vậy, hai
+lệnh ở trên mặc định (`ACTION=run`) dừng ngay trong `pe_run` với exit code 2 và gợi ý
+dùng `MAX_CASES`, `PATIENT_ID` hoặc `ALLOW_ALL`; `run.py` còn chưa được gọi và chưa có
+file cohort, cache hay manifest nào được tạo.
+
+Nếu `DATASET` không được đặt, mỗi dataset wrapper tự chọn đúng profile của nó. Các
+training stage khác vẫn mặc định dùng `test_500_sample`.
+
+Dùng các lệnh sau để build theo thứ tự kỹ thuật an toàn:
 
 ```bash
-python run.py run probe.diag --gpus 0 --set encoder.init_source=dapt \
-  --set encoder.checkpoint='${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_mae/best.ckpt' \
-  --set encoder.source_experiment=D_dapt_mae
+# Smoke độc lập: 30 bệnh nhân, 10 từ mỗi official split
+bash scripts/0_data_preprocessing/build_smoke_30.sh
+
+# Rehearsal: toàn bộ profile 500 bệnh nhân
+ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh
+
+# Full: toàn bộ cohort INSPECT hợp lệ
+ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh
 ```
 
-Checkpoint selection uses **validation** performance. Never select a representation, an epoch
-or a threshold on the test split.
+`ACTION=preflight` kiểm tra cấu hình/input nhưng không build; `OVERWRITE=1` mới cho
+phép build lại một thư mục output đã có `dataset.json`.
 
-## DIAGNOSIS
-
-Image-only inference. **Diagnosis never uses EHR or PESI** — a diagnosis model that reads the
-clinical record is no longer answering "can this be read off the scan".
-
-### Which pretrained/adapted weights are best for diagnosis?
-
-This is the comparison the shared-encoder stage exists to enable, so it is run with **one**
-model, not four:
+## Chuỗi gọi mã
 
 ```text
-same diagnosis architecture   same dataset profile   same split   same hyperparameters
-                                     │
-                    only the encoder initialization changes
-                                     │
-      pretrained  ──  DAPT  ──  C0  ──  C_silver
+build_{smoke_30|full_inspect|test_500_sample}.sh
+  -> scripts/_lib.sh : pe_run --scoped <experiment>
+  -> python run.py run <experiment> --set data.profile=<DATASET> --allow-full
+  -> tools/data/build_dataset.py --config configs/runs/00_data/dataset/<profile>.yaml
+  -> source.data_preprocessing.pipeline.build_dataset(profile, paths, ...)
 ```
+
+`run.py` tra experiment trong `configs/experiments.yaml`, resolve YAML cấu hình, rồi
+delegates dataset stage cho `tools/data/build_dataset.py`. YAML run config bật
+`dataset.preprocess: true`; profile contract được load từ
+`source/dataset/profiles/{smoke_30,full_inspect,test_500_sample}.yaml`, cùng kế thừa
+`_common.yaml`.
+
+## Các bước thực thi trong `build_dataset`
+
+1. **Resolve đường dẫn.** `ProjectPaths` lấy raw release từ `PE_RAW_INSPECT_ROOT`/cấu
+   hình; release mặc định là `<raw_inspect>/CT/full`. Output là
+   `${PE_DERIVED_ROOT}/datasets/<profile>/`. Trong workspace này, bạn tự mount
+   `gs://pe-study/pe-storage` vào `/mnt/pe-storage`; sau đó
+   `source scripts/use_gcs_storage.sh` đặt nó thành
+   `/mnt/pe-storage/derived/datasets/<profile>/`. Helper này không tự mount.
+
+2. **Đọc và join release INSPECT.** `InspectSource` tự tìm các TSV date-stamped:
+   `splits`, `labels`, `study_mapping`, `series_metadata`, `study_metadata`,
+   `impressions` (và EHR crosswalk nếu có). Nó join thành `StudyRecord`; đổi split
+   `valid` thành `validation`; chọn series có nhiều slices nhất (tie-break: slice
+   mỏng hơn); và lấy giá trị metadata phổ biến nhất cho mỗi study.
+
+3. **Áp dụng governance và eligibility.** Nếu có registry loại bệnh nhân, loại toàn
+   bộ bệnh nhân đó trước. Mỗi study còn lại phải có split hợp lệ, NIfTI CT tồn tại,
+   report, labels và series metadata; modality phải là CT; `num_slices >= 2`,
+   `SliceThickness <= 5.0 mm`, `PixelSpacing_0/1 <= 2.0 mm`. Một study chỉ ghi nhận
+   rule thất bại đầu tiên vào ledger `audit/exclusions.csv`.
+
+4. **Kiểm tra integrity CT.** Mặc định `level: header`: file phải đủ lớn, NIfTI header
+   parse được, có hình học 3-D hợp lý và ít nhất 2 slices. CT missing/corrupt bị loại
+   khỏi cohort và được ghi vào `audit/integrity.json` cùng `audit/exclusions.csv`. (Không phải
+   `level: volume`, nên voxel không được decode toàn bộ ở bước này.)
+
+5. **Adjudicate nhãn theo bệnh nhân.** Bốn nhãn `pe_positive_nlp`, `pe_acute`,
+   `pe_subsegmentalonly`, `1_month_mortality` được gộp từ các studies của cùng bệnh
+   nhân theo thứ tự `TRUE > CENSORED > FALSE > MISSING`. Mã dừng lỗi nếu một bệnh nhân
+   đã xuất hiện ở nhiều official split.
+
+6. **Chọn cohort profile.**
+
+   | Profile | Cách chọn sau bước lọc/QC |
+   | --- | --- |
+   | `smoke_30` | 30 bệnh nhân deterministic: 10 từ mỗi official split. Chỉ dùng để kiểm tra kỹ thuật, không dùng để chọn hay báo cáo model. |
+   | `full_inspect` | Giữ toàn bộ study hợp lệ; không sampling. |
+   | `test_500_sample` | Seed `20260704`; lấy đúng 500 **bệnh nhân** theo tỷ lệ số bệnh nhân của train/validation/test, stratify theo 4 nhãn trên, rồi giữ mọi study của bệnh nhân đã chọn. Prevalence tự nhiên được giữ vì `positive_fraction: null`. |
+
+   Nếu dùng `MAX_CASES=N`, mã giới hạn theo **N bệnh nhân đầu tiên trong cohort** và
+   vẫn giữ toàn bộ studies của mỗi bệnh nhân đó.
+
+7. **Guard chống leakage.** Audit xác nhận không có bệnh nhân cross-split, study ID
+   trùng, study lạ, hay split bị đổi so với release; build lỗi nếu audit không đạt.
+   Full build cũng yêu cầu có cả train, validation và test.
+
+8. **Tiền xử lý CT và tạo cache.** Với từng study trong cohort, load NIfTI, chuẩn hoá
+   orientation về RAS khi có thể, clip HU `[-1000, 1000]`, min-max scale về `[0, 1]`,
+   center crop/zero-pad thành `128 x 128 x 128`, cast `float32`, rồi ghi
+   `volumes/<study_id>.npy`. Không resample spacing. Cache đã có sẽ được tái dùng trừ
+   khi `OVERWRITE=1`; lỗi từng case được ghi trong `dataset.json` và case đó không vào
+   manifest. Mỗi cache entry cũng được hậu kiểm shape, dtype, finiteness và range trước
+   khi được đưa vào manifest; chi tiết nằm trong `audit/cache_qc.json`.
+
+9. **Sinh manifests và provenance.** Manifest trỏ tới cache `.npy` (không trỏ raw NIfTI):
+
+   - `ctpa.csv`: mọi study còn lại, cho segmentation/DAPT.
+   - `diagnosis.csv`: mọi study, native labels `pe_present`, `pe_acute`,
+     `pe_subsegmental_only`; CENSORED/MISSING được để trống, không biến thành 0.
+   - `paired_reports.csv`: mọi cặp image--impression.
+   - `reports.csv`: report dùng cho silver-label generation.
+   - `prognosis.csv`: một index study sớm nhất cho mỗi bệnh nhân có
+     `pe_positive_nlp=TRUE` và `pe_acute=TRUE`; mortality censored/missing vẫn để
+     missing thay vì coi là sống.
+
+   Entry point để review là `data_quality.md` (một trang aggregate, không có patient ID)
+   và `data_quality.json`. Bảng đầu tiên trong đó là **cohort funnel**: số study và số bệnh
+   nhân còn lại sau *từng* bước (`release` → `governance` → `eligibility` → `ct_integrity`
+   → `sampling` → `scope` → `preprocessing` → `final`), kèm số bị loại ở mỗi bước, nên không
+   cần cộng tay ba report riêng lẻ để biết còn bao nhiêu sample. Chi tiết patient-linked được gom trong `audit/`:
+   `exclusions.csv`, `integrity.json`, `split_audit.json`, `cache_qc.json`.
+   `dataset.json` lưu full provenance, scope, sampling, preprocessing fingerprint và
+   thống kê manifest.
+
+## EHR và PESI
+
+Sau CTPA QC, stage 0 đọc `meds_omop_inspect.tar.gz` vào **local cache** (không copy raw
+archive vào từng profile), stream các event của cohort, rồi viết:
+
+```text
+clinical/ehr_features.csv          one row / CTPA; chỉ utilization features an toàn
+clinical/ehr_train_vocabulary.csv  code vocabulary fit trên official train duy nhất
+clinical/ehr_metadata.json         archive provenance, missingness, event exclusions
+clinical/pesi_status.json          trạng thái PESI/sPESI có kiểm soát
+clinical/pesi_mapping_audit.json   code/source/unit/timing review cho 11 component
+# clinical/pesi_features.csv       chỉ có khi mapping được duyệt và score thực sự được tạo
+```
+
+EHR chỉ nhận event thỏa `event_time < procedure_datetime - 0h`; policy
+`configs/clinical/ehr_prohibited_features.json` loại `note` và code/result proxy của
+CTPA/radiology. Các cột EHR readiness được merge vào `ctpa.csv`, `diagnosis.csv` và
+`prognosis.csv`; `data_quality.md` báo missing index time, EHR-missing và các event bị
+loại. Đây là feature readiness, **không** phải tự suy diễn clinical variables.
+
+PESI/sPESI là một **clinical gate**, không phải một phép join tự động. Pipeline kiểm tra
+candidate source codes trong `configs/clinical/pesi_spesi_mapping.yaml` rồi ghi mapping
+audit và aggregate availability/unit/time audit (không có patient ID hay raw value). Hiện
+mapping ở trạng thái `pending`: codebook có candidate cho birth/sex, heart rate,
+respiratory rate, temperature và oxygen saturation, nhưng chưa có systolic-BP đã
+xác minh, phenotype được duyệt cho cancer/heart-failure/chronic-lung/altered-mental-status,
+hoặc review unit và cửa sổ 6 giờ trước CTPA. Vì vậy default build kết thúc bình thường với
+`clinical/pesi_status.json: blocked`, **không** tạo score giả.
+
+Khi clinical steward duyệt đủ 11 component, đổi `clinical_approval.status: approved`, đặt
+từng component thành `approved`, và cung cấp một CSV study-level qua
+`pesi.components_table` với `study_id` cùng các cột component. Khi đó stage 0 tạo
+`clinical/pesi_features.csv`, merge `pesi`, `spesi`, `pesi_class` và các cờ computability
+vào manifest. Preflight của mọi prognosis arm dùng PESI chỉ PASS khi artifact có trạng
+thái `built` và có cả hai score hữu hạn trong train/validation/test.
+
+Silver label và segmentation là stage riêng; chúng tiêu thụ lần lượt `manifests/reports.csv`
+và `manifests/ctpa.csv` do stage này tạo.
+
+## Stage 0 nối vào các stage sau như thế nào
+
+| Artifact stage 0 tạo | Ai đọc | Cách trỏ tới |
+| --- | --- | --- |
+| `manifests/ctpa.csv` | segmentation, ROI, DAPT, alignment | `data.manifest`, tương đối so với dataset root |
+| `manifests/diagnosis.csv` | mọi arm diagnosis | `data.manifest` |
+| `manifests/prognosis.csv` | mọi arm prognosis | `data.manifest` |
+| `manifests/reports.csv` | silver label | `silver.reports` |
+| `volumes/<study_id>.npy` | mọi stage đọc ảnh | cột `image_path` trong manifest |
+| `clinical/ehr_features.csv` | prognosis (`ehr`) | `supervision.ehr`, tương đối so với dataset root |
+| `clinical/pesi_features.csv` | prognosis (`pesi`) | `supervision.pesi`, chỉ tồn tại khi PESI được duyệt |
+
+**Mask giải phẫu không nằm trong manifest stage 0.** Không có cột `*_mask_path` nào được
+sinh ra và cũng không được bịa ra. Heart/PA/lung mask là artifact của stage 1: chúng được
+đọc trực tiếp từ ROI run manifest qua `data.roi_manifest` + `data.roi_mask_ids`
+(`configs/components/data/anatomy_masks.yaml`), dùng đúng ROI id và đúng bộ lọc QC
+(PASS/SUSPICIOUS) mà ROI student và counterfactual đang dùng:
+
+```text
+heart -> ROI2 (strict heart)   pa -> ROI4 (PA tree)   lung -> ROI6 (lung parenchyma)
+```
+
+Nhờ vậy một branch, vùng bị xoá khỏi nó và student học riêng vùng đó luôn trỏ về cùng một
+tập voxel.
+
+## Kết quả và các điều không được chạy
+
+Hai script này chỉ xây dựng dataset. Chúng không chạy TotalSegmentator, ROI, silver
+labels, foundation pretraining, diagnosis/prognosis training, evaluation hay
+counterfactual analysis. Các stage đó có wrapper/experiment riêng và tiêu thụ các
+manifest được tạo ở đây.
+
+Luồng thực tế có thể kiểm tra trước bằng:
 
 ```bash
-DATASET=test_500_sample ENCODER_SOURCE=pretrained bash scripts/4_diagnosis/anatomy_full.sh
-DATASET=test_500_sample ENCODER_SOURCE=dapt       bash scripts/4_diagnosis/anatomy_full.sh
-DATASET=test_500_sample ENCODER_SOURCE=c0         bash scripts/4_diagnosis/anatomy_full.sh
-DATASET=test_500_sample ENCODER_SOURCE=silver     bash scripts/4_diagnosis/anatomy_full.sh
+python run.py preflight data.dataset.test_500_sample
+python run.py preflight data.dataset.full_inspect
+python run.py preflight data.dataset.smoke_30
 ```
-
-There is deliberately no `diagnosis_pretrained_model.py` / `diagnosis_dapt_model.py` /
-`diagnosis_silver_model.py`. Four model files would mean four architectures, and any
-difference between the results could then be attributed to the code rather than to the
-representation. The checkpoint source is a config variable; the model is the same object.
-
-Every run records `lineage.encoder_init_source` and the source checkpoint's SHA-256, so a
-result always states which weights it started from.
-
-### The scientific axes
-
-Main target: PE +/-. Each axis is isolated by one pair of arms:
-
-| axis | arms |
-|---|---|
-| single-task vs multitask | `diag.global.single` vs `diag.global.native_multitask` / `diag.global.silver_multitask` |
-| native vs accepted-silver supervision | `diag.global.native_multitask` vs `diag.global.silver_multitask` |
-| global vs anatomy-aware | `diag.global.single` vs `diag.anatomy.concat` |
-| fusion type | `diag.anatomy.silver.concat` vs `.late` vs `.moe` |
-| text ceiling | `diag.report_only` (never sees the volume) |
-
-In the anatomy-aware arms, per-organ accepted silver findings supervise the branch they belong
-to: RV/septal/pericardial findings on the heart branch, acuity and clot location on the PA
-branch, effusion and chronic lung disease on the lung branch.
-
-The heart/PA/lung vectors are **mask-pooled views of one full-volume feature map**, not
-organ-only inputs. Only the ROI students below actually restrict what the model can see.
-
-## PROGNOSIS
-
-Primary cohort: **confirmed acute PE**. Target: 30-day mortality. One shared cohort contract
-(`configs/components/task/prognosis_primary_cohort.yaml`) so every arm sees the same patients.
-
-Modality ablation, seven arms, fixed fusion:
-
-```text
-prog.pesi        prog.ehr        prog.image
-prog.ehr_pesi    prog.image_pesi prog.image_ehr
-prog.image_ehr_pesi
-```
-
-Then, with all three modalities fixed, two further comparisons:
-
-- global image vs anatomy-aware image: `prog.image_ehr_pesi` vs `prog.anatomy.concat`
-- fusion type: concat vs late-logit vs Soft-MoE, in both the `prog.global.*` and
-  `prog.anatomy.*` families
-
-Every prognosis arm with an image encoder takes the same `encoder.init_source` variable as
-diagnosis (`pretrained`, `dapt`, `c0`, `silver`), so the representation comparison can be
-repeated for the outcome task without touching model code. The tabular-only arms
-(`prog.pesi`, `prog.ehr`, `prog.ehr_pesi`) have no encoder and therefore no such variable.
-
-`prog.global.concat` is deliberately an alias of `prog.image_ehr_pesi` — the same run, not a
-duplicate. The full grid of representation × modality × supervision × anatomy × fusion is
-**not** built: each listed arm isolates one axis against a fixed reference.
-
-Clinical preprocessing (imputation, normalization) is fit on the training split only, and
-prognosis evaluation reports calibration alongside discrimination.
-
-## ANATOMY ANALYSIS
-
-Two different questions, which need two different experiment types.
-
-**Necessity — `anatomy.remove_*`.** Take the *same trained* diagnosis or prognosis model
-(by default `diag.anatomy.concat`), freeze every parameter, and score each patient twice: on the original
-volume and with one region erased using the shared local-mean replacement policy. Report the
-paired probability delta on the same patients. No retraining, no re-segmentation, original
-masks reused as stored. Counterfactual arms therefore take no `encoder.init_source`: they
-score the checkpoint a diagnosis/prognosis run already produced, whatever it was initialized
-from. `anatomy.remove_random` erases a volume-matched random region and is
-what the organ deltas must be read against.
-
-**Sufficiency — `anatomy.*_student`.** Train a fresh student from C0 that only ever sees one
-region, and see how far it gets. Four regions (heart, PA, lung, random control) × two
-supervision settings:
-
-- GT-only: `anatomy.pa_student`
-- GT + frozen-teacher KD: `anatomy.pa_student_kd`
-
-The pair isolates exactly what the full-volume teacher adds beyond the labels. The teacher
-stays in eval mode and never enters the student optimizer.
-
-Necessity and sufficiency are not the same claim: a region can be unnecessary (the model
-copes without it) while still being sufficient (it alone would do), and vice versa. Reporting
-one and implying the other is the mistake this design exists to prevent.
-
-## Deferred
-
-- `deferred.contour` — clot localization. Needs a reviewed embolus-mask manifest; a different
-  question from the necessity/sufficiency programme.
-- `deferred.concept_bottleneck` — kept disabled. A concept bottleneck is only honest when
-  every concept has a real reviewed label; enabling proxy concepts would produce confident,
-  meaningless explanations. Embolic burden and vascular pruning have no defensible target in
-  this dataset and are not instantiated.
-
-Both remain implemented and archived-but-runnable, so reviving them is a data question, not a
-code question.

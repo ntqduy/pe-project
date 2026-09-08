@@ -42,5 +42,5 @@ lineage:
   supervision_type: native_labels
 supervision:
   require_masks: true
-  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  masks: segmentation/SEG_pseudo_anatomy
   require_silver_labels: false

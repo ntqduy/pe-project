@@ -2,7 +2,8 @@
 #
 # Question: does contrasting the whole volume against its PA-only view teach the encoder
 # anatomy-sensitive features that the fixed probes can detect?
-# This is the only DAPT arm that consumes anatomy masks (data.segmentation must exist).
+# This is the only DAPT arm that consumes anatomy masks: it needs data.segmentation and
+# then data.roi, and reads the PA view (ROI4) through components/data/anatomy_masks.yaml.
 # Output: outputs/pretraining/dapt/D_dapt_anatomy/  (best.ckpt, lineage.json, result.json)
 _base_:
   - ../../../paths.yaml
@@ -11,6 +12,7 @@ _base_:
   - ../../../components/encoder/from_pretrained.yaml
   - ../../../components/dapt/anatomy_dapt.yaml
   - ../../../components/training/dapt.yaml
+  - ../../../components/data/anatomy_masks.yaml
 experiment:
   id: D_dapt_anatomy
   name: repr.dapt.anatomy
@@ -21,10 +23,5 @@ data:
   manifest: manifests/ctpa.csv
   file_column: image_path
   label_columns: []
-  mask_columns:
-    pa: pa_mask_path
 lineage:
   supervision_type: self_supervised
-supervision:
-  require_masks: true
-  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy

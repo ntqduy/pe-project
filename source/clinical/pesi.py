@@ -98,7 +98,9 @@ def calculate_pesi(record: Mapping[str, Any], fields: Mapping[str, str] | None =
     score += 10 if chronic_lung else 0
     score += 20 if pulse >= 110 else 0
     score += 30 if systolic < 100 else 0
-    score += 20 if respiration >= 30 else 0
+    # ESC/ERS defines this original-PESI criterion as respiratory rate >30/min;
+    # a value exactly 30 must not receive the 20-point penalty.
+    score += 20 if respiration > 30 else 0
     score += 20 if temperature < 36 else 0
     score += 60 if mental else 0
     score += 20 if oxygen < 90 else 0

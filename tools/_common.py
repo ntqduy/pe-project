@@ -122,9 +122,11 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
         transforms.append(ResizeVolume(tuple(preprocessing["shape"])))
     silver_path = supervision.get("silver_labels")
     if silver_path:
+        # Silver tables are written by the silver stage under the output root; a relative
+        # value resolves there, exactly as preflight resolves it.
         silver_path = Path(str(silver_path))
         if not silver_path.is_absolute():
-            silver_path = paths.dataset_root_for(config) / silver_path
+            silver_path = paths.output_asset(silver_path)
     silver_targets = (
         tuple((silver_training.get("targets") or {}).keys())
         if stage == "silver_encoder_adaptation"

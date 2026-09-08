@@ -1,0 +1,130 @@
+# PESI/sPESI source contract for the Stanford INSPECT MEDS/OMOP release.
+#
+# This is intentionally an *unapproved* mapping audit, not a score-producing rule.
+# The codebook demonstrates candidate fields for some components, but does not establish
+# unit harmonisation, clinical phenotype definitions, or the correct encounter-time
+# window. A clinician/data steward must approve every component before `pesi.enabled`
+# can produce `pesi` and `spesi` columns.
+schema_version: 1
+score_specification: ESC_ERS_2019
+clinical_approval:
+  status: pending
+  approver: null
+  approved_at: null
+  reason: >-
+    INSPECT contains raw OMOP/MEDS events, not a validated PESI table. Candidate codes
+    below require source, unit, timing, phenotype and missingness review before use.
+
+index:
+  anchor_column: procedure_datetime
+  event_time_rule: event_time < procedure_datetime
+  vital_lookback_hours: 6
+  vital_selection: latest_value_before_index
+
+# `status` is a deliberate readiness gate: approved | candidate | unmapped.
+# `catalog` declares whether the candidate is expected in codes.parquet or is a special
+# MEDS event (birth/administrative sex) absent from that code catalog.
+components:
+  age:
+    input_column: age
+    type: age_years
+    status: candidate
+    catalog: special_meds_event
+    source_codes: [MEDS_BIRTH]
+    source_table: person
+    selection: age_at_index_from_birth_time
+    expected_unit: years
+    required_review: date-shift semantics and age calculation
+  male:
+    input_column: male
+    type: boolean
+    status: candidate
+    catalog: special_meds_event
+    positive_codes: [Gender/M]
+    negative_codes: [Gender/F]
+    source_table: person
+    selection: administrative_sex_at_index
+    required_review: sex-field semantics and missing/other handling
+  cancer:
+    input_column: cancer
+    type: boolean
+    status: unmapped
+    source_codes: []
+    source_table: condition
+    selection: clinically_approved_active_malignancy_phenotype
+    required_review: phenotype code set, lookback and active-versus-history rule
+  heart_failure:
+    input_column: heart_failure
+    type: boolean
+    status: unmapped
+    source_codes: []
+    source_table: condition
+    selection: clinically_approved_heart_failure_phenotype
+    required_review: phenotype code set, lookback and active-versus-history rule
+  chronic_lung_disease:
+    input_column: chronic_lung_disease
+    type: boolean
+    status: unmapped
+    source_codes: []
+    source_table: condition
+    selection: clinically_approved_chronic_lung_phenotype
+    required_review: phenotype code set and inclusion/exclusion criteria
+  pulse:
+    input_column: pulse
+    type: numeric
+    status: candidate
+    catalog: codes_parquet
+    source_codes: [STANFORD_MEAS/HEART RATE]
+    source_table: measurement
+    selection: latest_value_before_index
+    expected_unit: /min
+    required_review: numeric unit and 6-hour encounter-time coverage
+  systolic_bp:
+    input_column: systolic_bp
+    type: numeric
+    status: unmapped
+    source_codes: []
+    source_table: measurement
+    selection: latest_value_before_index
+    expected_unit: mmHg
+    required_review: candidate code, numeric unit and 6-hour encounter-time coverage
+  respiratory_rate:
+    input_column: respiratory_rate
+    type: numeric
+    status: candidate
+    catalog: codes_parquet
+    source_codes: [STANFORD_PROC/RESPIRATORY RATE]
+    source_table: procedure
+    selection: latest_value_before_index
+    expected_unit: /min
+    required_review: verify numeric payload, unit and 6-hour encounter-time coverage
+  temperature_c:
+    input_column: temperature_c
+    type: numeric
+    status: candidate
+    catalog: codes_parquet
+    source_codes: [STANFORD_MEAS/TEMPERATURE, STANFORD_MEAS/BODY TEMPERATURE]
+    source_table: measurement
+    selection: latest_value_before_index
+    expected_unit: degC
+    required_review: Celsius/Fahrenheit normalisation and 6-hour encounter-time coverage
+  altered_mental_status:
+    input_column: altered_mental_status
+    type: boolean
+    status: unmapped
+    source_codes: []
+    source_table: condition_or_assessment
+    selection: clinically_approved_acute_assessment
+    required_review: acute assessment definition; do not substitute historical diagnosis
+  oxygen_saturation:
+    input_column: oxygen_saturation
+    type: numeric
+    status: candidate
+    catalog: codes_parquet
+    source_codes:
+      - STANFORD_MEAS/OXYGEN SATURATION
+      - STANFORD_MEAS/O2 - SAT (%) (MANUAL ENTRY)
+    source_table: measurement
+    selection: latest_value_before_index
+    expected_unit: '%'
+    required_review: measurement source, percent unit and 6-hour encounter-time coverage

@@ -22,11 +22,5 @@ experiment:
   name: anatomy.pa_student_kd
   stage: roi_student
   family: roi_student
-data:
-  mask_columns:
-    _replace_: true
-    heart: heart_mask_path
-    lung: lung_mask_path
-  roi_mask_ids: {pa: ROI4}
 task:
   input_counterfactual: keep_only_pa

@@ -5,9 +5,9 @@
 # CT integrity, adjudicates labels per patient, verifies that the official split is
 # preserved and that no patient crosses it, then writes every derived manifest.
 # The cohort contract itself lives in source/dataset/profiles/, not here.
-# Output: ${PE_CLOUD_ROOT}/data/derived/datasets/full_inspect/
+# Output: ${PE_DERIVED_ROOT}/datasets/full_inspect/
 #   manifests/{ctpa,diagnosis,prognosis,paired_reports,reports}.csv
-#   exclusions.csv, integrity.json, split_audit.json, dataset.json, volumes/
+#   data_quality.{md,json}, dataset.json, volumes/, audit/
 _base_:
   - ../../../paths.yaml
   - ../../../compute/cpu.yaml

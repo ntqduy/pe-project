@@ -33,14 +33,40 @@ project_blockers:
       manifests/paired_reports.csv must exist under the derived data root for the
       selected dataset profile. They are produced by data.dataset.<profile>, which
       preserves the official INSPECT split; no split is ever created implicitly.
+  - id: pesi_clinical_approval
+    what: >-
+      configs/clinical/pesi_spesi_mapping.yaml still has a pending clinical_approval
+      status, so stage 0 writes a blocked clinical/pesi_status.json and no PESI/sPESI
+      score exists.
+      Every prognosis arm with `pesi` in task.modalities stays blocked until a clinical
+      steward approves all eleven components and supplies pesi.components_table. No score
+      is ever pattern-matched out of raw events. See docs/BLOCKERS.md section 6.
 
 experiments:
 
   # -------------------------------------------------------------- DATASET
-  # Two active dataset profiles, one implementation. They share every eligibility, QC,
+  # Three active dataset profiles, one implementation. They share every eligibility, QC,
   # adjudication, manifest and preprocessing rule (source/dataset/profiles/_common.yaml);
   # only the sampling block differs. Every later stage selects one of them with
   # `--set data.profile=<name>`, and the run id records the choice.
+  data.dataset.smoke_30:
+    config: configs/runs/00_data/dataset/smoke_30.yaml
+    group: DATASET
+    description: Build a deterministic 30-patient all-split technical smoke cohort
+    question: Does the exact dataset-build code path and QC report work before rehearsal?
+    representation: none
+    task: dataset
+    modalities: [image, reports, labels]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: The read-only Stanford INSPECT release (checked by preflight, not by plan)
+    produces:
+      - the same manifest, audit and CT-cache layout as every dataset profile
+      - data_quality.md/json for a small all-split cohort
+    status: ready
+
   data.dataset.full_inspect:
     config: configs/runs/00_data/dataset/full_inspect.yaml
     group: DATASET
@@ -56,8 +82,9 @@ experiments:
       - what: The read-only Stanford INSPECT release (checked by preflight, not by plan)
     produces:
       - ctpa/diagnosis/prognosis/paired_reports/reports manifests
-      - exclusions.csv (every dropped study and the rule that dropped it)
-      - integrity.json, split_audit.json, dataset.json (provenance + preprocessing hash)
+      - data_quality.md/json (compact cohort and QC summary)
+      - audit/ (detailed exclusions, integrity, split and cache-QC findings)
+      - dataset.json (provenance + preprocessing hash)
       - preprocessed volume cache
     status: ready
 
@@ -393,6 +420,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: Public backbone contract and weights
         blocker: backbone_contract
     produces: [anatomy-aware DAPT encoder checkpoint]
@@ -489,7 +519,7 @@ experiments:
       - what: C0 checkpoint
         experiment: repr.align
         path_key: lineage.source_checkpoint
-      - what: Anatomy masks
+      - what: Anatomy masks - the external cohort manifest carries its own mask columns
         experiment: data.segmentation
         path_key: supervision.masks
     produces: [externally supervised encoder checkpoint - an optional side branch]
@@ -517,7 +547,7 @@ experiments:
       - what: C0 checkpoint
         experiment: repr.align
         path_key: lineage.source_checkpoint
-      - what: Anatomy masks
+      - what: Anatomy masks - the external cohort manifest carries its own mask columns
         experiment: data.segmentation
         path_key: supervision.masks
     produces: [externally supervised encoder checkpoint - an optional side branch]
@@ -714,6 +744,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
     produces:
       - anatomy-aware diagnosis checkpoint
       - the frozen model every counterfactual uses and the teacher every KD student uses
@@ -741,6 +774,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: Accepted SL02 silver labels
         experiment: data.silver.hybrid
         path_key: supervision.silver_labels
@@ -769,6 +805,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: Accepted SL02 silver labels
         experiment: data.silver.hybrid
         path_key: supervision.silver_labels
@@ -798,6 +837,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: Accepted SL02 silver labels
         experiment: data.silver.hybrid
         path_key: supervision.silver_labels
@@ -1074,6 +1116,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
@@ -1104,6 +1149,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
@@ -1134,6 +1182,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
@@ -1163,6 +1214,9 @@ experiments:
       - what: Anatomy masks (reused as stored, never re-segmented)
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
     produces: [paired original vs removal probabilities, probability deltas]
     status: blocked
     blockers: ["Requires a trained diag.anatomy.concat checkpoint."]
@@ -1186,6 +1240,9 @@ experiments:
       - what: Anatomy masks (reused as stored, never re-segmented)
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
     produces: [paired original vs removal probabilities, probability deltas]
     status: blocked
     blockers: ["Requires a trained diag.anatomy.concat checkpoint."]
@@ -1209,6 +1266,9 @@ experiments:
       - what: Anatomy masks (reused as stored, never re-segmented)
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
     produces: [paired original vs removal probabilities, probability deltas]
     status: blocked
     blockers: ["Requires a trained diag.anatomy.concat checkpoint."]
@@ -1232,6 +1292,9 @@ experiments:
       - what: Anatomy masks
         experiment: data.segmentation
         path_key: supervision.masks
+      - what: ROI manifest supplying the heart/PA/lung branch masks
+        experiment: data.roi
+        path_key: data.roi_manifest
       - what: ROI8 matched random control masks
         experiment: data.roi
         path_key: supervision.rois

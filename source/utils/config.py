@@ -74,8 +74,12 @@ def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str
     for key, value in override.items():
         if key in {_REPLACE_KEY, _DELETE_KEY}:
             continue
-        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
-            result[key] = deep_merge(result[key], value)
+        if isinstance(value, Mapping):
+            # Merge into {} when nothing is inherited, so `_replace_` / `_delete_` are
+            # consumed at every depth instead of surviving into the resolved config as a
+            # phantom key (e.g. a mask region literally named `_replace_`).
+            inherited = result.get(key)
+            result[key] = deep_merge(inherited if isinstance(inherited, Mapping) else {}, value)
         else:
             result[key] = copy.deepcopy(value)
     return result
@@ -221,7 +225,7 @@ def active_dataset_profiles() -> tuple[str, ...]:
     try:
         from source.dataset import ACTIVE_PROFILES
     except Exception:  # noqa: BLE001 - config must stay usable without the dataset package
-        return ("test_500_sample", "full_inspect")
+        return ("smoke_30", "test_500_sample", "full_inspect")
     return tuple(ACTIVE_PROFILES)
 
 

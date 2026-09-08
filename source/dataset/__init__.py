@@ -1,17 +1,18 @@
 """Dataset profiles: the project's own definition of which patients it trains on.
 
-Exactly two profiles are active:
+Three profiles are active:
 
+    smoke_30           a deterministic, all-split technical smoke cohort
     test_500_sample   the clean/filtered cohort, then 500 patients sampled patient-level
     full_inspect      the same clean/filtered cohort, no sampling at all
 
 They inherit the identical eligibility, integrity, adjudication, manifest and
 preprocessing blocks from ``profiles/_common.yaml`` and differ only in ``sampling``.
 `assert_shared_preprocessing()` enforces that at import time of any consumer, so the
-two profiles cannot silently drift apart and make their results incomparable.
+active profiles cannot silently drift apart and make their results incomparable.
 
 A profile is data, not code: `source/data_preprocessing/pipeline.build_dataset` is the
-single implementation both of them run.
+single implementation all of them run.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from typing import Any
 from source.utils.config import ConfigError, deep_merge
 
 PROFILE_DIR = Path(__file__).resolve().parent / "profiles"
-ACTIVE_PROFILES = ("test_500_sample", "full_inspect")
+ACTIVE_PROFILES = ("smoke_30", "test_500_sample", "full_inspect")
 
 
 class DatasetProfileError(ConfigError):
@@ -85,7 +86,7 @@ def load_profile(name: str) -> dict[str, Any]:
 
 
 def require_active_profile(name: str) -> dict[str, Any]:
-    """Load a profile, refusing anything outside the two active profiles."""
+    """Load a profile, refusing anything outside the active profiles."""
     requested = str(name or "").strip()
     if requested not in ACTIVE_PROFILES:
         raise DatasetProfileError(

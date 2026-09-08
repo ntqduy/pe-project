@@ -15,17 +15,13 @@ _base_:
   - ../../../components/task/prognosis_primary_cohort.yaml
   - ../../../components/training/prognosis.yaml
   - ../../../components/adapter/organ.yaml
+  - ../../../components/data/anatomy_masks.yaml
   - ../../../components/fusion/late_logit.yaml
 experiment:
   id: PR_anatomy_late_logit
   name: prog.anatomy.late
   stage: prognosis
   family: prognosis
-data:
-  mask_columns:
-    heart: heart_mask_path
-    pa: pa_mask_path
-    lung: lung_mask_path
 task:
   modalities: [image, ehr, pesi]
   regions: [heart, pa, lung]
@@ -34,8 +30,8 @@ lineage:
   supervision_type: native_labels
 supervision:
   require_masks: true
-  masks: ${PE_CLOUD_ROOT}/pe-project/outputs/segmentation/SEG_pseudo_anatomy
+  masks: segmentation/SEG_pseudo_anatomy
   require_ehr: true
-  ehr: ${PE_CLOUD_ROOT}/data/derived/ehr
+  ehr: clinical/ehr_features.csv
   require_pesi: true
-  pesi: ${PE_CLOUD_ROOT}/data/derived/pesi
+  pesi: clinical/pesi_features.csv

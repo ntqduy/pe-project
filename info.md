@@ -14,6 +14,12 @@
 > - Tài liệu hiện hành: `docs/PIPELINE.md`, `docs/EXPERIMENT_MAP.md`, `docs/BLOCKERS.md`,
 >   `README.md`, `configs/README.md`, `tools/README.md`.
 > - Repo **không có** thư mục `tests/` và không dùng pytest.
+> - `docs/anatomy_aware_gap_analysis.md` và `docs/anatomy_aware_implementation.md` đã bị
+>   xoá; nội dung anatomy-aware hiện nằm trong `README.md` (mục *Architecture*) và
+>   `docs/PIPELINE.md`. Mọi tham chiếu tới hai file đó ở phía dưới chỉ còn giá trị lịch sử.
+> - Mask giải phẫu **không** đến từ cột `*_mask_path` trong manifest nữa: chúng được đọc từ
+>   ROI run qua `data.roi_manifest` + `data.roi_mask_ids`
+>   (`configs/components/data/anatomy_masks.yaml`).
 >
 > File này tổng hợp toàn bộ thông tin về dự án: dự án làm gì, cấu trúc thư mục, ý nghĩa từng
 > file/module, cách cài đặt, cách chạy, và các phần còn dang dở. Nội dung được tổng hợp từ

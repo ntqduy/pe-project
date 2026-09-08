@@ -8,7 +8,9 @@
 # place where an experiment is defined.
 #
 # Environment (all optional):
-#   DATASET             test_500_sample | full_inspect        default: test_500_sample
+#   DATASET             smoke_30 | test_500_sample | full_inspect
+#                       default: the selected dataset wrapper's own profile; test_500_sample
+#                       for every other stage
 #   BACKBONE            ct_fm | ct_clip | totalfm             default: the config's own
 #   ENCODER_SOURCE      pretrained | dapt | c0 | silver       default: the config's own
 #   ENCODER_CHECKPOINT  explicit checkpoint for ENCODER_SOURCE (required when it is not
@@ -27,6 +29,13 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Pipeline artifacts must live on the storage mount. This helper only validates a mount
+# the user has already made; it never invokes gcsfuse or mounts anything itself.
+# Direct `python run.py ...` invocations should source the same helper explicitly.
+if [[ -z "${PE_CLOUD_ROOT:-}" && -f "$PROJECT_ROOT/scripts/use_gcs_storage.sh" ]]; then
+  # shellcheck disable=SC1091 -- this is an intentional repository-local environment helper
+  source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+fi
 PYTHON="${PYTHON:-python}"
 
 pe_die() { printf 'error: %s\n' "$*" >&2; exit 2; }
@@ -44,7 +53,13 @@ pe_run() {
   local -a cmd=("$PYTHON" "$PROJECT_ROOT/run.py" "$action" "$experiment")
   local -a overrides=()
 
-  local dataset="${DATASET:-test_500_sample}"
+  local dataset="${DATASET:-}"
+  if [[ -z "$dataset" ]]; then
+    case "$experiment" in
+      data.dataset.*) dataset="${experiment##*.}" ;;
+      *) dataset="test_500_sample" ;;
+    esac
+  fi
   overrides+=("data.profile=${dataset}")
   [[ -n "${BACKBONE:-}" ]] && overrides+=("model.backbone=${BACKBONE}")
   [[ -n "${ENCODER_SOURCE:-}" ]] && overrides+=("encoder.init_source=${ENCODER_SOURCE}")

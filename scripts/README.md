@@ -10,11 +10,11 @@ scripts/
 ├── 0_data_preprocessing/  build a dataset profile from the read-only INSPECT release
 ├── 1_segmentation/        TotalSegmentator pseudo-anatomy masks, LungMask QC, ROI crops
 ├── 2_silver_label/        SL00 / SL01 / SL02 report-derived labels
-├── 3_shared_encoder/
-│   ├── pretrained_eval/   the public backbones, evaluated before any adaptation
-│   ├── dapt/              none / MAE / DINO / SimCLR / anatomy-DAPT
-│   ├── alignment/         image-report alignment -> C0
-│   └── silver_encoder/    silver adaptation -> C_silver
+├── 3_shared_encoder/      run these four sub-stages in the numbered order
+│   ├── 0_pretrained_eval/ the public backbones, evaluated before any adaptation
+│   ├── 1_dapt/            none / MAE / DINO / SimCLR / anatomy-DAPT
+│   ├── 2_alignment/       image-report alignment -> C0
+│   └── 3_silver_encoder/  silver adaptation -> C_silver
 ├── 4_diagnosis/           probe, global, anatomy-aware, ROI students, KD
 ├── 5_prognosis/           PESI / clinical / image / multimodal / anatomy-aware
 └── 6_counterfactual/      frozen-model region removal
@@ -26,7 +26,7 @@ A wrapper never hardcodes any of them.
 
 | axis | environment variable | values |
 |---|---|---|
-| dataset | `DATASET` | `test_500_sample`, `full_inspect` |
+| dataset | `DATASET` | `smoke_30`, `test_500_sample`, `full_inspect` |
 | method | which script you run | one experiment each |
 | encoder weight | `BACKBONE`, `ENCODER_SOURCE` | `ct_fm`/`ct_clip`/`totalfm` × `pretrained`/`dapt`/`c0`/`silver` |
 | run scope | `MAX_CASES`, `PATIENT_ID`, `ALLOW_ALL` | scoped stages only (see below) |
@@ -39,14 +39,14 @@ in encoder initialization therefore never overwrite each other.
 ## Test → full
 
 ```bash
-# smoke: ten patients through the generation stages
-DATASET=test_500_sample MAX_CASES=10 bash scripts/0_data_preprocessing/build_test_500_sample.sh
+# smoke: thirty patients (ten per official split) through the generation stages
+bash scripts/0_data_preprocessing/build_smoke_30.sh
 
 # the whole 500-patient rehearsal cohort
-DATASET=test_500_sample ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh
+ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh
 
 # the full cohort
-DATASET=full_inspect ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh
+ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh
 ```
 
 `MAX_CASES` / `PATIENT_ID` / `ALLOW_ALL` apply to the **generation** stages -- dataset
@@ -97,6 +97,12 @@ loading CT-FM weights into a TotalFM run would produce an uninterpretable number
 
 ```bash
 SET="training.epochs=5 seed=7" DATASET=full_inspect bash scripts/4_diagnosis/anatomy_full.sh
+```
+
+The four `3_shared_encoder/` sub-directories are numbered in the order they must run:
+
+```bash
+GPUS=0 bash scripts/3_shared_encoder/1_dapt/dino.sh
 ```
 
 `ACTION` selects the `run.py` verb: `show`, `plan`, `preflight`, `dry`, `run` (default).
