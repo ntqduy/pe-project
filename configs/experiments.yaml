@@ -505,62 +505,55 @@ experiments:
     group: REPRESENTATION
     legacy_id: DX06_rsna_single
     description: External RSPECT/RSNA-STR supervised transfer, PE presence only
-    question: Does external supervised transfer produce a better representation than C0 alone?
-    representation: C0 + external supervision
+    question: Does PE-only external supervision improve a configurable upstream representation?
+    representation: configurable upstream encoder + external supervision
     task: diagnosis
     modalities: [image]
     anatomy: false
     supervision: external native labels
-    fusion: soft_moe
+    fusion: concat_mlp
     requires:
       - what: External cohort manifest with patient-level split
         path_key: data.manifest
         blocker: rspect_manifest
-      - what: C0 checkpoint
-        experiment: repr.align
-        path_key: lineage.source_checkpoint
-      - what: Anatomy masks - the external cohort manifest carries its own mask columns
-        experiment: data.segmentation
-        path_key: supervision.masks
+      - what: Selected input encoder checkpoint (pretrained, DAPT, alignment or custom)
     produces: [externally supervised encoder checkpoint - an optional side branch]
     status: blocked
     blockers:
-      - manifests/rsna_diagnosis.csv is a historical placeholder; the real external cohort
-        manifest and its label mapping are unverified.
+      - /mnt/RSPECT_dataset is the configured external data root. Its Kaggle archive is
+        incomplete (the .kaggle-partial marker reports a larger expected byte count), and
+        no extracted patient-level-split normalized manifest exists yet.
 
   repr.rspect.multitask:
     config: configs/runs/02_representation/rspect/multitask.yaml
     group: REPRESENTATION
     legacy_id: DX07_rsna_multi
     description: External RSPECT/RSNA-STR supervised transfer, PE presence plus attributes
-    question: Does multitask external supervision transfer better than presence-only?
-    representation: C0 + external multitask supervision
+    question: Does external PE/RSNA-STR multitask supervision transfer better than PE-only?
+    representation: configurable upstream encoder + external multitask supervision
     task: diagnosis
     modalities: [image]
     anatomy: false
     supervision: external native multitask labels
-    fusion: soft_moe
+    fusion: concat_mlp
     requires:
       - what: External cohort manifest with patient-level split
         path_key: data.manifest
         blocker: rspect_manifest
-      - what: C0 checkpoint
-        experiment: repr.align
-        path_key: lineage.source_checkpoint
-      - what: Anatomy masks - the external cohort manifest carries its own mask columns
-        experiment: data.segmentation
-        path_key: supervision.masks
+      - what: Selected input encoder checkpoint (pretrained, DAPT, alignment or custom)
     produces: [externally supervised encoder checkpoint - an optional side branch]
     status: blocked
     blockers:
-      - Same unverified external-cohort manifest and label contract as the single-task arm.
+      - /mnt/RSPECT_dataset is the configured external data root. Its Kaggle archive is
+        incomplete (the .kaggle-partial marker reports a larger expected byte count), and
+        no extracted patient-level-split normalized manifest exists yet.
 
   repr.silver.hybrid:
     config: configs/runs/02_representation/silver_adaptation/hybrid.yaml
     group: REPRESENTATION
     legacy_id: SE01
-    description: Adapt C0 with accepted SL02 silver labels, producing C_silver
-    question: Does accepted report-derived supervision improve the representation over C0?
+    description: Adapt the canonical RSPECT multitask encoder with accepted SL02 labels
+    question: Does accepted report-derived supervision improve the RSPECT representation?
     representation: C_silver
     task: silver encoder adaptation
     modalities: [image]
@@ -568,8 +561,8 @@ experiments:
     supervision: accepted silver multitask
     fusion: none
     requires:
-      - what: C0 checkpoint
-        experiment: repr.align
+      - what: Canonical RSPECT multitask checkpoint
+        experiment: repr.rspect.multitask
         path_key: init.checkpoint
       - what: Accepted SL02 silver labels
         experiment: data.silver.hybrid
@@ -578,12 +571,12 @@ experiments:
         path_key: data.manifest
     produces: [C_silver checkpoint - an optional side branch, never a prerequisite]
     status: blocked
-    blockers: ["Depends on C0 and on accepted silver labels."]
+    blockers: ["Depends on RSPECT multitask and on accepted silver labels."]
 
   repr.silver.medgemma:
     config: configs/runs/02_representation/silver_adaptation/medgemma.yaml
     group: REPRESENTATION
-    description: Adapt C0 with accepted SL00 silver labels
+    description: Adapt the canonical RSPECT multitask encoder with accepted SL00 labels
     question: Does the silver source change what the adapted representation learns?
     representation: C_silver (SL00)
     task: silver encoder adaptation
@@ -592,8 +585,8 @@ experiments:
     supervision: accepted silver multitask
     fusion: none
     requires:
-      - what: C0 checkpoint
-        experiment: repr.align
+      - what: Canonical RSPECT multitask checkpoint
+        experiment: repr.rspect.multitask
         path_key: init.checkpoint
       - what: Accepted SL00 silver labels
         experiment: data.silver.medgemma
@@ -602,12 +595,12 @@ experiments:
         path_key: data.manifest
     produces: [C_silver (SL00) checkpoint]
     status: blocked
-    blockers: ["Depends on C0 and on accepted SL00 silver labels."]
+    blockers: ["Depends on RSPECT multitask and on accepted SL00 silver labels."]
 
   repr.silver.rules_falcon:
     config: configs/runs/02_representation/silver_adaptation/rules_falcon.yaml
     group: REPRESENTATION
-    description: Adapt C0 with accepted SL01 silver labels
+    description: Adapt the canonical RSPECT multitask encoder with accepted SL01 labels
     question: Does the rule-first silver source produce a better adapted representation?
     representation: C_silver (SL01)
     task: silver encoder adaptation
@@ -616,8 +609,8 @@ experiments:
     supervision: accepted silver multitask
     fusion: none
     requires:
-      - what: C0 checkpoint
-        experiment: repr.align
+      - what: Canonical RSPECT multitask checkpoint
+        experiment: repr.rspect.multitask
         path_key: init.checkpoint
       - what: Accepted SL01 silver labels
         experiment: data.silver.rules_falcon
@@ -626,7 +619,7 @@ experiments:
         path_key: data.manifest
     produces: [C_silver (SL01) checkpoint]
     status: blocked
-    blockers: ["Depends on C0 and on accepted SL01 silver labels."]
+    blockers: ["Depends on RSPECT multitask and on accepted SL01 silver labels."]
 
   # ----------------------------------------------------------- DIAGNOSIS
   diag.report_only:
@@ -1509,6 +1502,45 @@ experiments:
     produces: [the control the distilled organ students must beat]
     status: blocked
     blockers: ["Depends on C0, ROI artifacts and a trained teacher."]
+
+  # ------------------------------------------------------- PROTOCOL MATRIX
+  diag.matrix.multitask:
+    config: configs/runs/03_diagnosis/matrix/multitask.yaml
+    group: DIAGNOSIS
+    description: Protocol three-label native diagnosis multitask base
+    question: Does shared training across PE-positive, acute PE and subsegmental PE help?
+    representation: configurable upstream encoder
+    task: diagnosis multitask
+    modalities: [image]
+    anatomy: false
+    supervision: native PE labels
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest with the three native protocol labels
+        path_key: data.manifest
+    produces: [one matrix-scoped diagnosis checkpoint and metrics directory]
+    status: blocked
+    blockers:
+      - Requires the selected encoder checkpoint and a built dataset profile.
+
+  diag.matrix.single_task:
+    config: configs/runs/03_diagnosis/matrix/single_task.yaml
+    group: DIAGNOSIS
+    description: Protocol single-label diagnosis base; launcher selects the native label
+    question: How does each PE label perform without auxiliary task supervision?
+    representation: configurable upstream encoder
+    task: diagnosis single task
+    modalities: [image]
+    anatomy: false
+    supervision: one native PE label
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest with the selected native protocol label
+        path_key: data.manifest
+    produces: [one matrix-scoped diagnosis checkpoint and metrics directory]
+    status: blocked
+    blockers:
+      - Requires the selected encoder checkpoint and a built dataset profile.
 
   # ------------------------------------------------------------ DEFERRED
   deferred.contour:

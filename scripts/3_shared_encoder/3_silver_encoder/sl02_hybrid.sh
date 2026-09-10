@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Adapt C0 with accepted SL02 silver labels. Produces C_silver.
-#
-# Thin wrapper: resolves repr.silver.hybrid through run.py. No scientific logic lives here.
+# Deprecated compatibility path. Silver encoder now follows RSPECT under 4_silver_encoder.
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/../../_lib.sh"
-pe_run repr.silver.hybrid "$@"
+exec "$(dirname "${BASH_SOURCE[0]}")/../4_silver_encoder/sl02_hybrid.sh" "$@"

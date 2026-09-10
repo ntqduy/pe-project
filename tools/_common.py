@@ -146,6 +146,8 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
         label_columns=tuple(data.get("label_columns") or ()),
         ehr_columns=tuple(data.get("ehr_columns") or ()),
         pesi_columns=tuple(data.get("pesi_columns") or ()),
+        ehr_availability_column=data.get("ehr_availability_column"),
+        pesi_availability_column=data.get("pesi_availability_column"),
         mask_columns=dict(data.get("mask_columns") or {}),
         roi_manifest=roi_manifest,
         roi_mask_ids=dict(data.get("roi_mask_ids") or {}),

@@ -268,6 +268,8 @@ validated score, so stage 0 always writes an audit and only *sometimes* writes a
 clinical/pesi_mapping_audit.json   per-component code / source / unit / timing review
 clinical/pesi_status.json          blocked | built | built_no_complete_cases | disabled
 clinical/pesi_features.csv         ONLY when approved: pesi, spesi, pesi_class, computability flags
+clinical/pesi_components_candidate.csv  raw candidate component values + per-feature missingness; never a score
+clinical/modality_availability.csv      CTPA/note/EHR/PESI availability flags per study
 ```
 
 `source/clinical/pesi.py` implements the eleven-component original PESI, its five risk
@@ -277,6 +279,11 @@ ends normally with `pesi_status.json: blocked` and no score is fabricated. Every
 with `pesi` in `task.modalities` fails preflight until a clinical steward approves all eleven
 components **and** supplies an approved study-level `pesi.components_table`. See
 [docs/BLOCKERS.md](docs/BLOCKERS.md) §6.
+
+The candidate component table is deliberately separate from the approved score. It contains
+raw configured values (where a candidate event can be found), a missingness indicator for
+every component, and code/time/unit provenance. It can support a learned clinical model,
+but cannot be presented as original PESI/sPESI until the mapping contract is approved.
 
 ### Where the anatomy masks come from
 

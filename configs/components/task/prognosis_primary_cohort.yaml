@@ -17,6 +17,9 @@ data:
   manifest: manifests/prognosis.csv
   file_column: image_path
   label_columns: [mortality_30d]
+  # Legacy prognosis configs read the strict pre-index profile. Matrix launchers may
+  # switch this to EHR_24_h, whose definition is audited in clinical/ehr_profiles.json.
+  ehr_profile: EHR_0_h
   ehr_columns: []
   ehr_columns_full: []
   ehr_columns_common: []

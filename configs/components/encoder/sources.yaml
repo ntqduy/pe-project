@@ -1,13 +1,15 @@
 # Where each kind of encoder checkpoint lives.
 #
-# One diagnosis/prognosis model, four possible initializations. Nothing here selects one;
-# `from_pretrained.yaml`, `from_dapt.yaml` and `from_c0.yaml` do that, and any run can be
-# moved between them with `--set encoder.init_source=...`.
+# One diagnosis/prognosis model, named upstream initializations, plus an explicit custom
+# checkpoint option. Nothing here selects one; a run chooses it through
+# `encoder.init_source` (or the shared matrix launchers' WEIGHT_SOURCE).
 #
 #   pretrained  the original public backbone weights, loaded through the backbone contract
 #   dapt        an encoder after domain-adaptive pretraining on INSPECT CTPA
 #   c0          the image-report aligned encoder (this project's C0)
+#   rspect_*    an external RSPECT supervised-transfer encoder
 #   silver      C0 after accepted-silver adaptation (C_silver)
+#   custom      requires encoder.checkpoint; there is intentionally no default path
 #
 # The defaults point at the canonical run of each stage. Any other checkpoint --
 # a different backbone's DAPT run, a different DAPT method, a different silver source --
@@ -26,8 +28,14 @@ encoder:
     pretrained: null
     dapt: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt
     c0: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
-    silver: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/silver/SE_c_silver_hybrid/best.ckpt
+    rspect_multitask: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/rspect/multitask/weight_alignment/best.ckpt
+    rspect_single: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/rspect/single_pe/weight_alignment/best.ckpt
+    silver: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/silver_encoder/sl02_hybrid/weight_rspect_multitask/best.ckpt
+    custom: null
   source_experiments:
     dapt: D_dapt_dino
     c0: AL_image_report_c0
-    silver: SE_c_silver_hybrid
+    rspect_multitask: DX_rspect_multitask_weight_alignment
+    rspect_single: DX_rspect_single_weight_alignment
+    silver: SE_silver_sl02_hybrid_weight_rspect_multitask
+    custom: null

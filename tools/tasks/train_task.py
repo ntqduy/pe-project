@@ -135,12 +135,13 @@ def main() -> int:
         manager = OutputManager(paths)
         family = str(config["experiment"].get("family") or config["experiment"]["stage"])
         experiment_id = str(config["experiment"]["id"])
-        run_dir = manager.run_dir(family, experiment_id)
+        output_id = str(config["experiment"].get("output_id") or experiment_id)
+        run_dir = manager.run_dir(family, output_id)
 
         def prepare() -> Path:
             destination = manager.prepare(
                 family,
-                experiment_id,
+                output_id,
                 resume=args.resume,
                 overwrite=args.overwrite,
             )

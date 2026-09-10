@@ -137,6 +137,11 @@ class ProjectPaths:
     def dataset_root_for(self, config: Mapping[str, Any] | None) -> Path:
         """Resolve the dataset root from a resolved config's ``data`` block."""
         data = dict((config or {}).get("data") or {})
+        configured_root = data.get("root")
+        if configured_root is not None and str(configured_root).strip():
+            resolved_root = _path(configured_root)
+            if resolved_root is not None:
+                return resolved_root
         return self.dataset_root(str(data.get("mode") or "full"), data.get("profile"))
 
     def code_asset(self, value: Any) -> Path | None:

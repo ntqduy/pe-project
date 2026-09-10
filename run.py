@@ -216,6 +216,8 @@ def command_show(registry: dict[str, Any], args: argparse.Namespace) -> int:
     print(f"question        : {entry.get('question', '-')}")
     print(f"config          : {entry.get('config')}")
     print(f"internal id     : {experiment.get('id', '?')}  (stage: {experiment.get('stage', '?')})")
+    if experiment.get("output_id"):
+        print(f"output id       : {experiment['output_id']}")
     if entry.get("legacy_id"):
         print(f"legacy id       : {entry['legacy_id']} (carried over unchanged)")
     print(f"representation  : {entry.get('representation', '-')}")

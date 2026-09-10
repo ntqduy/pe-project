@@ -1,20 +1,21 @@
-# repr.silver.hybrid — SE01: adapt C0 with accepted SL02 (hybrid) silver labels. Produces C_silver.
+# repr.silver.hybrid — adapt the RSPECT multitask encoder with accepted SL02 labels.
 #
-# Question: does accepted report-derived supervision improve the representation over C0?
-# Side branch: C0 stays intact and no downstream task requires C_silver. Compare the two
-# with probe.diag / probe.prog while keeping split, labels and probe contract fixed.
-# Output: outputs/pretraining/silver/SE_c_silver_hybrid/  (best.ckpt is C_silver)
+# Question: does accepted report-derived supervision improve the externally supervised
+# RSPECT representation? The input source remains configurable through WEIGHT_SOURCE.
+# Output: outputs/shared_encoder/silver_encoder/sl02_hybrid/weight_rspect_multitask/
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
   - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
+  - ../../../components/encoder/from_rspect_multitask.yaml
   - ../../../components/task/silver_adaptation.yaml
 experiment:
-  id: SE_c_silver_hybrid
+  id: SE_silver_sl02_hybrid_weight_rspect_multitask
   name: repr.silver.hybrid
   stage: silver_encoder_adaptation
-  family: silver_encoder_adaptation
+  family: shared_encoder
+  output_id: silver_encoder/sl02_hybrid/weight_rspect_multitask
+  variant_stamp: false
 data:
   mode: full
   manifest: manifests/ctpa.csv

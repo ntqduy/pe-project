@@ -54,6 +54,12 @@ adjudication:
     - pe_acute
     - pe_subsegmentalonly
     - 1_month_mortality
+    - 6_month_mortality
+    - 12_month_mortality
+    - 1_month_readmission
+    - 6_month_readmission
+    - 12_month_readmission
+    - 12_month_PH
 
 manifests:
   # INSPECT column -> project target. Only native labels appear here; every richer
@@ -62,10 +68,35 @@ manifests:
     pe_positive_nlp: pe_present
     pe_acute: pe_acute
     pe_subsegmentalonly: pe_subsegmental_only
+  # New protocol-facing aliases coexist with the legacy diagnosis column names above.
+  # They point at the same raw reviewed labels; no label is inferred or duplicated by
+  # model code.
+  diagnosis_label_aliases:
+    pe_positive: pe_positive_nlp
+    pe_subsegmental: pe_subsegmentalonly
   prognosis_label: 1_month_mortality
   prognosis_conditions:
     pe_positive_nlp: TRUE
     pe_acute: TRUE
+  # The legacy prognosis.csv remains confirmed acute PE for backward compatibility.
+  # New matrix runs read one of these explicit evaluation cohorts instead.  Cohort and
+  # EHR window are data-selection/input settings, never additional prediction labels.
+  prognosis_outcomes:
+    - 1_month_mortality
+    - 6_month_mortality
+    - 12_month_mortality
+    - 1_month_readmission
+    - 6_month_readmission
+    - 12_month_readmission
+    - 12_month_PH
+  prognosis_cohorts:
+    all_patient:
+      manifest: prognosis_all_patient.csv
+      conditions: {}
+    PE_positive:
+      manifest: prognosis_pe_positive.csv
+      conditions:
+        pe_positive_nlp: TRUE
   include_report_text: true
 
 preprocessing:
@@ -109,6 +140,17 @@ ehr:
   cache_namespace: inspect_meds_omop
   batch_size: 250000
   end_before_ctpa_hours: 0.0
+  # EHR_0_h means strict pre-index: event_time < CTPA time. EHR_24_h means a
+  # stricter 24-hour *pre-CTPA safety buffer*: event_time < CTPA time - 24h. It never
+  # admits post-index EHR events, so neither profile can leak a later prognosis outcome.
+  default_profile: EHR_0_h
+  profiles:
+    EHR_0_h:
+      end_before_ctpa_hours: 0.0
+      manifest_prefix: ""
+    EHR_24_h:
+      end_before_ctpa_hours: 24.0
+      manifest_prefix: ehr_24h_
   windows_days: [365, 30]
   train_vocabulary:
     prior: 1000
@@ -127,6 +169,10 @@ pesi:
   # pre-CTPA timing. This runs even while scoring remains blocked.
   audit_candidate_coverage: true
   audit_batch_size: 250000
+  # Write raw candidate component values, per-component missingness, source code, unit
+  # and timestamp to clinical/pesi_components_candidate.csv. This supports learned
+  # clinical models without treating candidate mappings as an approved PESI score.
+  materialize_candidate_components: true
   # Fill with an approved, study-level table only after the mapping audit is approved.
   # An absolute path under /mnt/pe-storage is appropriate; leaving it null keeps PESI
   # safely blocked while the rest of stage 0 is fully runnable.

@@ -7,18 +7,126 @@ the experiment lives in `configs/experiments.yaml` + `configs/runs/**`, the code
 ```text
 scripts/
 ├── _lib.sh                shared env -> run.py plumbing
+├── _matrix_runner.sh      shared diagnosis/prognosis/RSPECT matrix mapping
+├── run_all.sh             enumerate / execute the whole experiment matrix
 ├── 0_data_preprocessing/  build a dataset profile from the read-only INSPECT release
 ├── 1_segmentation/        TotalSegmentator pseudo-anatomy masks, LungMask QC, ROI crops
 ├── 2_silver_label/        SL00 / SL01 / SL02 report-derived labels
-├── 3_shared_encoder/      run these four sub-stages in the numbered order
+├── 3_shared_encoder/      run these five sub-stages in the numbered order
 │   ├── 0_pretrained_eval/ the public backbones, evaluated before any adaptation
 │   ├── 1_dapt/            none / MAE / DINO / SimCLR / anatomy-DAPT
 │   ├── 2_alignment/       image-report alignment -> C0
-│   └── 3_silver_encoder/  silver adaptation -> C_silver
-├── 4_diagnosis/           probe, global, anatomy-aware, ROI students, KD
-├── 5_prognosis/           PESI / clinical / image / multimodal / anatomy-aware
+│   ├── 3_rspect/          external supervised transfer: multitask or PE-only
+│   └── 4_silver_encoder/  silver adaptation after the selected RSPECT encoder
+├── 4_diagnosis/
+│   ├── multi-task/        exact three-label protocol launcher (global.sh)
+│   └── single-task/       pe_positive / pe_acute / pe_subsegmental,
+│                          each with global.sh and probe.sh
+├── 5_prognosis/           cohort × EHR-profile × task × strategy symlink matrix
 └── 6_counterfactual/      frozen-model region removal
 ```
+
+`3_shared_encoder/3_silver_encoder/` is retained only as a forwarding compatibility
+path; new commands use `4_silver_encoder/`.
+
+## Protocol matrix
+
+The matrix launchers accept a public weight vocabulary without hard-coded checkpoint
+paths:
+
+```text
+WEIGHT_SOURCE=pretrained | dapt | alignment | rspect_multitask | rspect_single | silver_encoder | custom
+WEIGHT_PATH=/path/to/checkpoint     # required only when WEIGHT_SOURCE=custom
+```
+
+The canonical path for every named stage lives once in
+`configs/components/encoder/sources.yaml`; `WEIGHT_PATH` overrides it while preserving
+the source name in lineage. `alignment` and `silver_encoder` map internally to the
+legacy `c0` and `silver` source keys, so archived commands remain valid.
+
+```bash
+# RSPECT: external dataset is /mnt/RSPECT_dataset (RSPECT_ROOT may override it).
+WEIGHT_SOURCE=alignment ACTION=preflight \
+  bash scripts/3_shared_encoder/3_rspect/multi-task/train.sh
+WEIGHT_SOURCE=dapt ACTION=preflight \
+  bash scripts/3_shared_encoder/3_rspect/single-task/pe_positive.sh
+
+# Diagnosis: all three labels together, or one binary label.
+DATASET=test_500_sample WEIGHT_SOURCE=rspect_multitask ACTION=preflight \
+  bash scripts/4_diagnosis/multi-task/global.sh
+DATASET=test_500_sample WEIGHT_SOURCE=silver_encoder ACTION=preflight \
+  bash scripts/4_diagnosis/single-task/pe_acute/global.sh
+# ... and the frozen-encoder probe, the fixed instrument for comparing WEIGHT_SOURCE.
+DATASET=test_500_sample WEIGHT_SOURCE=dapt ACTION=preflight \
+  bash scripts/4_diagnosis/single-task/pe_positive/probe.sh
+
+# Prognosis: choose cohort, strict pre-index EHR profile, one of seven outcomes and a strategy.
+DATASET=test_500_sample WEIGHT_SOURCE=alignment ACTION=preflight \
+  bash scripts/5_prognosis/all_patient/EHR_0_h/1_month_mortality/image_clinical.sh
+DATASET=test_500_sample WEIGHT_SOURCE=rspect_single ACTION=preflight \
+  bash scripts/5_prognosis/PE_positive/EHR_24_h/12_month_PH/global_soft_moe.sh
+```
+
+`EHR_0_h` means `event_time < CTPA time`. `EHR_24_h` is deliberately stricter:
+`event_time < CTPA time - 24 hours`; it is not a post-index 24-hour observation window.
+Stage 0 writes both feature tables and `clinical/ehr_profiles.json`; prognosis preflight
+requires the selected profile's cutoff, strict operator and exact manifest columns to match.
+
+Matrix outputs are nested and collision checked:
+
+```text
+outputs/shared_encoder/rspect/<multitask|single_pe>/weight_<source>/
+outputs/shared_encoder/silver_encoder/<silver-label-source>/weight_<source>/
+outputs/diagnosis/<multi_task|single_task>/<label>/weight_<source>/<strategy>/
+outputs/prognosis/<all_patient|PE_positive>/<EHR_0_h|EHR_24_h>/<task>/weight_<source>/<strategy>/
+```
+
+Those are the paths of the **protocol run**, `DATASET=full_inspect`. A rehearsal on
+another profile is a different experiment and gets `weight_<source>__ds_<profile>/`
+instead -- the same rule `stamp_experiment_variant()` applies to the non-matrix stages,
+where only a deviation from the default profile is stamped. That is what keeps the
+canonical checkpoints named in `components/encoder/sources.yaml` resolvable: the
+`silver_encoder` a downstream run loads is the full-cohort one, not whichever rehearsal
+was last executed.
+
+RSPECT is the exception with no dataset axis at all: it sets `data.root` to the external
+`/mnt/RSPECT_dataset`, which takes precedence over `data.profile`, so `DATASET` cannot
+change what it trains on and is deliberately absent from its path.
+
+Every directory has its own `checkpoints/`, `logs/`, resolved config and lineage. A repeat
+without `RESUME=1`/`OVERWRITE=1` is rejected rather than silently overwriting it.
+
+`STRATEGY` is validated against the experiments that actually implement it -- diagnosis
+accepts `global` (both modes) and `probe` (single-task only), prognosis accepts the
+thirteen strategies above. An unmapped name is rejected rather than accepted, because
+`STRATEGY` names the output directory: silently allowing `STRATEGY=anatomy_soft_moe`
+would label a directory as Soft-MoE while training the plain global model. Adding a
+strategy means adding a registry experiment, not a string in the launcher.
+
+## Running the matrix
+
+`run_all.sh` iterates the axes and invokes the same per-experiment launchers a human
+would run by hand. It prints the plan and exits; executing thousands of trainings is
+opt-in.
+
+```bash
+bash scripts/run_all.sh                                  # list the plan and the count
+EXECUTE=1 ACTION=preflight bash scripts/run_all.sh       # check every run, train nothing
+EXECUTE=1 GPUS=0 bash scripts/run_all.sh                 # train the matrix
+
+# any axis can be narrowed
+STAGES=diagnosis WEIGHT_SOURCES="dapt alignment" \
+  EXECUTE=1 ACTION=dry bash scripts/run_all.sh
+STAGES=prognosis COHORTS=PE_positive EHR_PROFILES=EHR_24_h \
+  TASKS=12_month_PH STRATEGIES=image_clinical_pesi bash scripts/run_all.sh
+```
+
+Axes: `STAGES`, `WEIGHT_SOURCES`, `COHORTS`, `EHR_PROFILES`, `TASKS`, `STRATEGIES`,
+`DX_MODES`, `DX_LABELS`, `DX_STRATEGIES`, `SILVER_LABELS`. `RSPECT_WEIGHT_SOURCES`
+defaults to the three stages that precede RSPECT. `KEEP_GOING=1` continues past a
+failing run. `clinical_only`, `pesi_only` and `clinical_pesi` read no image, so the
+matrix emits them once rather than retraining an identical tabular model per weight
+source; `TABULAR_WEIGHT_SOURCE` chooses which directory they land in.
 
 ## The four independent axes
 

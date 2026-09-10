@@ -160,6 +160,8 @@ def build_checkpoint_lineage(
     }
     for optional in (
         "encoder_init_source",
+        "weight_source",
+        "ehr_profile",
         "encoder_silver_source",
         "train_patient_ids",
         "validation_patient_ids",

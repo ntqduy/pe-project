@@ -52,6 +52,19 @@ def _float(row: Mapping[str, Any], name: str) -> float:
     return float(raw)
 
 
+def _available(row: Mapping[str, Any], name: str | None) -> bool:
+    """Read an explicit modality-level availability flag without imputing it."""
+    if not name:
+        return False
+    raw = row.get(name)
+    if raw is None or str(raw).strip() == "":
+        return False
+    try:
+        return float(raw) > 0
+    except (TypeError, ValueError):
+        return str(raw).strip().upper() in {"TRUE", "T", "YES", "Y"}
+
+
 class CTPADataset(Dataset[dict[str, Any]]):
     """Dataset API for validated full-data manifests; paths are resolved by the caller."""
 
@@ -66,6 +79,8 @@ class CTPADataset(Dataset[dict[str, Any]]):
         label_columns: Sequence[str] = (),
         ehr_columns: Sequence[str] = (),
         pesi_columns: Sequence[str] = (),
+        ehr_availability_column: str | None = None,
+        pesi_availability_column: str | None = None,
         mask_columns: Mapping[str, str] | None = None,
         roi_manifest: str | Path | None = None,
         roi_mask_ids: Mapping[str, str] | None = None,
@@ -83,6 +98,8 @@ class CTPADataset(Dataset[dict[str, Any]]):
         self.label_columns = tuple(label_columns)
         self.ehr_columns = tuple(ehr_columns)
         self.pesi_columns = tuple(pesi_columns)
+        self.ehr_availability_column = str(ehr_availability_column or "").strip() or None
+        self.pesi_availability_column = str(pesi_availability_column or "").strip() or None
         self.mask_columns = dict(mask_columns or {})
         self.roi_mask_ids = dict(roi_mask_ids or {})
         self.roi_control_for = dict(roi_control_for or {})
@@ -185,8 +202,16 @@ class CTPADataset(Dataset[dict[str, Any]]):
         }
         if self.ehr_columns:
             item["ehr"] = torch.tensor([_float(row, name) for name in self.ehr_columns], dtype=torch.float32)
+            if self.ehr_availability_column:
+                item["ehr_available"] = torch.tensor(
+                    _available(row, self.ehr_availability_column), dtype=torch.bool
+                )
         if self.pesi_columns:
             item["pesi"] = torch.tensor([_float(row, name) for name in self.pesi_columns], dtype=torch.float32)
+            if self.pesi_availability_column:
+                item["pesi_available"] = torch.tensor(
+                    _available(row, self.pesi_availability_column), dtype=torch.bool
+                )
         if self.silver_targets:
             key = (str(row["patient_id"]), str(row["study_id"]))
             values = [

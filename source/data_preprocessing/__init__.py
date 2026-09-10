@@ -27,7 +27,14 @@ from .adjudication import (
     mortality_outcome,
     patient_labels,
 )
-from .ehr import EHR_FEATURE_COLUMNS, EhrArtifacts, EhrBuildError, build_ehr_readiness
+from .ehr import (
+    EHR_FEATURE_COLUMNS,
+    EhrArtifacts,
+    EhrBuildError,
+    EhrProfilesArtifacts,
+    build_ehr_profiles,
+    build_ehr_readiness,
+)
 from .filters import EligibilityReport, ExclusionLedger, apply_eligibility
 from .integrity import VolumeCheck, check_volumes
 from .leakage import SplitAudit, audit_split_integrity, load_excluded_patients
@@ -52,6 +59,7 @@ __all__ = [
     "EHR_FEATURE_COLUMNS",
     "EhrArtifacts",
     "EhrBuildError",
+    "EhrProfilesArtifacts",
     "PESI_FEATURE_COLUMNS",
     "PesiArtifacts",
     "PesiBuildError",
@@ -71,6 +79,7 @@ __all__ = [
     "audit_split_integrity",
     "build_dataset",
     "build_ehr_readiness",
+    "build_ehr_profiles",
     "build_manifests",
     "build_pesi_artifacts",
     "check_volumes",

@@ -5,10 +5,11 @@
 # Side branch: no downstream experiment requires it. Paired with repr.rspect.multitask,
 # which differs only in its task heads, so the comparison isolates multitask supervision.
 #
-# BLOCKER: manifests/rsna_diagnosis.csv and the dataset identifier are historical
-# placeholders. Point data.manifest at the real patient-level-split external manifest and
-# confirm its label columns before running; preflight fails cleanly while it is absent.
-# Output: outputs/diagnosis/DX_rspect_single_task/
+# The external dataset root was renamed/moved to /mnt/RSPECT_dataset. Put the extracted,
+# patient-level-split manifest at <root>/manifests/rsna_diagnosis.csv and confirm its label
+# columns before running; preflight fails cleanly while it is absent.
+# Output (through scripts/3_shared_encoder/3_rspect):
+# outputs/shared_encoder/rspect/single_pe/weight_<WEIGHT_SOURCE>/
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
@@ -16,14 +17,19 @@ _base_:
   - ../../../components/encoder/from_c0.yaml
   - ../../../components/task/diagnosis.yaml
   - ../../../components/training/diagnosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
 experiment:
   id: DX_rspect_single_task
   name: repr.rspect.single_task
   stage: diagnosis
-  family: diagnosis
+  family: shared_encoder
+  output_id: rspect/single_pe/weight_alignment
+  variant_stamp: false
 data:
   mode: full
-  dataset: RSNA
+  root: /mnt/RSPECT_dataset
+  dataset: RSPECT
+  cohort: rspect_external
   manifest: manifests/rsna_diagnosis.csv
   file_column: image_path
   label_columns: [pe_present]
@@ -32,15 +38,22 @@ data:
     pa: pa_mask_path
     lung: lung_mask_path
 task:
+  primary_target: pe_present
   targets:
     _replace_: true
     pe_present: 1
   silver_targets: []
   silver_loss_weight: 0.0
+  regions: []
 lineage:
   transfer_modules: [image_encoder]
   supervision_type: native_labels
 supervision:
-  require_masks: true
-  masks: segmentation/SEG_pseudo_anatomy
+  require_masks: false
+  masks: null
   require_silver_labels: false
+rspect:
+  label_mapping:
+    pe_present: pe_present
+  archive: rsna-str-pulmonary-embolism-detection.zip
+  partial_marker: rsna-str-pulmonary-embolism-detection.zip.kaggle-partial

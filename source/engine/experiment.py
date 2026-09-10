@@ -27,6 +27,7 @@ FAMILY_PATHS = {
     "foundation": "pretraining/foundation",
     "dapt": "pretraining/dapt",
     "alignment": "pretraining/alignment",
+    "shared_encoder": "shared_encoder",
     "silver_encoder_adaptation": "pretraining/silver",
     "diagnosis": "diagnosis",
     "prognosis": "prognosis",
@@ -90,10 +91,31 @@ class OutputManager:
         self.paths.require_within_output(destination)
         return destination
 
+    @staticmethod
+    def _output_parts(output_id: str) -> tuple[str, ...]:
+        """Validate a flat or nested output identifier.
+
+        Most historical runs use a single identifier such as ``DX_global_single``.
+        Matrix experiments need a readable hierarchy (for example
+        ``all_patient/EHR_0_h/1_month_mortality/weight_dapt/image_only``).  Treating
+        that hierarchy as a filesystem path is safe only when every component is an
+        ordinary directory name: no empty pieces, traversal, absolute paths, or Windows
+        separators are accepted.
+        """
+        text = str(output_id or "").strip()
+        if not text or "\\" in text or "\x00" in text:
+            raise ValueError(f"invalid output ID: {output_id!r}")
+        parts = tuple(text.split("/"))
+        if any(not part or part in {".", ".."} for part in parts):
+            raise ValueError(f"invalid output ID: {output_id!r}")
+        if Path(text).is_absolute():
+            raise ValueError(f"invalid output ID: {output_id!r}")
+        return parts
+
     def run_dir(self, family: str, experiment_id: str) -> Path:
-        if not experiment_id or any(character in experiment_id for character in "/\\"):
-            raise ValueError(f"invalid experiment ID: {experiment_id!r}")
-        destination = (self.family_root(family) / experiment_id).resolve()
+        """Return a collision-safe run directory for an experiment/output identifier."""
+        parts = self._output_parts(experiment_id)
+        destination = self.family_root(family).joinpath(*parts).resolve()
         self.paths.require_within_output(destination)
         return destination
 

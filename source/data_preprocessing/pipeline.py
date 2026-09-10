@@ -23,7 +23,7 @@ from typing import Any
 from source.data.paths import ProjectPaths
 
 from .adjudication import patient_labels
-from .ehr import EhrBuildError, build_ehr_readiness
+from .ehr import EhrBuildError, build_ehr_profiles
 from .filters import apply_eligibility
 from .integrity import check_volumes, integrity_summary
 from .leakage import audit_split_integrity, load_excluded_patients, require_no_leakage
@@ -279,7 +279,7 @@ def build_dataset(
 
     clinical_dir = destination / "clinical"
     try:
-        ehr = build_ehr_readiness(
+        ehr_profiles = build_ehr_profiles(
             cohort,
             release_root=release_root,
             cache_root=paths.cache_root,
@@ -289,6 +289,14 @@ def build_dataset(
         )
     except EhrBuildError as exc:
         raise DatasetBuildError(f"EHR readiness failed: {exc}") from exc
+    ehr = ehr_profiles.profiles[ehr_profiles.default_profile]
+    ehr_metadata = {
+        **dict(ehr.metadata),
+        "default_profile": ehr_profiles.default_profile,
+        "profiles": dict(ehr_profiles.metadata.get("profiles") or {}),
+        "profile_names": list(ehr_profiles.profiles),
+        "profiles_table": str(clinical_dir / "ehr_profiles.json"),
+    }
 
     try:
         pesi = build_pesi_artifacts(
@@ -301,23 +309,159 @@ def build_dataset(
     except PesiBuildError as exc:
         raise DatasetBuildError(f"PESI readiness failed: {exc}") from exc
 
+    candidate_metadata = dict(pesi.metadata.get("candidate_components") or {})
+    candidate_source_columns = tuple(candidate_metadata.get("model_feature_columns") or ())
+    candidate_manifest_columns = tuple(f"pesi_candidate_{column}" for column in candidate_source_columns)
+    ehr_profile_columns = {
+        name: tuple(
+            (dict(ehr_profiles.metadata.get("profiles") or {}).get(name) or {}).get(
+                "manifest_feature_columns", ()
+            )
+        )
+        for name in ehr_profiles.profiles
+    }
+    expected_ehr_columns = {
+        name: tuple(
+            column if not str(
+                (dict(ehr_profiles.metadata.get("profiles") or {}).get(name) or {}).get(
+                    "manifest_prefix", ""
+                )
+            ) else str(
+                (dict(ehr_profiles.metadata.get("profiles") or {}).get(name) or {}).get(
+                    "manifest_prefix", ""
+                )
+            ) + column.removeprefix("ehr_")
+            for column in artifact.feature_columns
+        )
+        for name, artifact in ehr_profiles.profiles.items()
+    }
+    if ehr_profile_columns != expected_ehr_columns:
+        raise DatasetBuildError("EHR profile metadata does not match the materialized feature columns")
+    ehr_availability_columns = {
+        name: (
+            "has_ehr"
+            if name == ehr_profiles.default_profile
+            else "has_ehr_" + name.lower().removeprefix("ehr_").replace("-", "_")
+        )
+        for name in ehr_profiles.profiles
+    }
+    modality_feature_columns = (
+        "has_ctpa",
+        "has_note",
+        *ehr_availability_columns.values(),
+        "has_pesi_component_candidate",
+        "has_all_pesi_component_candidates",
+        "has_pesi",
+        "has_spesi",
+    )
+    modality_table_columns = (
+        "has_ctpa",
+        "has_note",
+        "has_ehr_crosswalk",
+        *ehr_availability_columns.values(),
+        "has_pesi_component_candidate",
+        "has_all_pesi_component_candidates",
+        "has_pesi",
+        "has_spesi",
+    )
     clinical_features: dict[str, dict[str, Any]] = {}
-    clinical_columns = (*ehr.feature_columns, *pesi.feature_columns)
+    clinical_columns = (
+        *(column for columns in ehr_profile_columns.values() for column in columns),
+        *pesi.feature_columns,
+        *candidate_manifest_columns,
+        *modality_feature_columns,
+    )
     if len(set(clinical_columns)) != len(clinical_columns):
         raise DatasetBuildError("EHR and PESI feature columns overlap")
     for record in cohort:
-        clinical_features[record.study_id] = {
-            **dict(ehr.by_study.get(record.study_id) or {}),
-            **dict(pesi.by_study.get(record.study_id) or {}),
+        ehr_rows = {
+            name: dict(artifact.by_study.get(record.study_id) or {})
+            for name, artifact in ehr_profiles.profiles.items()
         }
+        ehr_row = ehr_rows[ehr_profiles.default_profile]
+        ehr_features = {
+            manifest_column: ehr_rows[name].get(source_column, "")
+            for name, artifact in ehr_profiles.profiles.items()
+            for source_column, manifest_column in zip(
+                artifact.feature_columns, ehr_profile_columns[name]
+            )
+        }
+        pesi_row = dict(pesi.by_study.get(record.study_id) or {})
+        candidate_row = dict((pesi.candidate_by_study or {}).get(record.study_id) or {})
+        candidate_features = {
+            f"pesi_candidate_{column}": candidate_row.get(column, "")
+            for column in candidate_source_columns
+        }
+        modality = {
+            "has_ctpa": 1,
+            "has_note": int(bool(record.report_text)),
+            "has_ehr_crosswalk": int(record.has_ehr_crosswalk),
+            **{
+                column: int(not bool(ehr_rows[name].get("ehr_missing", 1)))
+                for name, column in ehr_availability_columns.items()
+            },
+            "has_pesi_component_candidate": int(
+                bool(candidate_row.get("has_pesi_component_candidate", 0))
+            ),
+            "has_all_pesi_component_candidates": int(
+                bool(candidate_row.get("has_all_pesi_component_candidates", 0))
+            ),
+            "has_pesi": int(bool(pesi_row.get("pesi_computable", 0))),
+            "has_spesi": int(bool(pesi_row.get("spesi_computable", 0))),
+        }
+        clinical_features[record.study_id] = {
+            **ehr_features,
+            **pesi_row,
+            **candidate_features,
+            **modality,
+        }
+
+    modality_rows = [
+        {
+            "patient_id": record.patient_id,
+            "study_id": record.study_id,
+            "split": record.split,
+            **{column: clinical_features[record.study_id][column] for column in modality_table_columns},
+        }
+        for record in cohort
+    ]
+    modality_table = clinical_dir / "modality_availability.csv"
+    _write_rows(
+        modality_table,
+        modality_rows,
+        ["patient_id", "study_id", "split", *modality_table_columns],
+    )
+    modality_summary = {
+        "table": str(modality_table),
+        "columns": list(modality_table_columns),
+        "coverage": {
+            column: {
+                "available_cases": sum(bool(row[column]) for row in modality_rows),
+                "total_cases": len(modality_rows),
+                "by_split": {
+                    split: {
+                        "available_cases": sum(
+                            bool(row[column]) for row in modality_rows if row["split"] == split
+                        ),
+                        "total_cases": sum(row["split"] == split for row in modality_rows),
+                    }
+                    for split in ("train", "validation", "test")
+                },
+            }
+            for column in modality_table_columns
+        },
+    }
 
     manifest_config = dict(profile.get("manifests") or {})
     manifest_summary = build_manifests(
         cohort,
         destination / "manifests",
         label_map=manifest_config.get("label_map"),
+        diagnosis_label_aliases=manifest_config.get("diagnosis_label_aliases"),
         prognosis_label=str(manifest_config.get("prognosis_label") or "1_month_mortality"),
         prognosis_conditions=manifest_config.get("prognosis_conditions"),
+        prognosis_outcomes=manifest_config.get("prognosis_outcomes"),
+        prognosis_cohorts=manifest_config.get("prognosis_cohorts"),
         image_paths=image_paths or None,
         include_report_text=bool(manifest_config.get("include_report_text", True)),
         clinical_features=clinical_features,
@@ -356,8 +500,10 @@ def build_dataset(
         "split_audit": audit.as_dict(),
         "preprocessing": preprocessing_report,
         "clinical": {
-            "ehr": dict(ehr.metadata),
+            "ehr": ehr_metadata,
             "pesi": dict(pesi.metadata),
+            "candidate_component_columns": list(candidate_manifest_columns),
+            "modality_availability": modality_summary,
         },
         "manifests": manifest_summary,
         "cohort": {
@@ -376,8 +522,9 @@ def build_dataset(
         preprocessing=preprocessing_report,
         split_audit=audit.as_dict(),
         sampling=sampling_payload,
-        ehr=dict(ehr.metadata),
+        ehr=ehr_metadata,
         pesi=pesi.metadata,
+        modality_availability=modality_summary,
         cohort_funnel=[*funnel, cohort_step("final", "the cohort written to the manifests", cohort)],
     )
     _write_json(destination / "data_quality.json", quality)

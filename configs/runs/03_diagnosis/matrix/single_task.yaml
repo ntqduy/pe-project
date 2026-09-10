@@ -1,0 +1,38 @@
+# Protocol diagnosis single-task base. LABEL selects one of pe_positive, pe_acute or
+# pe_subsegmental in scripts/_matrix_runner.sh; the model/training implementation is shared.
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbone/ct_fm.yaml
+  - ../../../components/encoder/from_c0.yaml
+  - ../../../components/task/diagnosis.yaml
+  - ../../../components/training/diagnosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
+experiment:
+  id: DX_matrix_single_task
+  name: diag.matrix.single_task
+  stage: diagnosis
+  family: diagnosis
+  variant_stamp: false
+data:
+  mode: full
+  cohort: all_eligible_ctpa
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_positive]
+  mask_columns: {}
+task:
+  primary_target: pe_positive
+  targets:
+    _replace_: true
+    pe_positive: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false

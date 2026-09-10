@@ -4,8 +4,10 @@
 # presence-only supervision? Identical manifest, split, initialization, optimizer and
 # architecture as repr.rspect.single_task; only the task heads and label columns differ.
 #
-# BLOCKER: same unverified external-cohort manifest/label contract as the single-task arm.
-# Output: outputs/diagnosis/DX_rspect_multitask/
+# The external dataset root was renamed/moved to /mnt/RSPECT_dataset. The manifest and
+# image paths are resolved relative to that root.
+# Output (through scripts/3_shared_encoder/3_rspect):
+# outputs/shared_encoder/rspect/multitask/weight_<WEIGHT_SOURCE>/
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
@@ -13,14 +15,19 @@ _base_:
   - ../../../components/encoder/from_c0.yaml
   - ../../../components/task/diagnosis.yaml
   - ../../../components/training/diagnosis.yaml
+  - ../../../components/fusion/concat_mlp.yaml
 experiment:
   id: DX_rspect_multitask
   name: repr.rspect.multitask
   stage: diagnosis
-  family: diagnosis
+  family: shared_encoder
+  output_id: rspect/multitask/weight_alignment
+  variant_stamp: false
 data:
   mode: full
-  dataset: RSNA
+  root: /mnt/RSPECT_dataset
+  dataset: RSPECT
+  cohort: rspect_external
   manifest: manifests/rsna_diagnosis.csv
   file_column: image_path
   label_columns: [pe_present, acuity, central, lobar, segmental, subsegmental, saddle,
@@ -31,6 +38,8 @@ data:
     pa: pa_mask_path
     lung: lung_mask_path
 task:
+  primary_target: pe_present
+  regions: []
   # Native multitask heads only; no silver supervision on the external cohort.
   silver_targets: []
   silver_loss_weight: 0.0
@@ -38,6 +47,28 @@ lineage:
   transfer_modules: [image_encoder]
   supervision_type: native_labels
 supervision:
-  require_masks: true
-  masks: segmentation/SEG_pseudo_anatomy
+  require_masks: false
+  masks: null
   require_silver_labels: false
+rspect:
+  # The extracted external manifest is an explicit normalized contract. The raw RSNA-STR
+  # CSV/DICOM release must be converted to one patient-level-split CTPA row before this
+  # stage is allowed to run; preflight validates the columns below rather than guessing
+  # a mapping from raw competition field names.
+  label_mapping:
+    pe_present: pe_present
+    acuity: acuity
+    central: central
+    lobar: lobar
+    segmental: segmental
+    subsegmental: subsegmental
+    saddle: saddle
+    rv_enlargement: rv_enlargement
+    rv_lv_abnormal: rv_lv_abnormal
+    septal_bowing: septal_bowing
+    reflux: reflux
+    pleural_effusion: pleural_effusion
+    pericardial_effusion: pericardial_effusion
+    chronic_lung_disease: chronic_lung_disease
+  archive: rsna-str-pulmonary-embolism-detection.zip
+  partial_marker: rsna-str-pulmonary-embolism-detection.zip.kaggle-partial

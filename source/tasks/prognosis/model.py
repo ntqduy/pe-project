@@ -140,11 +140,23 @@ class PrognosisModel(nn.Module):
         return logits, routing, fused
 
     def _clinical_branch(
-        self, name: str, values: Tensor, encoder: nn.Module, missing: Tensor | None
+        self,
+        name: str,
+        values: Tensor,
+        encoder: nn.Module,
+        missing: Tensor | None,
+        available: Tensor | None,
     ) -> tuple[Tensor, Tensor]:
         encoded = encoder(values, missing)
-        available = ~torch.isnan(values).all(dim=1)
-        return self.clinical_adapters[name](encoded), available
+        inferred_available = ~torch.isnan(values).all(dim=1)
+        if available is not None:
+            explicit = available.to(values.device).bool().reshape(-1)
+            if explicit.shape != inferred_available.shape:
+                raise ValueError(
+                    f"{name}_available must have one value per batch row, got {tuple(explicit.shape)}"
+                )
+            inferred_available = inferred_available & explicit
+        return self.clinical_adapters[name](encoded), inferred_available
 
     def forward(self, batch: Mapping[str, Any]) -> dict[str, Any]:
         features: dict[str, Tensor] = {}
@@ -163,11 +175,19 @@ class PrognosisModel(nn.Module):
             availability.update(adapted_present)
         if self.ehr_encoder is not None:
             features["ehr"], availability["ehr"] = self._clinical_branch(
-                "ehr", batch["ehr"], self.ehr_encoder, batch.get("ehr_missing")
+                "ehr",
+                batch["ehr"],
+                self.ehr_encoder,
+                batch.get("ehr_missing"),
+                batch.get("ehr_available"),
             )
         if self.pesi_encoder is not None:
             features["pesi"], availability["pesi"] = self._clinical_branch(
-                "pesi", batch["pesi"], self.pesi_encoder, batch.get("pesi_missing")
+                "pesi",
+                batch["pesi"],
+                self.pesi_encoder,
+                batch.get("pesi_missing"),
+                batch.get("pesi_available"),
             )
         if not features:
             raise RuntimeError("no prognosis modality was evaluated")

@@ -1,20 +1,22 @@
-# repr.silver.medgemma — adapt C0 with accepted SL00 (MedGemma-only) silver labels.
+# repr.silver.medgemma — adapt the RSPECT multitask encoder with accepted SL00 labels.
 #
 # Question: does the silver source change what the adapted representation learns?
 # Identical to repr.silver.hybrid except for silver_training.silver_source, so the
 # comparison isolates the label-generation method.
-# Output: outputs/pretraining/silver/SE_c_silver_medgemma/
+# Output: outputs/shared_encoder/silver_encoder/sl00_medgemma/weight_rspect_multitask/
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
   - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
+  - ../../../components/encoder/from_rspect_multitask.yaml
   - ../../../components/task/silver_adaptation.yaml
 experiment:
-  id: SE_c_silver_medgemma
+  id: SE_silver_sl00_medgemma_weight_rspect_multitask
   name: repr.silver.medgemma
   stage: silver_encoder_adaptation
-  family: silver_encoder_adaptation
+  family: shared_encoder
+  output_id: silver_encoder/sl00_medgemma/weight_rspect_multitask
+  variant_stamp: false
 data:
   mode: full
   manifest: manifests/ctpa.csv

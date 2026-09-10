@@ -203,20 +203,34 @@ DEFAULT_DATASET_PROFILE = "full_inspect"
 # Encoder initialization sources. These are the checkpoint kinds a downstream task may be
 # initialized from; the task model itself is identical across all of them, which is the
 # whole point -- the comparison is between representations, not between architectures.
-ENCODER_INIT_SOURCES = ("pretrained", "dapt", "c0", "silver")
+ENCODER_INIT_SOURCES = (
+    "pretrained",
+    "dapt",
+    "c0",
+    "rspect_multitask",
+    "rspect_single",
+    "silver",
+    "custom",
+)
 _ENCODER_INIT_ALIASES = {
     "public": "pretrained",
     "original": "pretrained",
     "alignment": "c0",
     "c_0": "c0",
     "c_silver": "silver",
+    "silver_encoder": "silver",
     "silver_adaptation": "silver",
+    "rspect_multi_task": "rspect_multitask",
+    "rspect_single_task": "rspect_single",
 }
 _ENCODER_INITIALIZATION = {
     "pretrained": "public",
     "dapt": "C_SSL",
     "c0": "C0",
+    "rspect_multitask": "RSPECT_multitask",
+    "rspect_single": "RSPECT_single",
     "silver": "C_silver",
+    "custom": "custom",
 }
 
 
@@ -277,16 +291,20 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
 
     Diagnosis, prognosis, the probes and the ROI students all consume an image encoder.
     Which weights that encoder starts from is an experiment variable, not a code path:
-    one task model, four possible initializations.
+    one task model, a small set of named upstream stages, or an explicitly supplied
+    custom checkpoint.
 
         encoder:
           backbone: ct_fm          # selects the registry entry (same key as model.backbone)
-          init_source: pretrained | dapt | c0 | silver
+          init_source: pretrained | dapt | c0 | rspect_multitask | rspect_single |
+                       silver | custom
           checkpoint: <explicit path, or null to use encoder.sources[init_source]>
 
     ``pretrained`` loads the public weights through the backbone contract and transfers
-    nothing; the other three transfer ``lineage.transfer_modules`` out of a project
-    checkpoint. Either way the model built afterwards is the same model.
+    nothing; the other sources transfer ``lineage.transfer_modules`` out of a project
+    checkpoint. Either way the model built afterwards is the same model. ``alignment``
+    and ``silver_encoder`` remain user-facing aliases for the legacy ``c0`` and
+    ``silver`` source keys.
     """
     encoder = config.get("encoder")
     if not isinstance(encoder, dict):
@@ -305,6 +323,9 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
         # Recorded in every checkpoint and every result, so a number always says which
         # kind of weights the encoder started from.
         lineage_block["encoder_init_source"] = source
+        # Keep the public matrix name (for example ``alignment``) if a launcher supplied
+        # it, instead of losing it to the historical internal key (``c0``).
+        lineage_block["weight_source"] = str(encoder.get("weight_source") or source)
 
     backbone = str(encoder.get("backbone") or "").strip().lower().replace("-", "_")
     if backbone:
@@ -376,7 +397,13 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
             initialization = config.setdefault("init", {})
             if isinstance(initialization, dict):
                 initialization["checkpoint"] = checkpoint
-                initialization.setdefault("experiment", lineage.get("source_experiment"))
+                # Do not leave the legacy C0 values inherited from
+                # components/task/silver_adaptation.yaml in place. They are a real
+                # provenance contract checked by train_silver_encoder.py, so an RSPECT
+                # checkpoint must be identified as RSPECT rather than silently relabelled
+                # as C0 (and vice versa).
+                initialization["encoder"] = _ENCODER_INITIALIZATION[source]
+                initialization["experiment"] = lineage.get("source_experiment")
     return config
 
 
@@ -471,6 +498,16 @@ def validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
     fold_column = data.get("fold_column")
     if fold is not None and (not isinstance(fold_column, str) or not fold_column.strip()):
         raise ConfigError("data.fold requires a non-empty data.fold_column")
+
+    # EHR window selection is a prognostic input contract, not just an implementation
+    # detail. Persist it in every resulting checkpoint lineage alongside cohort and
+    # dataset profile so EHR_0_h and EHR_24_h results remain auditable after export.
+    ehr_profile = data.get("ehr_profile")
+    if ehr_profile is not None and str(ehr_profile).strip():
+        lineage = result.setdefault("lineage", {})
+        if not isinstance(lineage, dict):
+            raise ConfigError("lineage must be a mapping")
+        lineage["ehr_profile"] = str(ehr_profile).strip()
 
     run_scope = result.setdefault("run_scope", {"mode": "cli_required"})
     if not isinstance(run_scope, dict):

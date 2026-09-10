@@ -74,6 +74,22 @@ class EhrArtifacts:
     metadata: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class EhrProfilesArtifacts:
+    """Several leakage-safe EHR feature profiles built from the same cohort.
+
+    ``EHR_0_h`` is retained at the legacy ``clinical/ehr_features.csv`` location;
+    additional profiles live in their own subdirectories.  The pipeline decides how to
+    expose their columns in manifests, so this class deliberately does not make a model
+    selection decision.
+    """
+
+    status: str
+    default_profile: str
+    profiles: Mapping[str, EhrArtifacts]
+    metadata: Mapping[str, Any]
+
+
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -482,3 +498,103 @@ def build_ehr_readiness(
     }
     _atomic_write_json(metadata_path, metadata)
     return EhrArtifacts("built", EHR_FEATURE_COLUMNS, by_study, metadata)
+
+
+def _profile_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if not name or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for character in name):
+        raise EhrBuildError(
+            "EHR profile names must be non-empty and contain only letters, numbers, '_' or '-'"
+        )
+    return name
+
+
+def _profile_prefix(value: Any) -> str:
+    prefix = str(value or "")
+    if prefix and (not prefix.endswith("_") or not prefix.replace("_", "").isalnum()):
+        raise EhrBuildError("ehr profile manifest_prefix must be empty or an alphanumeric prefix ending in '_'")
+    return prefix
+
+
+def build_ehr_profiles(
+    records: Sequence[StudyRecord],
+    *,
+    release_root: Path,
+    cache_root: Path,
+    output_dir: Path,
+    config: Mapping[str, Any] | None,
+    code_root: Path,
+) -> EhrProfilesArtifacts:
+    """Materialize every configured pre-CTPA EHR profile without post-index leakage.
+
+    Each profile delegates to the existing audited builder with its own
+    ``end_before_ctpa_hours``.  Keeping that strict inequality in one builder prevents
+    the 24-hour protocol from accidentally becoming a post-index observation window.
+    Archive extraction is cached, so only the filtered event scans are repeated.
+    """
+    raw = dict(config or {})
+    configured_profiles = raw.pop("profiles", None)
+    default_profile = _profile_name(raw.pop("default_profile", "EHR_0_h"))
+    if configured_profiles is None:
+        configured_profiles = {
+            default_profile: {
+                "end_before_ctpa_hours": raw.get("end_before_ctpa_hours", 0.0),
+                "manifest_prefix": "",
+            }
+        }
+    if not isinstance(configured_profiles, Mapping) or not configured_profiles:
+        raise EhrBuildError("ehr.profiles must be a non-empty mapping")
+    if default_profile not in configured_profiles:
+        raise EhrBuildError(f"ehr.default_profile={default_profile!r} is not present in ehr.profiles")
+
+    artifacts: dict[str, EhrArtifacts] = {}
+    metadata_profiles: dict[str, dict[str, Any]] = {}
+    manifest_columns: set[str] = set()
+    for raw_name, raw_profile in configured_profiles.items():
+        name = _profile_name(raw_name)
+        if not isinstance(raw_profile, Mapping):
+            raise EhrBuildError(f"ehr.profiles.{name} must be a mapping")
+        profile = dict(raw)
+        profile.update(dict(raw_profile))
+        prefix = _profile_prefix(profile.pop("manifest_prefix", ""))
+        profile.pop("name", None)
+        artifact_dir = output_dir if name == default_profile else output_dir / name
+        artifact = build_ehr_readiness(
+            records,
+            release_root=release_root,
+            cache_root=cache_root,
+            output_dir=artifact_dir,
+            config=profile,
+            code_root=code_root,
+        )
+        columns = tuple(
+            column if not prefix else prefix + column.removeprefix("ehr_")
+            for column in artifact.feature_columns
+        )
+        collisions = sorted(set(columns) & manifest_columns)
+        if collisions:
+            raise EhrBuildError(
+                f"EHR profile manifest columns collide for {name}: " + ", ".join(collisions)
+            )
+        manifest_columns.update(columns)
+        artifacts[name] = artifact
+        metadata_profiles[name] = {
+            **dict(artifact.metadata),
+            "name": name,
+            "manifest_prefix": prefix,
+            "manifest_feature_columns": list(columns),
+            "feature_end_semantics": (
+                "strict pre-CTPA: event_time < procedure_datetime - end_before_ctpa_hours"
+            ),
+        }
+
+    statuses = {artifact.status for artifact in artifacts.values()}
+    status = "built" if statuses == {"built"} else "disabled" if statuses == {"disabled"} else "mixed"
+    metadata = {
+        "status": status,
+        "default_profile": default_profile,
+        "profiles": metadata_profiles,
+        "profile_names": list(artifacts),
+    }
+    _atomic_write_json(output_dir / "ehr_profiles.json", metadata)
+    return EhrProfilesArtifacts(status, default_profile, artifacts, metadata)

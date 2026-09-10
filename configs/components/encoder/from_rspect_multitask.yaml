@@ -1,0 +1,10 @@
+# Start from the externally supervised RSPECT multitask encoder.  The canonical source
+# is configurable in sources.yaml; a launcher may select another upstream checkpoint with
+# WEIGHT_SOURCE/WEIGHT_PATH without duplicating this model config.
+_base_:
+  - sources.yaml
+encoder:
+  init_source: rspect_multitask
+  weight_source: rspect_multitask
+experiment:
+  baseline_init: rspect_multitask

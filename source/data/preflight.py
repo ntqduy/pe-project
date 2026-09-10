@@ -365,6 +365,14 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                             *tuple(data_config.get("label_columns") or ()),
                             *tuple(data_config.get("ehr_columns") or ()),
                             *tuple(data_config.get("pesi_columns") or ()),
+                            *tuple(
+                                value
+                                for value in (
+                                    data_config.get("ehr_availability_column"),
+                                    data_config.get("pesi_availability_column"),
+                                )
+                                if value
+                            ),
                             *tuple((data_config.get("mask_columns") or {}).values()),
                             *tuple(
                                 (config.get("alignment") or {}).get("report_embedding_columns") or ()
@@ -405,6 +413,73 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         except (ManifestError, PathConfigurationError) as exc:
             checks.append(Check("DATA", "split_manifest", "FAIL", str(exc)))
     model = dict(config.get("model") or {})
+    rspect = dict(config.get("rspect") or {})
+    if rspect:
+        mapping = dict(rspect.get("label_mapping") or {})
+        configured_labels = tuple(data_config.get("label_columns") or ())
+        mapped_columns = tuple(str(value) for value in mapping.values())
+        targets = dict(task.get("targets") or {})
+        errors: list[str] = []
+        if not mapping:
+            errors.append("rspect.label_mapping is required")
+        if mapped_columns and tuple(dict.fromkeys(mapped_columns)) != configured_labels:
+            errors.append(
+                "data.label_columns must equal rspect.label_mapping values in the same order"
+            )
+        if len(configured_labels) == 1 and configured_labels != ("pe_present",):
+            errors.append("RSPECT single-task must use the normalized pe_present binary column")
+        if targets and any(name not in configured_labels for name in targets):
+            errors.append("every RSPECT task target must have a matching manifest label column")
+        checks.append(
+            Check(
+                "DATA",
+                "rspect_label_mapping",
+                "PASS" if not errors else "FAIL",
+                "; ".join(errors)
+                or f"normalized labels={len(configured_labels)} mapping_entries={len(mapping)}",
+            )
+        )
+        # The normalized manifest is the actual training contract.  When it is absent,
+        # inspect the optional Kaggle partial marker to distinguish "not extracted" from
+        # an incomplete multi-hundred-GB download without opening the archive itself.
+        external_root = paths.dataset_root_for(config)
+        external_manifest = Path(str(data_config.get("manifest") or ""))
+        if not external_manifest.is_absolute():
+            external_manifest = external_root / external_manifest
+        archive_name = str(rspect.get("archive") or "").strip()
+        marker_name = str(rspect.get("partial_marker") or "").strip()
+        if external_manifest.is_file():
+            checks.append(
+                Check("DATA", "rspect_archive_readiness", "SKIP", "normalized manifest is present")
+            )
+        elif marker_name:
+            marker = external_root / marker_name
+            archive = external_root / archive_name if archive_name else None
+            try:
+                marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+                expected_bytes = int(marker_payload.get("size"))
+                actual_bytes = archive.stat().st_size if archive is not None else -1
+                complete = actual_bytes == expected_bytes
+                checks.append(
+                    Check(
+                        "DATA",
+                        "rspect_archive_readiness",
+                        "PASS" if complete else "FAIL",
+                        (
+                            f"archive_bytes={actual_bytes} expected_bytes={expected_bytes}; "
+                            "extract and normalize to the configured patient-split manifest"
+                        ),
+                    )
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                checks.append(
+                    Check(
+                        "DATA",
+                        "rspect_archive_readiness",
+                        "FAIL",
+                        f"cannot verify RSPECT archive readiness: {exc}",
+                    )
+                )
     backbone = str(model.get("backbone") or "")
     report_only_diagnosis = report_only_contract
     if report_only_diagnosis:
@@ -751,6 +826,54 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     f"manifest_columns={count} encoder_input_dim={expected}",
                 )
             )
+            ehr_profile = str(data_config.get("ehr_profile") or "").strip()
+            profiles_path = paths.dataset_root_for(config) / "clinical" / "ehr_profiles.json"
+            if not ehr_profile:
+                checks.append(
+                    Check(
+                        "DATA",
+                        "ehr_temporal_profile",
+                        "FAIL",
+                        "data.ehr_profile is required for an EHR prognosis arm",
+                    )
+                )
+            else:
+                try:
+                    profile_payload = json.loads(profiles_path.read_text(encoding="utf-8"))
+                    profiles = dict(profile_payload.get("profiles") or {})
+                    selected = dict(profiles.get(ehr_profile) or {})
+                    configured_columns = tuple(data_config.get("ehr_columns") or ())
+                    recorded_columns = tuple(selected.get("manifest_feature_columns") or ())
+                    cutoff = selected.get("end_before_ctpa_hours")
+                    operator = str(selected.get("feature_end_operator") or "")
+                    expected_cutoff = {"EHR_0_h": 0.0, "EHR_24_h": 24.0}.get(ehr_profile)
+                    profile_ok = bool(selected) and cutoff is not None and float(cutoff) >= 0
+                    profile_ok = profile_ok and operator == (
+                        "event_time < procedure_datetime - end_before_ctpa_hours"
+                    )
+                    if expected_cutoff is not None:
+                        profile_ok = profile_ok and float(cutoff) == expected_cutoff
+                    profile_ok = profile_ok and configured_columns == recorded_columns
+                    checks.append(
+                        Check(
+                            "DATA",
+                            "ehr_temporal_profile",
+                            "PASS" if profile_ok else "FAIL",
+                            (
+                                f"profile={ehr_profile} cutoff_hours={cutoff} "
+                                f"operator={operator!r} columns={len(recorded_columns)}"
+                            ),
+                        )
+                    )
+                except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                    checks.append(
+                        Check(
+                            "DATA",
+                            "ehr_temporal_profile",
+                            "FAIL",
+                            f"{profiles_path}: {exc}",
+                        )
+                    )
         evaluation = dict(config.get("evaluation") or {})
         split_strategy = str(evaluation.get("split_strategy", "patient_holdout"))
         if split_strategy == "temporal_holdout":
@@ -995,7 +1118,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         )
         initialization = dict(config.get("init") or {})
         checkpoint = paths.output_asset(initialization.get("checkpoint"))
-        _exists(checks, "MODEL", "C0_checkpoint", checkpoint, True)
+        _exists(checks, "MODEL", "upstream_encoder_checkpoint", checkpoint, True)
     compute = dict(config.get("compute") or {})
     strategy = str(compute.get("strategy", "single"))
     accelerator = str(compute.get("accelerator", "cuda" if strategy != "cpu" else "cpu"))
@@ -1038,7 +1161,11 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
     elif paths.output_root is not None:
         experiment = dict(config.get("experiment") or {})
         family = str(experiment.get("family") or experiment.get("stage"))
-        experiment_id = str((config.get("experiment") or {}).get("id") or "")
+        experiment_id = str(
+            (config.get("experiment") or {}).get("output_id")
+            or (config.get("experiment") or {}).get("id")
+            or ""
+        )
         try:
             manager = OutputManager(paths)
             state = manager.inspect_collision(family, experiment_id)
