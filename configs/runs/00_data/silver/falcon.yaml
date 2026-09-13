@@ -1,0 +1,26 @@
+# data.silver.falcon — Falcon only, no rules.
+#
+# Question: what does a general-purpose LLM extract without any rule prior?
+# Falcon runs on every target. A value below silver.confidence_threshold abstains.
+# Support artifact: only rows with status=accepted may be used for training, and silver is
+# never used as a gold evaluation label.
+#
+# Output: outputs/silver_label/falcon/
+#   silver_labels.csv            final normalized labels, one row per report/target
+#   silver_label_confidence.csv  confidence, thresholds, decision and evidence
+#   result.json           run summary: counts, timing, sources used, full QC aggregate
+#   logs/run.log          whole terminal stream: progress, provider errors, final summary
+#   resolved_config.yaml  the exact merged config, including real model paths
+#   .state/<report_hash>.json  internal per-report resume cache
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/silver.yaml#falcon
+experiment:
+  id: falcon
+  name: data.silver.falcon
+  stage: silver
+  family: silver
+data:
+  mode: full
+seed: 42

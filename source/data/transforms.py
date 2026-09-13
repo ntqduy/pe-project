@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-import torch
 import torch.nn.functional as functional
 from torch import Tensor
 
@@ -42,15 +41,3 @@ class ResizeVolume:
         options = {"align_corners": False} if self.mode in {"linear", "bilinear", "bicubic", "trilinear"} else {}
         result = functional.interpolate(source.float(), size=self.shape, mode=self.mode, **options)
         return result.squeeze(0) if needs_batch else result
-
-
-class RandomFlip3D:
-    def __init__(self, probability: float = 0.5, dimensions: tuple[int, ...] = (-1, -2)):
-        self.probability = probability
-        self.dimensions = dimensions
-
-    def __call__(self, volume: Tensor) -> Tensor:
-        for dimension in self.dimensions:
-            if torch.rand(()) < self.probability:
-                volume = volume.flip(dimension)
-        return volume

@@ -32,6 +32,7 @@ from source.pretraining.silver_supervised import (
     silver_adaptation_loss,
     summarize_silver_labels,
 )
+from source.silver.generator import SILVER_METHODS
 from source.utils.config import validate_config
 from source.utils.environment import environment_report
 from source.utils.seed import seed_everything
@@ -83,10 +84,13 @@ def _loss_weights(config: Mapping[str, Any], targets: Mapping[str, int]) -> dict
 def _runtime_config(config: dict[str, Any]) -> tuple[dict[str, Any], ProjectPaths, Path, Path]:
     paths = ProjectPaths.resolve(config)
     section = dict(config.get("silver_training") or {})
-    source = str(section.get("silver_source") or "").upper()
+    source = str(section.get("silver_source") or "").strip().lower()
     sources = dict(section.get("sources") or {})
-    if source not in {"SL00", "SL01", "SL02"} or source not in sources:
-        raise ValueError("silver_training.silver_source must select configured SL00, SL01, or SL02")
+    if source not in SILVER_METHODS or source not in sources:
+        raise ValueError(
+            "silver_training.silver_source must name a configured silver method; "
+            f"got {source!r}, configured={sorted(sources)}"
+        )
     silver_path = paths.output_asset(sources[source])
     if silver_path is None:
         raise ValueError(f"silver source path is not configured: {source}")
@@ -385,6 +389,7 @@ def main() -> int:
             run_dir,
             lineage,
             precision=str(config["compute"].get("precision", "fp32")),
+            early_stopping_patience=training.get("early_stopping_patience"),
             accumulation_steps=int(training.get("gradient_accumulation", 1)),
         )
         training_result = trainer.fit(train_loader, validation_loader, epochs)

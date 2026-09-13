@@ -6,14 +6,14 @@
 # Support artifact: consumed by anatomy-aware training, ROI construction and counterfactuals.
 #
 # Output: outputs/segmentation/SEG_pseudo_anatomy/
-#   masks/<study_id>/canonical/<anatomy>.nii.gz   19 masks per study: lung, heart,
+#   masks/<patient_id>/<study_id>/canonical/<anatomy>.nii.gz   19 masks per study: lung, heart,
 #       strict_heart, myocardium, mediastinum, central_pa, lung_arteries, lung_veins,
 #       lung_vessels, airways, pa_tree, hilar_vessels, body, body_wall, rv, lv, ra, la,
 #       lung_lungmask (the independent LungMask cross-check)
-#   manifest.parquet   one row per (study, anatomy): QC status, volume, geometry, provenance
-#   previews/<study_id>/<anatomy>_overlay.png     PNG overlays for the first preview_cases
-#   state/<study_id>.json                         resume state, so a partial run continues
-#   result.json, logs/                            run summary and log
+#   previews/<patient_id>/<study_id>/segmentation/<anatomy>/*.png  configurable CTPA overlays
+#   manifest.parquet, result.json                 mask index/QC and run summary
+#   state/<patient_id>/<study_id>.json            resume state for interrupted runs
+#   logs/run.log, logs/segmentation_qc.csv        terminal log and normalized per-mask QC
 # The id says "pseudo": these are public-model masks, not expert-validated segmentations.
 _base_:
   - ../../paths.yaml
@@ -33,8 +33,17 @@ segmentation:
   repository: third_party/repos/TotalSegmentator
   weights_directory: third_party/weights/segmentation/totalsegmentator
   fast: false
-  preview_cases: 5
+  # null means every processed study. For each selected anatomy: largest-area slice plus
+  # deterministic slices before/after its center. Reduce to 1 or 2 for a smaller review set.
+  preview_cases: null
+  preview_slices_per_mask: 3
+  preview_anatomies: [lung, strict_heart, pa_tree]
+  preview_window_width: 700
+  preview_window_level: 100
   devices: []
+  # null = one worker per GPU in devices. Set a number to run more studies at once; on CPU
+  # (devices: []) that is the only way to get past one study at a time.
+  workers: null
   lungmask:
     enabled: true
     executable: lungmask

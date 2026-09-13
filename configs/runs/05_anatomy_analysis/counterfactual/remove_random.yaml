@@ -9,12 +9,12 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/task/diagnosis.yaml
-  - ../../../components/task/diagnosis_anatomy_reference.yaml
-  - ../../../components/training/diagnosis.yaml
-  - ../../../components/adapter/organ.yaml
-  - ../../../components/fusion/concat_mlp.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/tasks.yaml#diagnosis_anatomy_reference
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/fusions.yaml#concat_mlp
 experiment:
   id: CF_remove_random
   name: anatomy.remove_random

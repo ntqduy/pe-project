@@ -35,9 +35,16 @@ def _totalfm(config: Mapping[str, Any]) -> BaseImageEncoder:
     return build_totalfm(config)
 
 
+def _penet_style(config: Mapping[str, Any]) -> BaseImageEncoder:
+    from .penet import build_penet_style
+
+    return build_penet_style(config)
+
+
 register_backbone("ct_fm", _ct_fm)
 register_backbone("ct_clip", _ct_clip)
 register_backbone("totalfm", _totalfm)
+register_backbone("penet_style", _penet_style)
 
 
 def registered_backbones() -> tuple[str, ...]:

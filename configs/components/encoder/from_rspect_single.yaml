@@ -1,8 +1,0 @@
-# Start from the externally supervised RSPECT PE-only encoder.
-_base_:
-  - sources.yaml
-encoder:
-  init_source: rspect_single
-  weight_source: rspect_single
-experiment:
-  baseline_init: rspect_single

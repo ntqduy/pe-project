@@ -1,0 +1,41 @@
+# prog.lung_student — SUFFICIENCY (prognosis): is the lung parenchyma alone enough to
+# predict 30-day mortality?
+#
+# The email's "lung-only prognosis model". ROI6 is parenchyma with the vessels removed, so
+# a high score here means mortality is being predicted from comorbid lung disease and
+# indirect parenchymal signs rather than from the embolus — which changes how the headline
+# prognosis result should be read.
+# Architecture is prog.image's (task.regions empty, image-only); only the input differs.
+# See students/heart.yaml for why regions stays empty.
+#
+# No distillation: task_steps.py wires the frozen teacher for the diagnosis stage only.
+# Read against prog.random_student, never on its own.
+# Output: outputs/roi_students/prognosis/RS_prog_lung_only_gt/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/tasks.yaml#prognosis_primary_cohort
+  - ../../../components/training.yaml#prognosis
+  - ../../../components/anatomy.yaml#anatomy_masks
+  - ../../../components/fusions.yaml#concat_mlp
+  - ../../../components/tasks.yaml#roi_student
+experiment:
+  id: RS_prog_lung_only_gt
+  name: prog.lung_student
+  stage: roi_student
+  family: prognosis_roi_student
+data:
+  roi_mask_ids:
+    _replace_: true
+    lung: ROI6
+task:
+  base_stage: prognosis
+  modalities: [image]
+  regions: []
+  input_counterfactual: keep_only_lung
+supervision:
+  require_ehr: false
+  require_pesi: false

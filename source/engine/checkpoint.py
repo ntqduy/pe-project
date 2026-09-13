@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import uuid
 from collections.abc import Mapping as MappingABC
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -157,6 +159,10 @@ def build_checkpoint_lineage(
         "validation_metric": validation_metric,
         "dapt": lineage.get("dapt", (config.get("dapt") or {}).get("method")),
         "alignment": lineage.get("alignment"),
+        "label_schema": list(data.get("label_columns") or task.get("targets") or ()),
+        "architecture": task.get("architecture"),
+        "finetuning_strategy": peft.get("method", "full"),
+        "config_path": lineage.get("config_path"),
     }
     for optional in (
         "encoder_init_source",
@@ -196,6 +202,7 @@ def save_checkpoint_atomic(
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    metadata_temporary: Path | None = None
     payload = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "lineage": canonical_lineage,
@@ -213,11 +220,40 @@ def save_checkpoint_atomic(
         verified = torch.load(destination, map_location="cpu", weights_only=False)
         if verified.get("lineage") != payload["lineage"] or "model_state" not in verified:
             raise CheckpointError(f"checkpoint verification failed: {destination}")
+        metadata = {
+            "checkpoint_id": checkpoint_sha256(destination),
+            "checkpoint_path": str(destination.resolve()),
+            "stage": canonical_lineage.get("stage"),
+            "source_checkpoint": canonical_lineage.get("source_checkpoint"),
+            "dataset": canonical_lineage.get("dataset"),
+            "task": canonical_lineage.get("task"),
+            "label_schema": canonical_lineage.get("label_schema"),
+            "architecture": canonical_lineage.get("architecture"),
+            "finetuning_strategy": canonical_lineage.get("finetuning_strategy"),
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "git_commit": canonical_lineage.get("git_commit"),
+            "config_path": canonical_lineage.get("config_path"),
+        }
+        metadata_path = destination.with_suffix(destination.suffix + ".metadata.json")
+        metadata_temporary = metadata_path.with_name(
+            f".{metadata_path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        with metadata_temporary.open("x", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2, sort_keys=True, default=str)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(metadata_temporary, metadata_path)
+        parsed_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if parsed_metadata.get("checkpoint_id") != checkpoint_sha256(destination):
+            raise CheckpointError(f"checkpoint metadata verification failed: {metadata_path}")
     except Exception:
         destination.unlink(missing_ok=True)
         raise
     finally:
         temporary.unlink(missing_ok=True)
+        if metadata_temporary is not None:
+            metadata_temporary.unlink(missing_ok=True)
     return destination
 
 
@@ -268,10 +304,35 @@ def load_checkpoint(
                 )
     if model is not None:
         target = unwrap_model(model)
-        incompatible = target.load_state_dict(state, strict=strict and not modules)
+        target_state = strip_ddp_prefix(target.state_dict())
+        shape_mismatches = [
+            {
+                "key": key,
+                "checkpoint_shape": list(value.shape),
+                "model_shape": list(target_state[key].shape),
+            }
+            for key, value in state.items()
+            if key in target_state and tuple(value.shape) != tuple(target_state[key].shape)
+        ]
+        if shape_mismatches and (strict or (modules and strict_modules)):
+            raise CheckpointError(f"checkpoint shape mismatch: {shape_mismatches}")
+        mismatched_keys = {item["key"] for item in shape_mismatches}
+        compatible_state = {key: value for key, value in state.items() if key not in mismatched_keys}
+        incompatible = target.load_state_dict(compatible_state, strict=strict and not modules)
         payload["load_report"] = {
+            "checkpoint_path": str(source.resolve()),
             "missing_keys": list(incompatible.missing_keys),
             "unexpected_keys": list(incompatible.unexpected_keys),
+            "shape_mismatches": shape_mismatches,
+            "loaded_keys": len(compatible_state),
+            "encoder_layers_loaded": sum(
+                key.startswith("image_encoder.") for key in compatible_state
+            ),
+            "head_reset": bool(
+                modules
+                and "image_encoder" in modules
+                and any(key.startswith(("head.", "heads.")) for key in target_state)
+            ),
             "selected_modules": list(modules or ()),
         }
         if selected_report:

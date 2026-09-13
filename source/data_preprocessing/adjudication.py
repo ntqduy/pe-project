@@ -47,10 +47,6 @@ def normalize_binary(value: Any) -> str:
     return text
 
 
-def is_true(value: Any) -> bool:
-    return normalize_binary(value) == "TRUE"
-
-
 def adjudicate_binary(values: Sequence[Any]) -> str:
     """Reduce one label across a patient's studies using the documented precedence."""
     normalized = {normalize_binary(value) for value in values}

@@ -1,0 +1,27 @@
+# data.silver.falcon_medgemma — both models, adjudicated, no rules.
+#
+# Question: how much of the accepted yield comes from the rules rather than the models?
+# Falcon first; if it is not confident, MedGemma runs and the two are adjudicated.
+# Both models load on every rank: check VRAM before a full run.
+# Support artifact: only rows with status=accepted may be used for training, and silver is
+# never used as a gold evaluation label.
+#
+# Output: outputs/silver_label/falcon_medgemma/
+#   silver_labels.csv            final normalized labels, one row per report/target
+#   silver_label_confidence.csv  confidence, thresholds, decision and evidence
+#   result.json           run summary: counts, timing, sources used, full QC aggregate
+#   logs/run.log          whole terminal stream: progress, provider errors, final summary
+#   resolved_config.yaml  the exact merged config, including real model paths
+#   .state/<report_hash>.json  internal per-report resume cache
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/silver.yaml#falcon_medgemma
+experiment:
+  id: falcon_medgemma
+  name: data.silver.falcon_medgemma
+  stage: silver
+  family: silver
+data:
+  mode: full
+seed: 42

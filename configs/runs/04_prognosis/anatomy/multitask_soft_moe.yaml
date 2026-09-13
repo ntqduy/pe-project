@@ -1,0 +1,61 @@
+# Canonical multitask prognosis model from proposal Figure 3.2.
+# Primary endpoint remains 1-month/30-day mortality in the confirmed acute-PE cohort;
+# longer mortality, readmission and PH endpoints are auxiliary heads with masked loss.
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/tasks.yaml#prognosis_primary_cohort
+  - ../../../components/training.yaml#prognosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/anatomy.yaml#anatomy_masks
+  - ../../../components/fusions.yaml#soft_moe
+experiment:
+  id: PR_anatomy_multitask_soft_moe
+  name: prog.anatomy.multitask_moe
+  stage: prognosis
+  family: prognosis
+data:
+  label_columns:
+    - 1_month_mortality
+    - 6_month_mortality
+    - 12_month_mortality
+    - 1_month_readmission
+    - 6_month_readmission
+    - 12_month_readmission
+    - 12_month_PH
+task:
+  primary_target: 1_month_mortality
+  targets:
+    _replace_: true
+    1_month_mortality: 1
+    6_month_mortality: 1
+    12_month_mortality: 1
+    1_month_readmission: 1
+    6_month_readmission: 1
+    12_month_readmission: 1
+    12_month_PH: 1
+  modalities: [image, ehr, pesi]
+  regions: [heart, pa, lung]
+  # Primary target has full weight; auxiliary endpoints regularize the shared model.
+  # These weights are protocol values and should be frozen before the test run.
+  loss_weights:
+    1_month_mortality: 1.0
+    6_month_mortality: 0.2
+    12_month_mortality: 0.2
+    1_month_readmission: 0.2
+    6_month_readmission: 0.2
+    12_month_readmission: 0.2
+    12_month_PH: 0.2
+lineage:
+  transfer_modules: [image_encoder]
+  supervision_type: native_masked_multitask_outcomes
+supervision:
+  require_masks: true
+  masks: segmentation/SEG_pseudo_anatomy
+  require_ehr: true
+  ehr: clinical/ehr_features.csv
+  require_pesi: true
+  pesi: clinical/pesi_features.csv

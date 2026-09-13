@@ -1,0 +1,45 @@
+# prog.random_student — SUFFICIENCY CONTROL (prognosis): a volume-matched random region
+# alone.
+#
+# Not named in the email, but the three organ arms above are uninterpretable without it.
+# Prognosis labels correlate with age, comorbidity and scan protocol, all of which are
+# visible in almost any body region, so an organ-only mortality AUROC is only evidence to
+# the extent that it exceeds this control.
+#
+# Input is ROI8, the deterministic body-constrained control volume-matched to the PA
+# region (ROI4) by rigid translation, so shape, voxel count and physical volume are
+# preserved. Architecture is prog.image's (task.regions empty, image-only); only the input
+# differs. See students/heart.yaml for why regions stays empty.
+#
+# No distillation: task_steps.py wires the frozen teacher for the diagnosis stage only.
+# Output: outputs/roi_students/prognosis/RS_prog_random_only_gt/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/tasks.yaml#prognosis_primary_cohort
+  - ../../../components/training.yaml#prognosis
+  - ../../../components/anatomy.yaml#anatomy_masks
+  - ../../../components/fusions.yaml#concat_mlp
+  - ../../../components/tasks.yaml#roi_student
+experiment:
+  id: RS_prog_random_only_gt
+  name: prog.random_student
+  stage: roi_student
+  family: prognosis_roi_student
+data:
+  roi_mask_ids:
+    _replace_: true
+    random: ROI8
+  roi_control_for: {random: ROI4}
+task:
+  base_stage: prognosis
+  modalities: [image]
+  regions: []
+  input_counterfactual: keep_only_random
+  matched_region: pa
+supervision:
+  require_ehr: false
+  require_pesi: false

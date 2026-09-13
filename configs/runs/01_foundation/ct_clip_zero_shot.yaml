@@ -16,7 +16,7 @@
 _base_:
   - ../../paths.yaml
   - ../../compute/default.yaml
-  - ../../components/backbone/ct_clip.yaml
+  - ../../components/backbones.yaml#ct_clip
 experiment:
   id: F_ct_clip_zero_shot
   name: repr.foundation.ct_clip_zero_shot

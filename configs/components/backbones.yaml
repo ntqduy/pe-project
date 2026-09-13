@@ -1,0 +1,98 @@
+# Public CT backbone contracts and named selections.
+# Select a fragment with: path/to/backbones.yaml#<preset>
+_presets_:
+  registry:
+    # Backbone registry — one contract per public CT encoder, in one place.
+    #
+    # Every named selection below inherits this registry, so `model.backbone` is a genuine
+    # config variable: any run can select another encoder with
+    # `--set model.backbone=ct_clip`, and the contract travels with it.
+    # `source/utils/config.resolve_backbone` copies the selected entry into `model` and drops
+    # this registry from the resolved config, so one backbone's contract never changes another
+    # experiment's config hash.
+    #
+    # BLOCKER: factory / output_adapter / feature_dim are empty for all
+    # three encoders. They must come from the actually inspected checkpoint, never from a
+    # repository name and never copied between backbones. Preflight fails until they are filled.
+    backbones:
+      ct_fm:
+        display_name: CT-FM
+        repo: third_party/repos/CT-FM
+        checkpoint: third_party/weights/foundation/ct_fm/model.ckpt
+        factory: ""
+        output_adapter: ""
+        feature_dim: 0
+        strict_load: true
+      ct_clip:
+        display_name: CT-CLIP
+        repo: third_party/repos/CT-CLIP/CT_CLIP
+        checkpoint: third_party/weights/foundation/ct_clip/model.pt
+        factory: ""
+        output_adapter: ""
+        feature_dim: 0
+        strict_load: true
+      totalfm:
+        display_name: TotalFM
+        repo: third_party/repos/TotalFM
+        checkpoint: third_party/weights/foundation/totalfm/totalfm_en_checkpoint_best_loss.pt
+        factory: ""
+        output_adapter: ""
+        feature_dim: 0
+        strict_load: true
+      penet_style:
+        display_name: PENet-style
+        integration: local
+        feature_dim: 256
+        in_channels: 1
+        widths: [32, 64, 128, 256]
+        blocks_per_stage: 2
+        load_pretrained: false
+
+  ct_fm:
+    # Select the ct_fm entry of the shared backbone registry.
+    #
+    # The contract itself lives in registry.yaml; this file only says which one to use, and
+    # records that choice as the run's baseline so that overriding `model.backbone` gives the
+    # run its own output directory instead of overwriting this one.
+    _base_:
+      - backbones.yaml#registry
+    model:
+      backbone: ct_fm
+    experiment:
+      baseline_backbone: ct_fm
+
+  ct_clip:
+    # Select the ct_clip entry of the shared backbone registry.
+    #
+    # The contract itself lives in registry.yaml; this file only says which one to use, and
+    # records that choice as the run's baseline so that overriding `model.backbone` gives the
+    # run its own output directory instead of overwriting this one.
+    _base_:
+      - backbones.yaml#registry
+    model:
+      backbone: ct_clip
+    experiment:
+      baseline_backbone: ct_clip
+
+  totalfm:
+    # Select the totalfm entry of the shared backbone registry.
+    #
+    # The contract itself lives in registry.yaml; this file only says which one to use, and
+    # records that choice as the run's baseline so that overriding `model.backbone` gives the
+    # run its own output directory instead of overwriting this one.
+    _base_:
+      - backbones.yaml#registry
+    model:
+      backbone: totalfm
+    experiment:
+      baseline_backbone: totalfm
+
+  penet_style:
+    # Randomly initialized non-foundation 3D baseline requested in the study email.
+    # This is a PENet-style comparison arm, not a claim of exact paper reproduction.
+    _base_:
+      - backbones.yaml#registry
+    model:
+      backbone: penet_style
+    experiment:
+      baseline_backbone: penet_style

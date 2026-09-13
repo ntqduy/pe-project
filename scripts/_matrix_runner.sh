@@ -60,7 +60,7 @@ matrix_weight_overrides() {
 # canonical protocol run is the full cohort. Following the same rule as
 # stamp_experiment_variant(), only a *deviation* from that default is stamped into the
 # path. So the protocol run lands on the documented `weight_<source>/` directory and the
-# canonical checkpoints named in components/encoder/sources.yaml stay resolvable, while a
+# canonical checkpoints named in components/encoders.yaml#sources stay resolvable, while a
 # test_500_sample or smoke_30 rehearsal still gets a directory of its own.
 MATRIX_DEFAULT_DATASET="full_inspect"
 
@@ -162,6 +162,8 @@ supported: multi_task -> global; single_task -> global, probe"
   if [[ "$mode" == "single_task" ]]; then
     overrides+=(
       "data.label_columns=[${label}]"
+      "diagnosis.primary_task=${label}"
+      "diagnosis.tasks=[${label}]"
       "task.primary_target=${label}"
       "task.targets={${label}: 1}"
     )
@@ -173,10 +175,10 @@ matrix_run_silver() {
   local label="${SILVER_ENCODER_LABEL:-}"
   local experiment
   case "$label" in
-    sl00_medgemma) experiment="repr.silver.medgemma" ;;
-    sl01_rules_falcon) experiment="repr.silver.rules_falcon" ;;
-    sl02_hybrid) experiment="repr.silver.hybrid" ;;
-    *) matrix_die "SILVER_ENCODER_LABEL must be sl00_medgemma, sl01_rules_falcon or sl02_hybrid" ;;
+    medgemma) experiment="repr.silver.medgemma" ;;
+    rule_falcon) experiment="repr.silver.rule_falcon" ;;
+    rule_falcon_medgemma) experiment="repr.silver.rule_falcon_medgemma" ;;
+    *) matrix_die "SILVER_ENCODER_LABEL must be medgemma, rule_falcon or rule_falcon_medgemma" ;;
   esac
   # The protocol default is the RSPECT multitask encoder; callers may deliberately
   # compare another upstream stage with WEIGHT_SOURCE.
@@ -209,6 +211,13 @@ matrix_prognosis_strategy() {
     global_late_logit) printf '%s\n' "prog.global.late:image,ehr,pesi" ;;
     global_soft_moe) printf '%s\n' "prog.global.moe:image,ehr,pesi" ;;
     probe) printf '%s\n' "probe.prog:image" ;;
+    # ROI-only sufficiency students. Image-only by construction: the claim is that one
+    # region alone carries the outcome signal, so the clinical branches must stay off.
+    # Their reference row is image_only and their control is random_student.
+    heart_student) printf '%s\n' "prog.heart_student:image" ;;
+    pa_student) printf '%s\n' "prog.pa_student:image" ;;
+    lung_student) printf '%s\n' "prog.lung_student:image" ;;
+    random_student) printf '%s\n' "prog.random_student:image" ;;
     *) return 1 ;;
   esac
 }
@@ -220,9 +229,15 @@ matrix_run_prognosis() {
   local strategy="${STRATEGY:-}"
   local manifest
   case "$cohort" in
-    all_patient) manifest="manifests/prognosis_all_patient.csv" ;;
-    PE_positive) manifest="manifests/prognosis_pe_positive.csv" ;;
-    *) matrix_die "COHORT must be all_patient or PE_positive" ;;
+    all_patient|all_comers)
+      cohort="all_comers"
+      manifest="manifests/prognosis_all_patient.csv"
+      ;;
+    PE_positive|pe_positive_only)
+      cohort="pe_positive_only"
+      manifest="manifests/prognosis_pe_positive.csv"
+      ;;
+    *) matrix_die "COHORT must be all_comers or pe_positive_only (legacy aliases remain accepted)" ;;
   esac
   case "$ehr_profile" in
     EHR_0_h)

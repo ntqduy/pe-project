@@ -1,0 +1,36 @@
+# ablation.arch.global_heart — architecture ablation: global + heart expert.
+#
+# Ablation 1 của proposal (slide 12): giữ nguyên C0 initialization, split, preprocessing,
+# optimizer và nhãn; **chỉ đổi kiến trúc**. Mọi arm retrain từ C0 nên chênh lệch chỉ đến từ
+# component bị bật/tắt.
+#
+# Biến đang đổi: task.regions = [heart] · fusion = concat + MLP
+# Output: outputs/ablation/architecture/AB_arch_global_heart/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/tasks.yaml#diagnosis_anatomy_reference
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/fusions.yaml#concat_mlp
+experiment:
+  id: AB_arch_global_heart
+  name: ablation.arch.global_heart
+  stage: ablation
+  family: architecture_ablation
+task:
+  base_stage: diagnosis
+  regions: [heart]
+data:
+  roi_mask_ids:
+    _replace_: true
+    heart: ROI2
+lineage:
+  transfer_modules: [image_encoder]
+  silver_method: null
+  supervision_type: native_labels
+  ablation_axis: architecture
+  ablation_variant: global_heart

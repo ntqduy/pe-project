@@ -5,7 +5,7 @@ import os
 import shutil
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +34,15 @@ FAMILY_PATHS = {
     "contour": "contour",
     "silver_ablation": "ablation/silver",
     "architecture_ablation": "ablation/architecture",
+    "ehr_ablation": "ablation/ehr",
     "remove_roi": "ablation/remove_roi",
     "roi_students": "ablation/roi_students",
     "transfer": "ablation/transfer",
     "counterfactual": "counterfactual",
     "roi_student": "roi_students",
+    # Prognosis ROI-only students keep their own subtree: same stage, different base_stage,
+    # different reference arm, so their results are never read against the diagnosis ones.
+    "prognosis_roi_student": "roi_students/prognosis",
     "concept_bottleneck": "concept_bottleneck",
     "summary": "summary",
     "segmentation_validation": "segmentation_validation",
@@ -132,10 +136,14 @@ class OutputManager:
             return str(status or "unknown")
         return "incomplete"
 
-    def ensure_layout(self, run_dir: Path) -> Path:
+    def ensure_layout(
+        self,
+        run_dir: Path,
+        directories: Sequence[str] = STANDARD_RUN_DIRECTORIES,
+    ) -> Path:
         destination = self.paths.require_within_output(run_dir)
         destination.mkdir(parents=True, exist_ok=True)
-        for name in STANDARD_RUN_DIRECTORIES:
+        for name in directories:
             (destination / name).mkdir(exist_ok=True)
         return destination
 
@@ -146,6 +154,7 @@ class OutputManager:
         *,
         resume: bool = False,
         overwrite: bool = False,
+        directories: Sequence[str] = STANDARD_RUN_DIRECTORIES,
     ) -> Path:
         if resume and overwrite:
             raise ValueError("--resume and --overwrite are mutually exclusive")
@@ -161,11 +170,17 @@ class OutputManager:
         if overwrite and destination.exists():
             self.paths.require_within_output(destination)
             shutil.rmtree(destination)
-        self.ensure_layout(destination)
+        self.ensure_layout(destination, directories)
         verify_writable_directory(destination)
         return destination
 
-    def write_config(self, run_dir: Path, config: Mapping[str, Any]) -> Path:
+    def write_config(
+        self,
+        run_dir: Path,
+        config: Mapping[str, Any],
+        *,
+        compatibility_copy: bool = True,
+    ) -> Path:
         try:
             import yaml
         except ModuleNotFoundError as exc:
@@ -173,7 +188,11 @@ class OutputManager:
         payload = yaml.safe_dump(dict(config), sort_keys=False).encode("utf-8")
         destination = run_dir / "resolved_config.yaml"
         compatibility = run_dir / "config.yaml"
-        existing_path = destination if destination.is_file() else compatibility
+        existing_path = (
+            destination
+            if destination.is_file() or not compatibility_copy
+            else compatibility
+        )
         if existing_path.is_file():
             existing = yaml.safe_load(existing_path.read_text(encoding="utf-8")) or {}
             old_hash = existing.get("config_hash")
@@ -186,11 +205,12 @@ class OutputManager:
                 payload = yaml.safe_dump(dict(config), sort_keys=False).encode("utf-8")
                 if not destination.is_file():
                     atomic_write_bytes(destination, payload)
-                if not compatibility.is_file():
+                if compatibility_copy and not compatibility.is_file():
                     atomic_write_bytes(compatibility, payload)
                 return destination
         atomic_write_bytes(destination, payload)
-        atomic_write_bytes(compatibility, payload)
+        if compatibility_copy:
+            atomic_write_bytes(compatibility, payload)
         return destination
 
     def write_lineage(self, run_dir: Path, lineage: Mapping[str, Any]) -> Path:
@@ -208,18 +228,26 @@ class OutputManager:
         atomic_write_json(destination, evaluation)
         return destination
 
-    def write_result(self, run_dir: Path, result: Mapping[str, Any]) -> Path:
-        self.ensure_layout(run_dir)
-        lineage = result.get("lineage")
-        if isinstance(lineage, Mapping):
-            self.write_lineage(run_dir, lineage)
-        environment = result.get("reproducibility")
-        if isinstance(environment, Mapping):
-            self.write_environment(run_dir, environment)
-        evaluation = result.get("evaluation")
-        if isinstance(evaluation, Mapping):
-            self.write_metrics(run_dir, evaluation)
-        destination = run_dir / "result.json"
+    def write_result(
+        self,
+        run_dir: Path,
+        result: Mapping[str, Any],
+        *,
+        split_artifacts: bool = True,
+    ) -> Path:
+        destination_root = self.paths.require_within_output(run_dir)
+        destination_root.mkdir(parents=True, exist_ok=True)
+        if split_artifacts:
+            lineage = result.get("lineage")
+            if isinstance(lineage, Mapping):
+                self.write_lineage(run_dir, lineage)
+            environment = result.get("reproducibility")
+            if isinstance(environment, Mapping):
+                self.write_environment(run_dir, environment)
+            evaluation = result.get("evaluation")
+            if isinstance(evaluation, Mapping):
+                self.write_metrics(run_dir, evaluation)
+        destination = destination_root / "result.json"
         atomic_write_json(destination, result)
         return destination
 
@@ -236,14 +264,16 @@ def prepare_resumable_run(
     destination = manager.run_dir(family, experiment_id)
     existed = destination.exists()
     if overwrite:
-        destination = manager.prepare(family, experiment_id, overwrite=True)
+        destination = manager.prepare(
+            family, experiment_id, overwrite=True, directories=()
+        )
         existed = False
     elif not existed:
-        destination = manager.prepare(family, experiment_id)
+        destination = manager.prepare(family, experiment_id, directories=())
     else:
         verify_writable_directory(destination)
-        manager.ensure_layout(destination)
-    manager.write_config(destination, config)
+        manager.ensure_layout(destination, directories=())
+    manager.write_config(destination, config, compatibility_copy=False)
     return destination, existed
 
 

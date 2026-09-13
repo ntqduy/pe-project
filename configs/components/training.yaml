@@ -1,0 +1,153 @@
+# Optimization and evaluation contracts.
+# Select a fragment with: path/to/training.yaml#<preset>
+_presets_:
+  alignment:
+    # Shared optimization contract for image-report alignment.
+    # Copied verbatim from the historical AL01 contract.
+    peft:
+      method: full
+    training:
+      epochs: 50
+      batch_size: 8
+      learning_rate: 0.0001
+      early_stopping_patience: 10
+    seed: 42
+
+  contour:
+    # Shared optimization/evaluation contract for the contour family (deferred).
+    # Copied verbatim from the historical CT01 contract.
+    peft:
+      method: full
+    training:
+      epochs: 100
+      batch_size: 1
+      learning_rate: 0.0001
+      early_stopping_patience: 10
+    evaluation:
+      bootstrap_samples: 2000
+      confidence: 0.95
+      nsd_tolerance_mm: 1.0
+    seed: 42
+
+  dapt:
+    # Shared optimization contract for self-supervised domain-adaptive pretraining.
+    # Copied verbatim from the historical D01 contract, which D02/D03/D04 also inherited.
+    peft:
+      method: full
+    training:
+      epochs: 100
+      batch_size: 1
+      learning_rate: 0.0001
+      weight_decay: 0.0001
+      gradient_accumulation: 4
+      early_stopping_patience: 10
+    seed: 42
+
+  diagnosis:
+    # Shared optimization/evaluation contract for the diagnosis family.
+    # Copied verbatim from the historical DX01 contract so archived and new runs stay
+    # comparable. Every diagnosis run inherits this; a run only overrides what its
+    # scientific question changes.
+    peft:
+      method: lora
+      target_modules: [attn, projection]
+      rank: 8
+      alpha: 16
+      dropout: 0.05
+    training:
+      epochs: 50
+      batch_size: 1
+      learning_rate: 0.0001
+      weight_decay: 0.0001
+      gradient_accumulation: 4
+      early_stopping_patience: 10
+    evaluation:
+      # Operating threshold is selected on validation and applied to test.
+      bootstrap_samples: 2000
+      confidence: 0.95
+      threshold_method: youden
+    seed: 42
+
+  probe:
+    # FIXED REPRESENTATION-PROBE CONTRACT — do not tune per checkpoint.
+    #
+    # A probe answers one question only: "how good is this frozen representation?".
+    # That answer is comparable across checkpoints only while everything below is
+    # identical for every probed checkpoint. Changing any value here invalidates all
+    # previously probed checkpoints and requires re-probing every arm.
+    #
+    # Fixed by this contract: probe head architecture (source/tasks/representation_probe.py),
+    # optimizer, epochs, early-stopping patience, batch size, seed, evaluation metrics, and
+    # the rule that the best epoch is selected on validation loss. The patient split and
+    # preprocessing are fixed by the manifest each probe run points at.
+    #
+    # Only these may differ between probe runs:
+    #   lineage.source_experiment / lineage.source_checkpoint  (the representation under test)
+    #   experiment.id                                          (so outputs never collide)
+    #
+    # Linear evaluation protocol: freeze the encoder, fit one fixed head, and read the score
+    # as a property of the representation rather than of the fine-tuning recipe.
+    # NOTE: the diagnosis probe head is a single nn.Linear, but the prognosis probe head is
+    # Linear->GELU->Linear. The prognosis arm is therefore a NON-LINEAR probe and its numbers
+    # are not comparable with the diagnosis probe, only with other prognosis probes.
+    probe:
+      enabled: true
+      # 2 adds early_stopping_patience to the fixed contract. Probe runs recorded under
+      # contract_version 1 were produced under a different stopping rule; re-probe every arm
+      # before comparing them with runs produced under this version.
+      contract_version: 2
+    peft:
+      # The encoder is frozen; only the fixed probe head is trained.
+      method: frozen
+    training:
+      epochs: 50
+      batch_size: 1
+      learning_rate: 0.0001
+      weight_decay: 0.0001
+      gradient_accumulation: 4
+      early_stopping_patience: 10
+    evaluation:
+      bootstrap_samples: 2000
+      confidence: 0.95
+      threshold_method: youden
+    seed: 42
+
+  prognosis:
+    # Shared optimization/evaluation contract for the prognosis family.
+    # Copied verbatim from the historical PR01 contract.
+    peft:
+      method: lora
+      target_modules: [attn, projection]
+      rank: 8
+      alpha: 16
+      dropout: 0.05
+    training:
+      epochs: 50
+      batch_size: 1
+      learning_rate: 0.0001
+      early_stopping_patience: 10
+    evaluation:
+      bootstrap_samples: 2000
+      confidence: 0.95
+      threshold_method: youden
+      # patient_holdout | temporal_holdout | patient_stratified_cv
+      # Protocol: temporal hold-out khi có acquisition date tin cậy và đủ event; nếu không
+      # thì patient-level stratified CV. Fold assignment: source/data/cv.py.
+      split_strategy: patient_holdout
+      temporal_holdout:
+        enabled: false
+        acquisition_date_column: null
+        minimum_events_per_split: 5
+      cross_validation:
+        enabled: false
+        # repeated_stratified_patient_kfold | repeated_patient_kfold | nested_patient_kfold
+        type: repeated_stratified_patient_kfold
+        folds: 3
+        repeats: 3
+        nested_inner_folds: 3
+    clinical_preprocessing:
+      # Imputation/normalization statistics are fit on the training split only.
+      fit_split: train
+      normalization: zscore
+      imputation: mean
+    seed: 42

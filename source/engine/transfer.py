@@ -11,4 +11,8 @@ def transfer_modules(model: Any, checkpoint: str | Path, modules: Iterable[str])
     if not selected:
         raise ValueError("at least one module must be selected for transfer")
     payload = load_checkpoint(checkpoint, model=model, modules=selected, strict=False)
-    return {"source": str(Path(checkpoint)), "lineage": payload["lineage"], **payload["load_report"]}
+    return {
+        "source": str(Path(checkpoint).resolve()),
+        "lineage": payload["lineage"],
+        **payload["load_report"],
+    }

@@ -9,14 +9,14 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
-  - ../../../components/task/diagnosis.yaml
-  - ../../../components/task/diagnosis_organ_silver.yaml
-  - ../../../components/training/diagnosis.yaml
-  - ../../../components/adapter/organ.yaml
-  - ../../../components/data/anatomy_masks.yaml
-  - ../../../components/fusion/soft_moe.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/tasks.yaml#diagnosis_organ_silver
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/anatomy.yaml#anatomy_masks
+  - ../../../components/fusions.yaml#soft_moe
 experiment:
   id: DX_anatomy_silver_soft_moe
   name: diag.anatomy.silver.moe
@@ -34,10 +34,10 @@ task:
   regions: [heart, pa, lung]
 lineage:
   transfer_modules: [image_encoder]
-  silver_method: SL02
+  silver_method: rule_falcon_medgemma
   supervision_type: native_pe_and_accepted_silver_organ_multitask
 supervision:
   require_masks: true
   masks: segmentation/SEG_pseudo_anatomy
   require_silver_labels: true
-  silver_labels: silver_label/SL_hybrid_adjudicated/labels.parquet
+  silver_labels: silver_label/rule_falcon_medgemma/silver_labels.csv

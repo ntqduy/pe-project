@@ -1,4 +1,0 @@
-task:
-  primary_target: embolus_mask
-  output_regions: 1
-  decoder_channels: 64

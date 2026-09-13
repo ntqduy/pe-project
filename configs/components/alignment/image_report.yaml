@@ -1,6 +1,0 @@
-alignment:
-  objective: symmetric_infonce
-  report_model_id: null
-  report_embedding_columns: []
-  projection_dim: 256
-  temperature: 0.07

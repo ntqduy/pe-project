@@ -16,16 +16,6 @@ def combine_masks(masks: Iterable[np.ndarray]) -> np.ndarray:
     return np.logical_or.reduce(arrays).astype(np.uint8)
 
 
-def validate_binary_mask(mask: np.ndarray, volume_shape: tuple[int, int, int]) -> dict[str, object]:
-    array = np.asarray(mask)
-    if array.shape != volume_shape:
-        raise ValueError(f"mask shape {array.shape} does not match volume {volume_shape}")
-    unique = set(np.unique(array).tolist())
-    if not unique <= {0, 1}:
-        raise ValueError(f"mask is not binary: {sorted(unique)}")
-    return {"shape": list(array.shape), "voxels": int(array.astype(bool).sum()), "empty": not array.any()}
-
-
 def load_nifti(path: str | Path) -> tuple[np.ndarray, Any]:
     try:
         import nibabel as nib

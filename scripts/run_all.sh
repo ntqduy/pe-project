@@ -15,7 +15,7 @@
 # Axes (space-separated; each defaults to the full protocol set):
 #   STAGES          rspect diagnosis prognosis silver_encoder
 #   WEIGHT_SOURCES  pretrained dapt alignment rspect_multitask rspect_single silver_encoder
-#   COHORTS         all_patient PE_positive
+#   COHORTS         all_comers pe_positive_only (legacy names remain accepted)
 #   EHR_PROFILES    EHR_0_h EHR_24_h
 #   TASKS           the seven prognosis outcomes
 #   STRATEGIES      the thirteen prognosis strategies
@@ -33,14 +33,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 STAGES="${STAGES:-rspect diagnosis prognosis}"
 WEIGHT_SOURCES="${WEIGHT_SOURCES:-pretrained dapt alignment rspect_multitask rspect_single silver_encoder}"
-COHORTS="${COHORTS:-all_patient PE_positive}"
+COHORTS="${COHORTS:-all_comers pe_positive_only}"
 EHR_PROFILES="${EHR_PROFILES:-EHR_0_h EHR_24_h}"
 TASKS="${TASKS:-1_month_mortality 6_month_mortality 12_month_mortality 1_month_readmission 6_month_readmission 12_month_readmission 12_month_PH}"
 STRATEGIES="${STRATEGIES:-image_only clinical_only pesi_only clinical_pesi image_clinical image_pesi image_clinical_pesi anatomy_concat anatomy_late_logit anatomy_soft_moe global_late_logit global_soft_moe probe}"
 DX_MODES="${DX_MODES:-multi_task single_task}"
 DX_LABELS="${DX_LABELS:-pe_positive pe_acute pe_subsegmental}"
 DX_STRATEGIES="${DX_STRATEGIES:-global probe}"
-SILVER_LABELS="${SILVER_LABELS:-sl00_medgemma sl01_rules_falcon sl02_hybrid}"
+SILVER_LABELS="${SILVER_LABELS:-medgemma rule_falcon rule_falcon_medgemma}"
 
 # RSPECT is an upstream stage: it may only start from a stage that precedes it.
 RSPECT_WEIGHT_SOURCES="${RSPECT_WEIGHT_SOURCES:-pretrained dapt alignment}"

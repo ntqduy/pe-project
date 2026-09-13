@@ -1,0 +1,61 @@
+# probe.diag.multitask — fixed frozen-encoder probe over the three native diagnosis labels.
+#
+# Question: which representation checkpoint carries the most information about all three
+# reviewed labels, not just PE presence?
+# Frozen encoder -> global average pool -> one fixed linear head per label.
+# Same fixed contract as probe.diag (components/training.yaml#probe): nothing may be tuned
+# per checkpoint, and the best epoch is selected on validation only.
+#
+# Labels are exactly the three native reviewed columns, identical to diag.matrix.multitask,
+# so probe and fine-tuned numbers answer the same question on the same supervision.
+#
+# To probe a different representation, override the checkpoint AND the experiment id:
+#   python run.py run probe.diag.multitask --gpus 0 \
+#     --set lineage.source_experiment=D_dapt_dino \
+#     --set lineage.source_checkpoint='${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt' \
+#     --set experiment.id=DX_probe_diagnosis_multitask_dapt_dino
+# Output: outputs/diagnosis/DX_probe_diagnosis_multitask/  (one directory per probed checkpoint)
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/training.yaml#probe
+experiment:
+  id: DX_probe_diagnosis_multitask
+  name: probe.diag.multitask
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  cohort: all_eligible_ctpa
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_positive, pe_acute, pe_subsegmental]
+  # No anatomy branches: this arm reads no masks.
+  mask_columns: {}
+diagnosis:
+  mode: multitask
+  primary_task: pe_positive
+  tasks: [pe_positive, pe_acute, pe_subsegmental]
+task:
+  architecture: frozen_probe
+  primary_target: pe_positive
+  # One independent nn.Linear per target on the pooled frozen feature vector.
+  targets:
+    _replace_: true
+    pe_positive: 1
+    pe_acute: 1
+    pe_subsegmental: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+lineage:
+  transfer_modules: [image_encoder]
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+  silver_labels: null

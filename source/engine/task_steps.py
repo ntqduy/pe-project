@@ -138,6 +138,7 @@ def task_loss_step(config: Mapping[str, Any]):
 
     def prognosis(model: nn.Module, batch: Mapping[str, Any]) -> Tensor:
         from source.components.roi.masks import apply_counterfactual
+        from source.components.targets import masked_multitask_loss
 
         model_batch = dict(batch)
         if "volume" in model_batch:
@@ -150,8 +151,26 @@ def task_loss_step(config: Mapping[str, Any]):
                 study_ids=batch.get("study_id"),
             )
         output = model(model_batch)
-        index = int(task.get("primary_label_index", 0))
-        loss = mortality_loss(output["logits"], batch["labels"][:, index], batch["label_valid"][:, index])
+        target_logits = output.get("target_logits")
+        if target_logits:
+            labels = {
+                name: batch["labels"][:, label_columns.index(name)]
+                for name in target_logits if name in label_columns
+            }
+            valid = {
+                name: batch["label_valid"][:, label_columns.index(name)]
+                for name in target_logits if name in label_columns
+            }
+            target_specs = task.get("targets") or {str(task.get("primary_target", "mortality_30d")): 1}
+            loss, _ = masked_multitask_loss(
+                target_logits, labels, valid, target_specs,
+                task.get("loss_weights"), allow_empty=False,
+            )
+        else:
+            index = int(task.get("primary_label_index", 0))
+            loss = mortality_loss(
+                output["logits"], batch["labels"][:, index], batch["label_valid"][:, index]
+            )
         concept_logits = output.get("concept_logits")
         if concept_logits:
             from source.components.targets import masked_multitask_loss

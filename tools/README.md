@@ -14,7 +14,7 @@ tools/
 ├── launch.py               one training or generation job on CPU / one GPU / DDP
 ├── launch_parallel.py      several independent jobs across GPU groups, in waves
 ├── build_summary.py        aggregate existing result.json files
-├── build_experiment_map.py regenerate docs/EXPERIMENT_MAP.md from the registry
+├── build_experiment_map.py optional: render a row-per-experiment table from the registry
 ├── sync_project.py         copy source/configs/scripts to the cloud project root
 ├── create_masks/generate_masks.py    TotalSegmentator + LungMask QC
 ├── build_rois/build_rois.py          ROI1-ROI8 from a stored segmentation run
@@ -85,7 +85,7 @@ The launcher reads `experiment.stage` and picks the single matching entrypoint:
 ```bash
 python tools/launch.py --config configs/runs/02_representation/dapt/dino.yaml --gpus 0
 python tools/launch.py --config configs/runs/02_representation/dapt/dino.yaml --gpus 0,1,2,3
-python tools/launch.py --config configs/runs/00_data/silver/hybrid.yaml --gpus 0,1 --allow-full
+python tools/launch.py --config configs/runs/00_data/silver/rule_falcon_medgemma.yaml --gpus 0,1 --allow-full
 python tools/launch.py --config configs/runs/02_representation/dapt/dino.yaml --gpus 0,1 --dry-run
 ```
 
@@ -94,7 +94,7 @@ to logical `0..N-1`, and uses `torchrun` from two GPUs up. Foundation materializ
 one GPU only.
 
 Silver generation is not DDP model training: each rank loads its providers on its local GPU and
-processes a shard of reports, then rank 0 merges. SL02 loads both Falcon and MedGemma per rank.
+processes a shard of reports, then rank 0 merges. rule_falcon_medgemma loads both Falcon and MedGemma per rank.
 
 ## Data selection
 
@@ -111,7 +111,7 @@ selection mode:
 python tools/create_masks/generate_masks.py --config configs/runs/00_data/segmentation.yaml \
   --patient-id P001 --gpus 0
 python tools/build_rois/build_rois.py --config configs/runs/00_data/roi.yaml --patient-id P001
-python tools/launch.py --config configs/runs/00_data/silver/hybrid.yaml --patient-id P001 --gpus 0
+python tools/launch.py --config configs/runs/00_data/silver/rule_falcon_medgemma.yaml --patient-id P001 --gpus 0
 ```
 
 `--patient-id` selects every record for that patient, not one study. For ROI the patient must
@@ -186,8 +186,8 @@ Calling a nested file directly with several GPUs does not spawn several processe
 ## Overrides, resume, overwrite
 
 ```bash
-python tools/launch.py --config configs/runs/02_representation/silver_adaptation/hybrid.yaml \
-  --set silver_training.silver_source=SL01 --gpus 0,1
+python tools/launch.py --config configs/runs/02_representation/silver_adaptation/rule_falcon_medgemma.yaml \
+  --set silver_training.silver_source=rule_falcon --gpus 0,1
 ```
 
 - `--set KEY=VALUE` is YAML-parsed and repeatable.

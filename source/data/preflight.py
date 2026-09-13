@@ -326,10 +326,23 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 if bool(ehr_config.get("enabled", True)):
                     archive = release / "EHR" / str(ehr_config.get("archive") or "")
                     _exists(checks, "DATA", "ehr_archive", archive, True)
-                    policy = Path(str(ehr_config.get("prohibited_config") or ""))
-                    if not policy.is_absolute():
-                        policy = paths.code_root / policy
-                    _exists(checks, "DATA", "ehr_prohibited_policy", policy, True)
+                    policy = ehr_config.get("prohibited")
+                    valid_policy = isinstance(policy, dict) and isinstance(
+                        policy.get("excluded_tables"), list
+                    ) and isinstance(policy.get("code_description_patterns"), list)
+                    checks.append(
+                        Check(
+                            "DATA",
+                            "ehr_prohibited_policy",
+                            "PASS" if valid_policy else "FAIL",
+                            "inline leakage policy configured"
+                            if valid_policy
+                            else (
+                                "ehr.prohibited must define excluded_tables and "
+                                "code_description_patterns lists"
+                            ),
+                        )
+                    )
                 pesi_config = dict(profile.get("pesi") or {})
                 if bool(pesi_config.get("enabled", True)):
                     mapping = Path(str(pesi_config.get("mapping_config") or ""))
@@ -390,7 +403,9 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 ),
                 fold_column=data_config.get("fold_column"),
                 required_splits=(
-                    ("train", "validation", "test")
+                    ("test",)
+                    if bool((config.get("external_evaluation") or {}).get("test_only"))
+                    else ("train", "validation", "test")
                     if effective_stage in {"diagnosis", "prognosis"}
                     and stage != "counterfactual"
                     else ("validation", "test") if stage == "counterfactual" else ()
@@ -502,6 +517,22 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         )
         if not uses_image_model:
             checks.append(Check("MODEL", "image_backbone", "SKIP", "image modality disabled"))
+        elif backbone and str(model.get("integration") or "external") == "local":
+            from source.components.encoders.image.registry import registered_backbones
+
+            contract_ok = (
+                backbone.strip().lower().replace("-", "_") in registered_backbones()
+                and int(model.get("feature_dim") or 0) > 0
+                and not bool(model.get("load_pretrained", False))
+            )
+            checks.append(
+                Check(
+                    "MODEL",
+                    f"{backbone}_local_contract",
+                    "PASS" if contract_ok else "FAIL",
+                    "registered project-native encoder; random initialization",
+                )
+            )
         elif backbone:
             _exists(checks, "MODEL", f"{backbone}_repo", paths.code_asset(model.get("repo")), True)
             _exists(
@@ -634,14 +665,25 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 )
             )
     elif stage == "silver":
+        from source.silver.generator import SILVER_METHODS
+
         silver = dict(config.get("silver") or {})
-        method = str(silver.get("method") or "").upper()
-        required_roles = (
-            ("medgemma",)
-            if method == "SL00"
-            else ("falcon",)
-            if method == "SL01"
-            else ("falcon", "medgemma")
+        method = str(silver.get("method") or "").strip().lower()
+        # The method name is the cascade, so it also decides which providers must be
+        # staged. Reading it from SILVER_METHODS keeps this in step with the generator
+        # instead of repeating the mapping here.
+        stages = SILVER_METHODS.get(method)
+        if stages is None:
+            checks.append(
+                Check(
+                    "SILVER",
+                    "method",
+                    "FAIL",
+                    f"silver.method={method!r} is not one of {sorted(SILVER_METHODS)}",
+                )
+            )
+        required_roles = tuple(
+            name for name in (stages or ()) if name in {"falcon", "medgemma"}
         )
         for role in required_roles:
             configured = dict(silver.get(role) or {})
@@ -701,7 +743,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         configured = supervision.get(key)
         if stage == "silver_encoder_adaptation" and key == "silver_labels":
             silver_training = dict(config.get("silver_training") or {})
-            source = str(silver_training.get("silver_source") or "").upper()
+            source = str(silver_training.get("silver_source") or "").strip().lower()
             configured = dict(silver_training.get("sources") or {}).get(source)
             requested = True
         try:
@@ -791,7 +833,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                         if (
                             str(row.get("roi_id")) == str(roi_id)
                             and observed_control == expected_control
-                            and str(row.get("status")) in {"PASS", "SUSPICIOUS"}
+                            and str(row.get("status")) in {"PASS", "SUSPICIOUS", "pass"}
                             and Path(str(row.get("roi_path") or "")).is_file()
                         ):
                             found.add((str(row.get("patient_id")), str(row.get("study_id"))))
@@ -903,7 +945,19 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                         "reliable acquisition_date_column and readable manifest are required",
                     )
                 )
-        elif split_strategy not in {"patient_holdout", "patient_stratified_cv"}:
+        elif split_strategy == "patient_stratified_cv":
+            # Fold assignment lives in source/data/cv.py; the runner must be given a fold
+            # column, so a CV config without cross_validation.enabled is a contradiction.
+            cv = dict(evaluation.get("cross_validation") or {})
+            folds = int(cv.get("folds", 0))
+            checks.append(
+                Check(
+                    "DATA", "cross_validation",
+                    "PASS" if cv.get("enabled") and folds >= 2 else "FAIL",
+                    f"enabled={cv.get('enabled')} type={cv.get('type')} folds={folds}",
+                )
+            )
+        elif split_strategy != "patient_holdout":
             checks.append(Check("DATA", "split_strategy", "FAIL", split_strategy))
         if "pesi" in modalities:
             count = len(data_config.get("pesi_columns") or ())
@@ -1103,7 +1157,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
     if stage == "silver_encoder_adaptation":
         silver_training = dict(config.get("silver_training") or {})
         targets = silver_training.get("targets") or {}
-        source = str(silver_training.get("silver_source") or "")
+        source = str(silver_training.get("silver_source") or "").strip().lower()
         required = bool(supervision.get("require_silver_labels", False))
         valid_targets = isinstance(targets, Mapping) and bool(targets) and all(
             int(classes) > 0 for classes in targets.values()
@@ -1112,7 +1166,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
             Check(
                 "SUPERVISION",
                 "silver_encoder_adaptation_contract",
-                "PASS" if valid_targets and required and source in {"SL00", "SL01", "SL02"} else "FAIL",
+                "PASS" if valid_targets and required and source in SILVER_METHODS else "FAIL",
                 f"source={source} require_silver_labels={required} targets={len(targets)}",
             )
         )

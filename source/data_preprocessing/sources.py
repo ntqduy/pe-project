@@ -13,7 +13,7 @@ from __future__ import annotations
 import csv
 import re
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -287,11 +287,3 @@ class InspectSource:
             "volume_root": str(self.volume_root),
             "volume_suffix": self.volume_suffix,
         }
-
-
-def iter_patient_groups(records: Sequence[StudyRecord]) -> Iterator[tuple[str, list[StudyRecord]]]:
-    grouped: dict[str, list[StudyRecord]] = {}
-    for record in records:
-        grouped.setdefault(record.patient_id, []).append(record)
-    for patient_id in sorted(grouped):
-        yield patient_id, grouped[patient_id]

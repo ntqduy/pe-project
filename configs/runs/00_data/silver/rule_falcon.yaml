@@ -1,0 +1,26 @@
+# data.silver.rule_falcon — rules first, then Falcon.
+#
+# Question: does a rule-first cascade extract more reliably than the LLM alone?
+# Falcon is asked only for targets the regex could not settle.
+# Support artifact: only rows with status=accepted may be used for training, and silver is
+# never used as a gold evaluation label.
+#
+# Output: outputs/silver_label/rule_falcon/
+#   silver_labels.csv            final normalized labels, one row per report/target
+#   silver_label_confidence.csv  confidence, thresholds, decision and evidence
+#   result.json           run summary: counts, timing, sources used, full QC aggregate
+#   logs/run.log          whole terminal stream: progress, provider errors, final summary
+#   resolved_config.yaml  the exact merged config, including real model paths
+#   .state/<report_hash>.json  internal per-report resume cache
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/silver.yaml#rule_falcon
+experiment:
+  id: rule_falcon
+  name: data.silver.rule_falcon
+  stage: silver
+  family: silver
+data:
+  mode: full
+seed: 42

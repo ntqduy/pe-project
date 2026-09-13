@@ -1,0 +1,32 @@
+# ablation.arch.full_moe — architecture ablation: đủ 4 expert + Soft-MoE router.
+#
+# Ablation 1 của proposal (slide 12): giữ nguyên C0 initialization, split, preprocessing,
+# optimizer và nhãn; **chỉ đổi kiến trúc**. Mọi arm retrain từ C0 nên chênh lệch chỉ đến từ
+# component bị bật/tắt.
+#
+# Biến đang đổi: task.regions = [heart, pa, lung] · fusion = Dense/Soft MoE (có router)
+# Output: outputs/ablation/architecture/AB_arch_full_moe/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/tasks.yaml#diagnosis_anatomy_reference
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/fusions.yaml#soft_moe
+experiment:
+  id: AB_arch_full_moe
+  name: ablation.arch.full_moe
+  stage: ablation
+  family: architecture_ablation
+task:
+  base_stage: diagnosis
+  regions: [heart, pa, lung]
+lineage:
+  transfer_modules: [image_encoder]
+  silver_method: null
+  supervision_type: native_labels
+  ablation_axis: architecture
+  ablation_variant: full_moe

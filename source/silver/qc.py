@@ -4,24 +4,88 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .schema import TARGETS, validate_target_value
+from .schema import TARGETS, decode_storage_value, validate_target_value
 
 PREVIEW_CHARS = 240
 PREVIEW_SAMPLES_PER_STATUS = 3
+QC_RECORD_SCHEMA_VERSION = 1
+QC_ISSUES = ("conflict", "low_conf", "missing_field", "impossible_value")
+
+
+def _impossible_value(row: Mapping[str, Any]) -> str | None:
+    """Reason an accepted row's value is not legal for its target, or None when it is."""
+    if str(row.get("status")) != "accepted":
+        return None
+    try:
+        validate_target_value(str(row["target"]), decode_storage_value(row.get("value")))
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _impossible_values(labels: Sequence[Mapping[str, Any]]) -> list[str]:
-    from .schema import decode_storage_value
+    return [
+        f"{row.get('report_id')}/{row.get('target')}: {problem}"
+        for row in labels
+        if (problem := _impossible_value(row)) is not None
+    ]
 
-    problems: list[str] = []
+
+def _issue(row: Mapping[str, Any]) -> str | None:
+    """Classify one label row, or None when nothing is wrong with it.
+
+    Ordered most specific first. Anything non-accepted that is not an explicit
+    disagreement or an explicit uncertainty means no source found the finding stated in
+    the report, which is what missing_field records.
+    """
+    status = str(row.get("status") or "")
+    reason = str(row.get("reason") or "")
+    if status == "accepted":
+        return "impossible_value" if _impossible_value(row) else None
+    if "disagree" in reason:
+        return "conflict"
+    if status == "no_result":
+        return "missing_field"
+    if reason.endswith("_uncertain"):
+        return "low_conf"
+    return "missing_field"
+
+
+def silver_qc_records(
+    labels: Sequence[Mapping[str, Any]],
+    *,
+    experiment_id: str,
+) -> list[dict[str, Any]]:
+    """One record per problematic (report, target); accepted and valid rows are omitted.
+
+    This is the review queue, not a statistics table: the aggregate counts live in
+    result.json, so repeating them here would only create a second thing to keep in sync.
+    """
+    records: list[dict[str, Any]] = []
     for row in labels:
-        if str(row.get("status")) != "accepted":
+        issue = _issue(row)
+        if issue is None:
             continue
-        try:
-            validate_target_value(str(row["target"]), decode_storage_value(row.get("value")))
-        except ValueError as exc:
-            problems.append(f"{row.get('report_id')}/{row.get('target')}: {exc}")
-    return problems
+        records.append(
+            {
+                "schema_version": QC_RECORD_SCHEMA_VERSION,
+                "experiment_id": experiment_id,
+                "issue": issue,
+                "detail": _impossible_value(row) if issue == "impossible_value" else str(row.get("reason") or ""),
+                "report_hash": row.get("report_hash"),
+                "patient_id": row.get("patient_id"),
+                "study_id": row.get("study_id"),
+                "report_id": row.get("report_id"),
+                "target": row.get("target"),
+                "status": row.get("status"),
+                "source": row.get("source"),
+                "provider": row.get("provider"),
+                "confidence": row.get("confidence"),
+                "falcon_value": row.get("falcon_value"),
+                "medgemma_value": row.get("medgemma_value"),
+            }
+        )
+    return records
 
 
 def _provider_disagreement(audits: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -129,6 +193,11 @@ def silver_qc_summary(
             for source in sorted({str(row["source"]) for row in labels})
         },
         "reason_counts": dict(sorted(reasons.items())),
+        # Totals for what silver_label_confidence.csv records case by case, so result.json
+        # alone says how big the review queue is without that file having to be read.
+        "issue_counts": {
+            issue: sum(1 for row in labels if _issue(row) == issue) for issue in QC_ISSUES
+        },
         "missingness_by_target": _missingness(labels, report_count),
         "provider_disagreement": _provider_disagreement(audits),
         "impossible_values": _impossible_values(labels),

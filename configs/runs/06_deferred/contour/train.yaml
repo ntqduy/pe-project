@@ -1,0 +1,39 @@
+# deferred.contour — clot contour / segmentation refinement. DEFERRED.
+#
+# Question: can the shared representation localize the embolus, not just detect it?
+# Deferred from the active pipeline: it needs an embolus mask column that the active
+# diagnosis and prognosis contracts do not require, and it answers a different question
+# from the necessity/sufficiency programme. The implementation is preserved and runnable
+# once a reviewed embolus-mask manifest exists.
+# Contract preserved verbatim from the archived CT01 arm.
+# Output: outputs/contour/CT_embolus_contour/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/tasks.yaml#contour
+  - ../../../components/training.yaml#contour
+experiment:
+  id: CT_embolus_contour
+  name: deferred.contour
+  stage: contour
+  family: contour
+data:
+  mode: full
+  manifest: manifests/contour.csv
+  file_column: image_path
+  label_columns: []
+  mask_columns:
+    target: embolus_mask_path
+lineage:
+  backbone: CT-FM
+  initialization: C_diag
+  # DANGLING ON PURPOSE: DX01 was a pre-refactor diagnosis arm; no active experiment produces
+  # that checkpoint, so preflight will fail here. Repoint at an active diagnosis run —
+  # DX_anatomy_concat is the obvious candidate — before reviving this deferred experiment.
+  # Left as-is because changing which representation a task initializes from is a scientific
+  # decision, not a cleanup.
+  source_experiment: DX01
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX01/best.ckpt
+  transfer_modules: [image_encoder]
+  supervision_type: native_segmentation

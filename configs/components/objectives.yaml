@@ -1,0 +1,37 @@
+# Representation-learning objectives.
+# Select a fragment with: path/to/objectives.yaml#<preset>
+_presets_:
+  image_report_alignment:
+    alignment:
+      objective: symmetric_infonce
+      report_model_id: null
+      report_embedding_columns: []
+      projection_dim: 256
+      temperature: 0.07
+
+  dapt_none:
+    dapt:
+      method: none
+
+  dapt_mae:
+    dapt:
+      method: mae
+      mask_ratio: 0.75
+
+  dapt_dino:
+    dapt:
+      method: dino
+      projection_dim: 128
+
+  dapt_simclr:
+    dapt:
+      method: simclr
+      projection_dim: 128
+      temperature: 0.1
+      noise_std: 0.02
+
+  dapt_anatomy:
+    dapt:
+      method: anatomy_dapt
+      projection_dim: 128
+      anatomy_region: pa

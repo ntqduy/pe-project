@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -20,9 +21,11 @@ from source.engine.task_steps import task_loss_step
 from source.engine.trainer import Trainer, move_to_device
 from source.engine.transfer import transfer_modules
 from source.profiling.model_profile import profile_model
+from source.components.peft.freeze import trainable_parameter_summary
 from source.utils.console import experiment_header
 from source.utils.environment import environment_report
 from source.utils.seed import seed_everything
+from source.utils.logger import RunLogger
 from tools._common import (
     base_parser,
     build_dataset,
@@ -128,7 +131,14 @@ def main() -> int:
             "refusing to merge a fresh run into old output"
         )
     config = resolve_cli_config(args)
+    external_evaluation = dict(config.get("external_evaluation") or {})
+    if external_evaluation.get("test_only") or external_evaluation.get("prohibit_training"):
+        raise SystemExit(
+            "this is a test-only external-evaluation config; use tools/tasks/evaluate.py "
+            "with --checkpoint, never train_task.py"
+        )
     context = initialize_distributed(str(config["compute"].get("distributed_backend") or "") or None)
+    run_logger: RunLogger | None = None
     try:
         paths = ProjectPaths.resolve(config)
         preflight = rank_zero_call(context, lambda: require_preflight(config, paths))
@@ -150,7 +160,11 @@ def main() -> int:
 
         run_dir = rank_zero_call(context, prepare)
         if context.is_main:
-            print(experiment_header(config, run_dir, preflight.manifest))
+            run_logger = RunLogger(run_dir / "logs" / "run.log")
+            run_logger.log(experiment_header(config, run_dir, preflight.manifest))
+            run_logger.log(f"command={' '.join(sys.argv)}")
+        else:
+            run_logger = None
         seed_everything(int(config["seed"]) + context.rank)
         train_data = build_dataset(config, paths, "train")
         validation_data = build_dataset(config, paths, "validation")
@@ -175,9 +189,24 @@ def main() -> int:
             num_workers=workers,
         )
         model, peft_report = build_task_model(config)
+        if run_logger is not None:
+            run_logger.log(
+                "finetuning="
+                + json.dumps(
+                    {
+                        "strategy": (config.get("finetuning") or {}).get("strategy")
+                        or (config.get("peft") or {}).get("method"),
+                        "peft": peft_report,
+                        "parameters": trainable_parameter_summary(model),
+                    },
+                    sort_keys=True,
+                    default=str,
+                )
+            )
         source_checkpoint = (config.get("lineage") or {}).get("source_checkpoint")
+        transfer_report = None
         if source_checkpoint:
-            transfer_modules(
+            transfer_report = transfer_modules(
                 model,
                 source_checkpoint,
                 tuple(
@@ -185,6 +214,8 @@ def main() -> int:
                     or ("image_encoder",)
                 ),
             )
+            if run_logger is not None:
+                run_logger.log("checkpoint_load=" + json.dumps(transfer_report, sort_keys=True, default=str))
         clinical_preprocessing = _fit_clinical_preprocessor(model, train_data, config)
         model = wrap_ddp(model, context)
         parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
@@ -202,6 +233,7 @@ def main() -> int:
             paths,
             code_commit=reproducibility["git_commit"],
             source_checkpoint=source_checkpoint,
+            overrides={"config_path": str((run_dir / "resolved_config.yaml").resolve())},
         )
         loss_step = task_loss_step(config)
         trainer = Trainer(
@@ -212,6 +244,7 @@ def main() -> int:
             run_dir,
             lineage,
             precision=str(config["compute"].get("precision", "fp32")),
+            early_stopping_patience=training.get("early_stopping_patience"),
             accumulation_steps=int(training.get("gradient_accumulation", 1)),
         )
         training_result = trainer.fit(train_loader, validation_loader, int(training.get("epochs", 1)))
@@ -286,6 +319,7 @@ def main() -> int:
                 model={
                     **profile,
                     "peft": peft_report,
+                    "checkpoint_load": transfer_report,
                     "architecture": (config.get("task") or {}).get("architecture"),
                     "modalities": (config.get("task") or {}).get("modalities", ["image"]),
                     "clinical_preprocessing": clinical_preprocessing,
@@ -324,9 +358,18 @@ def main() -> int:
                     "lambda_kd": float(config["distillation"]["alpha_distill"]),
                 }
             manager.write_result(run_dir, result)
+            if run_logger is not None:
+                run_logger.log(
+                    f"training run={experiment_id} status=finished "
+                    f"best_validation_metric={training_result['best_validation_metric']}"
+                )
             print(f"TRAINING COMPLETED | {experiment_id} | Saved: {run_dir}")
         context.barrier()
         return 0
+    except Exception as exc:
+        if run_logger is not None:
+            run_logger.exception("training status=failed", exc)
+        raise
     finally:
         context.close()
 

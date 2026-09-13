@@ -25,11 +25,22 @@ Tạo một dataset profile thống nhất cho mọi stage downstream. Code chí
 
 ## Chạy
 
+Hai cách gọi tương đương. Wrapper nhận biến môi trường, `run.py` nhận cờ CLI:
+
 ```bash
+# wrapper
+bash scripts/0_data_preprocessing/build_smoke_30.sh
+ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh
+ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh
+
+# run.py trực tiếp
 python run.py preflight data.dataset.smoke_30
 python run.py run data.dataset.smoke_30 --max-cases 30
 python run.py run data.dataset.test_500_sample --allow-full
 ```
+
+Biến của wrapper: `MAX_CASES`, `PATIENT_ID`, `ALLOW_ALL`, `ACTION`
+(`show|plan|preflight|dry|run`), `SET` cho override thô. Xem `scripts/README.md`.
 
 ## Checklist lỗi
 

@@ -63,7 +63,7 @@ adjudication:
 
 manifests:
   # INSPECT column -> project target. Only native labels appear here; every richer
-  # attribute is silver-derived (SL00/SL01/SL02) and is never invented at build time.
+  # attribute is silver-derived (medgemma/rule_falcon/rule_falcon_medgemma) and is never invented at build time.
   label_map:
     pe_positive_nlp: pe_present
     pe_acute: pe_acute
@@ -156,7 +156,18 @@ ehr:
     prior: 1000
     window365: 500
     window30: 500
-  prohibited_config: configs/clinical/ehr_prohibited_features.json
+  # Conservative leakage guard applied before event counts and vocabularies are built.
+  # Notes may contain impressions/results; imaging-result codes can reveal the index CTPA
+  # even when a source timestamp appears to be pre-scan.
+  prohibited:
+    excluded_tables: [note]
+    code_description_patterns:
+      - "\\bctpa\\b"
+      - "\\bcomputed tomography pulmonary angiograph"
+      - "\\bct pulmonary angiograph"
+      - "\\bct (angiography|angiogram) (of )?chest\\b"
+      - "\\bpulmonary angiogram\\b"
+      - "\\bradiology report\\b"
 
 # Stage 0 audits PESI candidates against the INSPECT codebook. It only writes score
 # columns after every component has clinical approval *and* an approved study-level

@@ -1,0 +1,40 @@
+# External RSPECT/RSNA-STR mask generation. It uses the same segmentation implementation
+# and QC contract as INSPECT, but reads only the normalized external manifest.
+_base_:
+  - ../../paths.yaml
+  - ../../compute/default.yaml
+experiment:
+  id: SEG_rspect_pseudo_anatomy
+  name: data.segmentation.rspect
+  stage: segmentation
+  family: segmentation
+data:
+  mode: full
+  root: /mnt/RSPECT_dataset
+  dataset: RSPECT
+  cohort: rspect_external
+  manifest: manifests/rsna_diagnosis.csv
+  file_column: image_path
+segmentation:
+  backend: totalsegmentator
+  executable: TotalSegmentator
+  repository: third_party/repos/TotalSegmentator
+  weights_directory: third_party/weights/segmentation/totalsegmentator
+  fast: false
+  preview_cases: null
+  preview_slices_per_mask: 3
+  preview_anatomies: [lung, strict_heart, pa_tree]
+  preview_window_width: 700
+  preview_window_level: 100
+  devices: []
+  workers: null
+  lungmask:
+    enabled: true
+    executable: lungmask
+    checkpoint: third_party/weights/segmentation/lungmask/R231.pth
+    model_name: R231
+    force_cpu: false
+  lung_cross_model_qc:
+    accept_dice: 0.90
+    fail_below_dice: 0.70
+seed: 42

@@ -1,0 +1,250 @@
+# Task, cohort, and supervision contracts.
+# Select a fragment with: path/to/tasks.yaml#<preset>
+_presets_:
+  contour:
+    task:
+      primary_target: embolus_mask
+      output_regions: 1
+      decoder_channels: 64
+
+  diagnosis:
+    task:
+      primary_target: pe_present
+      targets:
+        pe_present: 1
+        acuity: 4
+        central: 1
+        lobar: 1
+        segmental: 1
+        subsegmental: 1
+        saddle: 1
+        rv_enlargement: 1
+        rv_lv_abnormal: 1
+        septal_bowing: 1
+        reflux: 1
+        pleural_effusion: 1
+        pericardial_effusion: 1
+        chronic_lung_disease: 1
+      regions: [heart, pa, lung]
+      architecture: soft_moe
+      expert_dim: 128
+      hidden_dim: 256
+      silver_targets: [acuity, central, lobar, segmental, subsegmental, saddle, rv_enlargement, rv_lv_abnormal, septal_bowing, reflux, pleural_effusion, pericardial_effusion, chronic_lung_disease]
+      silver_loss_weight: 0.2
+
+  diagnosis_anatomy_reference:
+    # The anatomy-aware reference architecture and data contract (diag.anatomy.concat / DX18).
+    #
+    # Shared by the reference model itself, by every counterfactual removal run, and by every
+    # ROI-only student. This is not cosmetic: a counterfactual run loads the reference
+    # checkpoint strictly and a distilled student builds its teacher from its own config, so an
+    # architectural difference here breaks checkpoint loading instead of silently changing science.
+    data:
+      mode: full
+      manifest: manifests/diagnosis.csv
+      file_column: image_path
+      label_columns: [pe_present]
+      # Anatomy masks come from the stored ROI run, not from manifest columns; see
+      # components/anatomy.yaml#anatomy_masks for the ROI ids and the reasoning.
+      roi_manifest: roi/ROI_anatomy_and_controls/roi_manifest.csv
+      roi_mask_ids:
+        heart: ROI2
+        pa: ROI4
+        lung: ROI6
+    task:
+      targets:
+        _replace_: true
+        pe_present: 1
+      regions: [heart, pa, lung]
+      silver_targets: []
+      silver_loss_weight: 0.0
+    supervision:
+      require_masks: true
+      masks: segmentation/SEG_pseudo_anatomy
+      require_rois: true
+      rois: roi/ROI_anatomy_and_controls
+      require_silver_labels: false
+      silver_labels: null
+
+  diagnosis_organ_silver:
+    # Organ-branch auxiliary heads supervised by ACCEPTED silver labels.
+    #
+    # Each auxiliary target is attached to the organ branch whose anatomy it describes, so the
+    # gradient reaches the branch that should encode it. Target names are the canonical silver
+    # schema names (source/silver/schema.py), which intentionally differ from some native column
+    # names (rv_lv_ratio_abnormal vs rv_lv_abnormal, contrast_reflux vs reflux).
+    # Preflight rejects any auxiliary target that has no configured supervision source.
+    task:
+      auxiliary_default_source: silver
+      auxiliary_targets:
+        heart:
+          rv_enlargement: {type: binary, source: silver}
+          rv_lv_ratio_abnormal: {type: binary, source: silver}
+          septal_bowing: {type: binary, source: silver}
+          contrast_reflux: {type: binary, source: silver}
+          pericardial_effusion: {type: binary, source: silver}
+        pa:
+          acuity: {type: multiclass, classes: 4, source: silver}
+          central: {type: binary, source: silver}
+          lobar: {type: binary, source: silver}
+          segmental: {type: binary, source: silver}
+          subsegmental: {type: binary, source: silver}
+          saddle: {type: binary, source: silver}
+        lung:
+          pleural_effusion: {type: binary, source: silver}
+          chronic_lung_disease: {type: binary, source: silver}
+          fibrosis: {type: binary, source: silver}
+          emphysema: {type: binary, source: silver}
+      auxiliary_organ_weights:
+        heart: 0.2
+        pa: 0.2
+        lung: 0.2
+      # Silver supervision reaches the model only through the organ auxiliary heads above, so
+      # the main-head silver term stays off and auxiliary_organ_weights is the effective weight.
+      silver_loss_weight: 0.0
+      silver_targets:
+        [rv_enlargement, rv_lv_ratio_abnormal, septal_bowing, contrast_reflux,
+         pericardial_effusion, acuity, central, lobar, segmental, subsegmental,
+         saddle, pleural_effusion, chronic_lung_disease, fibrosis, emphysema]
+
+  prognosis:
+    task:
+      primary_target: mortality_30d
+      modalities: [image, ehr, pesi]
+      regions: [heart, pa, lung]
+      ehr_input_dim: 32
+      ehr_hidden_dim: 64
+      ehr_output_dim: 64
+      pesi_input_dim: 2
+      pesi_hidden_dim: 16
+      pesi_output_dim: 32
+      expert_dim: 128
+      hidden_dim: 256
+      ehr_include_missingness: true
+    clinical_preprocessing:
+      fit_split: train
+      normalization: zscore
+      imputation: mean
+
+  prognosis_primary_cohort:
+    # Primary prognosis cohort contract: confirmed acute PE, 30-day mortality.
+    #
+    # Every 04_prognosis run inherits this one data contract, so the modality ablation and the
+    # fusion comparison are measured on exactly the same patients, split and columns. Fill the
+    # real column names here once and every prognosis arm picks them up.
+    #
+    # BLOCKERS (deliberate empty placeholders — never guess these):
+    #   ehr_columns        the EHR variables actually fed to the clinical encoder; its length
+    #                      must equal task.ehr_input_dim (32) or preflight fails
+    #   ehr_columns_full   every configured EHR variable
+    #   ehr_columns_common the dataset-defined high-availability subset of ehr_columns_full
+    #                      (preflight fails if it is not a subset)
+    #   pesi_columns       [pesi, spesi] is the historical contract; confirm both exist
+    data:
+      mode: full
+      cohort: confirmed_acute_pe
+      manifest: manifests/prognosis.csv
+      file_column: image_path
+      label_columns: [mortality_30d]
+      # Legacy prognosis configs read the strict pre-index profile. Matrix launchers may
+      # switch this to EHR_24_h, whose definition is audited in clinical/ehr_profiles.json.
+      ehr_profile: EHR_0_h
+      ehr_columns: []
+      ehr_columns_full: []
+      ehr_columns_common: []
+      pesi_columns: [pesi, spesi]
+
+  roi_student:
+    # ROI-only student contract (SUFFICIENCY arm).
+    #
+    # The student starts from C0 — the same representation the reference model started from —
+    # and is trained on organ-only input: everything outside the ROI is replaced by the shared
+    # local-mean policy, so the student never sees the rest of the chest. Its score answers
+    # "is this region alone sufficient?", which the counterfactual arms cannot answer.
+    # The ROI masks come from the stored data.roi artifacts (ROI2 heart, ROI4 PA, ROI6 lung
+    # parenchyma, ROI8 matched random control) through components/anatomy.yaml#anatomy_masks, which
+    # every anatomy-aware arm shares; segmentation is never re-run.
+    task:
+      base_stage: diagnosis
+      masking_policy: {type: local_mean, local_radius_voxels: 3}
+    lineage:
+      backbone: CT-FM
+      initialization: C0
+      source_experiment: AL_image_report_c0
+      source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+      transfer_modules: [image_encoder]
+      dapt: DINO
+      alignment: true
+      supervision_type: ground_truth_roi_student
+    distillation:
+      enabled: false
+    supervision:
+      require_rois: true
+      rois: roi/ROI_anatomy_and_controls
+
+  roi_student_kd:
+    # Adds frozen-teacher knowledge distillation on top of the ROI-only student contract.
+    #
+    # The teacher is the trained full-volume reference model (diag.anatomy.concat). It stays in
+    # eval mode, never enters the student optimizer, and only its primary PE logit is distilled.
+    # Total loss = alpha_supervised * ground-truth loss + alpha_distill * KD loss, so the paired
+    # GT-only and GT+KD arms isolate exactly what the teacher adds.
+    # Requires diag.anatomy.concat to have been trained first.
+    distillation:
+      enabled: true
+      teacher_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
+      temperature: 2.0
+      alpha_supervised: 1.0
+      alpha_distill: 1.0
+
+  silver_adaptation:
+    # Shared contract for silver-supervised encoder adaptation (C0 -> C_silver).
+    # The silver_adaptation runs differ only in silver_training.silver_source.
+    # Only rows with status=accepted are used; abstained and no_result rows are ignored.
+    init:
+      encoder: C0
+      experiment: AL_image_report_c0
+      checkpoint: pretraining/alignment/AL_image_report_c0/best.ckpt
+    silver_training:
+      # Keys are silver method names that silver_source selects from; values are the run
+      # directories those methods write. Each key must exist in source/silver/generator.py.
+      sources:
+        rule: silver_label/rule/silver_labels.csv
+        falcon: silver_label/falcon/silver_labels.csv
+        medgemma: silver_label/medgemma/silver_labels.csv
+        rule_falcon: silver_label/rule_falcon/silver_labels.csv
+        rule_medgemma: silver_label/rule_medgemma/silver_labels.csv
+        falcon_medgemma: silver_label/falcon_medgemma/silver_labels.csv
+        rule_falcon_medgemma: silver_label/rule_falcon_medgemma/silver_labels.csv
+      targets:
+        pe_present: 1
+        acuity: 4
+        central: 1
+        lobar: 1
+        segmental: 1
+        subsegmental: 1
+        saddle: 1
+        rv_enlargement: 1
+        rv_lv_abnormal: 1
+        septal_bowing: 1
+        reflux: 1
+        pleural_effusion: 1
+        pericardial_effusion: 1
+        chronic_lung_disease: 1
+      # Unlisted weights default to 1.0. No class weights are fabricated.
+      loss_weights: {}
+    supervision:
+      require_silver_labels: true
+    peft:
+      method: full
+    training:
+      epochs: 50
+      batch_size: 1
+      learning_rate: 0.0001
+      weight_decay: 0.0001
+      gradient_accumulation: 4
+      early_stopping_patience: 10
+    validation:
+      binary_threshold: 0.5
+      minimum_samples: 2
+    seed: 42

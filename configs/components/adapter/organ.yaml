@@ -1,9 +1,0 @@
-# Per-branch adapters between pooled encoder features and the shared fusion width.
-# One independent adapter per branch (global/heart/pa/lung); hidden width follows
-# task.hidden_dim so a single task setting stays authoritative.
-# These values are the source defaults made explicit; they do not change behaviour.
-organ_adapter:
-  enabled: true
-  type: bottleneck_mlp
-  include_global: true
-  dropout: 0.1

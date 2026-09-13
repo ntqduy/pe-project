@@ -7,12 +7,12 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
-  - ../../../components/task/prognosis.yaml
-  - ../../../components/task/prognosis_primary_cohort.yaml
-  - ../../../components/training/prognosis.yaml
-  - ../../../components/fusion/concat_mlp.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/tasks.yaml#prognosis_primary_cohort
+  - ../../../components/training.yaml#prognosis
+  - ../../../components/fusions.yaml#concat_mlp
 experiment:
   id: PR_image_only
   name: prog.image

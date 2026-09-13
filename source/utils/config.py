@@ -17,6 +17,7 @@ class ConfigError(ValueError):
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _REPLACE_KEY = "_replace_"
 _DELETE_KEY = "_delete_"
+_PRESETS_KEY = "_presets_"
 _STAGE_PREFIXES = {
     "dataset": ("DS",),
     "segmentation": ("SEG",),
@@ -126,12 +127,46 @@ def _read_mapping(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _load_with_bases(path: Path, stack: tuple[Path, ...] = ()) -> dict[str, Any]:
+def _split_config_reference(reference: str | Path) -> tuple[Path, str | None]:
+    """Split ``path.yaml#preset`` without treating ``#`` as part of the file name."""
+    text = str(reference)
+    path_text, separator, preset = text.rpartition("#")
+    if not separator:
+        return Path(text), None
+    if not path_text or not preset.strip():
+        raise ConfigError(f"invalid config preset reference: {text!r}")
+    return Path(path_text), preset.strip()
+
+
+def _load_with_bases(
+    reference: str | Path,
+    stack: tuple[tuple[Path, str | None], ...] = (),
+) -> dict[str, Any]:
+    path, preset = _split_config_reference(reference)
     resolved = path.resolve()
-    if resolved in stack:
-        chain = " -> ".join(str(item) for item in (*stack, resolved))
+    identity = (resolved, preset)
+    if identity in stack:
+        chain = " -> ".join(
+            f"{item_path}#{item_preset}" if item_preset else str(item_path)
+            for item_path, item_preset in (*stack, identity)
+        )
         raise ConfigError(f"cyclic config inheritance: {chain}")
     payload = _read_mapping(resolved)
+    presets = payload.pop(_PRESETS_KEY, None)
+    if preset is not None:
+        if not isinstance(presets, Mapping):
+            raise ConfigError(f"configuration has no {_PRESETS_KEY} catalog: {resolved}")
+        selected = presets.get(preset)
+        if not isinstance(selected, Mapping):
+            available = sorted(str(name) for name in presets)
+            raise ConfigError(
+                f"unknown preset {preset!r} in {resolved}; available={available}"
+            )
+        payload = copy.deepcopy(dict(selected))
+    elif presets is not None:
+        raise ConfigError(
+            f"config catalog requires a #preset selector: {resolved}"
+        )
     bases = payload.pop("_base_", [])
     if isinstance(bases, str):
         bases = [bases]
@@ -139,10 +174,11 @@ def _load_with_bases(path: Path, stack: tuple[Path, ...] = ()) -> dict[str, Any]
         raise ConfigError(f"_base_ must be a string or list: {resolved}")
     merged: dict[str, Any] = {}
     for base in bases:
-        base_path = Path(str(base))
+        base_path, base_preset = _split_config_reference(str(base))
         if not base_path.is_absolute():
             base_path = resolved.parent / base_path
-        merged = deep_merge(merged, _load_with_bases(base_path, (*stack, resolved)))
+        base_reference = f"{base_path}#{base_preset}" if base_preset else base_path
+        merged = deep_merge(merged, _load_with_bases(base_reference, (*stack, identity)))
     return deep_merge(merged, payload)
 
 
@@ -210,16 +246,20 @@ ENCODER_INIT_SOURCES = (
     "rspect_multitask",
     "rspect_single",
     "silver",
+    "diagnosis",
     "custom",
 )
 _ENCODER_INIT_ALIASES = {
     "public": "pretrained",
+    "published": "pretrained",
     "original": "pretrained",
     "alignment": "c0",
+    "image_report": "c0",
     "c_0": "c0",
     "c_silver": "silver",
     "silver_encoder": "silver",
     "silver_adaptation": "silver",
+    "c_diagnosis": "diagnosis",
     "rspect_multi_task": "rspect_multitask",
     "rspect_single_task": "rspect_single",
 }
@@ -230,6 +270,7 @@ _ENCODER_INITIALIZATION = {
     "rspect_multitask": "RSPECT_multitask",
     "rspect_single": "RSPECT_single",
     "silver": "C_silver",
+    "diagnosis": "C_diagnosis",
     "custom": "custom",
 }
 
@@ -246,11 +287,11 @@ def active_dataset_profiles() -> tuple[str, ...]:
 def resolve_backbone(config: dict[str, Any]) -> dict[str, Any]:
     """Fill ``model`` from the selected entry of the inherited backbone registry.
 
-    ``configs/components/backbone/registry.yaml`` holds one contract per backbone; the
-    per-backbone component files only select one by name. That makes the backbone a
-    config variable -- ``--set model.backbone=ct_clip`` works from any run config,
-    because the registry travels with it -- while each contract still lives in exactly
-    one place. Explicit ``model`` keys always win, so a targeted override is still possible.
+    ``configs/components/backbones.yaml`` holds the registry and named selections in one
+    catalog. That makes the backbone a config variable -- ``--set model.backbone=ct_clip``
+    works from any run config because the registry travels with the selected preset --
+    while each contract still lives in exactly one place. Explicit ``model`` keys always
+    win, so a targeted override is still possible.
 
     The registry itself is removed from the resolved config: it is inherited identically
     everywhere, and leaving it in would make one backbone's contract change the config
@@ -398,7 +439,7 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
             if isinstance(initialization, dict):
                 initialization["checkpoint"] = checkpoint
                 # Do not leave the legacy C0 values inherited from
-                # components/task/silver_adaptation.yaml in place. They are a real
+                # components/tasks.yaml#silver_adaptation in place. They are a real
                 # provenance contract checked by train_silver_encoder.py, so an RSPECT
                 # checkpoint must be identified as RSPECT rather than silently relabelled
                 # as C0 (and vice versa).
@@ -472,13 +513,48 @@ def validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
             f"data.profile must be one of {active_dataset_profiles()}; got {profile!r}"
         )
     data["profile"] = profile
+    finetuning = result.get("finetuning")
+    if isinstance(finetuning, Mapping) and finetuning.get("strategy"):
+        strategy = str(finetuning["strategy"]).strip().lower()
+        aliases = {"linear_probe": "frozen", "lora": "lora", "full": "full"}
+        if strategy == "partial":
+            raise ConfigError("finetuning.strategy=partial is not implemented")
+        if strategy not in aliases:
+            raise ConfigError("finetuning.strategy must be full, linear_probe, or lora")
+        requested = aliases[strategy]
+        peft = result.setdefault("peft", {})
+        if not isinstance(peft, dict):
+            raise ConfigError("peft must be a mapping")
+        existing = str(peft.get("method") or requested).lower()
+        if existing not in {requested, "linear_probe" if requested == "frozen" else requested}:
+            raise ConfigError(
+                f"finetuning.strategy={strategy} conflicts with peft.method={existing}"
+            )
+        peft["method"] = requested
+        if strategy == "lora":
+            lora = finetuning.get("lora") or {}
+            if not isinstance(lora, Mapping):
+                raise ConfigError("finetuning.lora must be a mapping")
+            peft.update(dict(lora))
     result = resolve_backbone(result)
     result = resolve_encoder_initialization(result)
     result = stamp_experiment_variant(result)
     experiment = result["experiment"]
     data = result["data"]
     experiment_id = str(experiment.get("id") or "").strip()
-    if not experiment_id or not any(experiment_id.startswith(prefix) for prefix in _STAGE_PREFIXES[stage]):
+    semantic_silver_ids = {
+        "rule",
+        "falcon",
+        "medgemma",
+        "rule_falcon",
+        "rule_medgemma",
+        "falcon_medgemma",
+        "rule_falcon_medgemma",
+    }
+    valid_experiment_id = any(
+        experiment_id.startswith(prefix) for prefix in _STAGE_PREFIXES[stage]
+    ) or (stage == "silver" and experiment_id in semantic_silver_ids)
+    if not experiment_id or not valid_experiment_id:
         raise ConfigError(f"experiment id {experiment_id!r} does not match stage {stage!r}")
     # The cohort a checkpoint was trained/adapted on is part of its lineage, so it
     # defaults to the dataset profile rather than to a placeholder.
@@ -498,6 +574,33 @@ def validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
     fold_column = data.get("fold_column")
     if fold is not None and (not isinstance(fold_column, str) or not fold_column.strip()):
         raise ConfigError("data.fold requires a non-empty data.fold_column")
+
+    diagnosis = result.get("diagnosis")
+    if diagnosis is not None:
+        if stage != "diagnosis" or not isinstance(diagnosis, Mapping):
+            raise ConfigError("diagnosis must be a mapping used only by diagnosis runs")
+        supported = {"pe_positive", "pe_acute", "pe_subsegmental"}
+        diagnosis_mode = str(diagnosis.get("mode") or "").strip().lower()
+        tasks = [str(value).strip() for value in (diagnosis.get("tasks") or [])]
+        primary = str(diagnosis.get("primary_task") or "").strip()
+        if diagnosis_mode not in {"single_task", "multitask"}:
+            raise ConfigError("diagnosis.mode must be single_task or multitask")
+        if not tasks or len(tasks) != len(set(tasks)) or not set(tasks) <= supported:
+            raise ConfigError(
+                "diagnosis.tasks must be unique and drawn from pe_positive, pe_acute, pe_subsegmental"
+            )
+        if diagnosis_mode == "single_task" and len(tasks) != 1:
+            raise ConfigError("diagnosis.mode=single_task requires exactly one task")
+        if diagnosis_mode == "multitask" and set(tasks) != supported:
+            raise ConfigError("diagnosis.mode=multitask requires exactly the three native tasks")
+        if primary not in tasks:
+            raise ConfigError("diagnosis.primary_task must be present in diagnosis.tasks")
+        configured_labels = set(str(value) for value in (data.get("label_columns") or []))
+        if configured_labels != set(tasks):
+            raise ConfigError("data.label_columns must exactly match diagnosis.tasks")
+        task_config = result.get("task") or {}
+        if str(task_config.get("primary_target") or "") != primary:
+            raise ConfigError("task.primary_target must match diagnosis.primary_task")
 
     # EHR window selection is a prognostic input contract, not just an implementation
     # detail. Persist it in every resulting checkpoint lineage alongside cohort and
@@ -576,9 +679,3 @@ def load_config(
     payload = apply_overrides(payload, overrides)
     payload = expand_environment(payload, env=env, strict=strict_env)
     return validate_config(payload)
-
-
-def dump_config(config: Mapping[str, Any], path: str | Path) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(_yaml().safe_dump(dict(config), sort_keys=False), encoding="utf-8")

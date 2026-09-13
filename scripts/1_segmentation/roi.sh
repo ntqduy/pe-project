@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ROI1-ROI8 crops and volume-matched random controls, read from a finished segmentation run.
+# ROI1-ROI8 semantic masks and rigid volume-matched random controls, read from a finished segmentation run.
 #
 # Thin wrapper: resolves data.roi through run.py. No scientific logic lives here.
 set -euo pipefail

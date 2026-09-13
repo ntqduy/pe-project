@@ -1,21 +1,21 @@
-# repr.silver.medgemma — adapt the RSPECT multitask encoder with accepted SL00 labels.
+# repr.silver.medgemma — adapt the RSPECT multitask encoder with accepted medgemma labels.
 #
 # Question: does the silver source change what the adapted representation learns?
-# Identical to repr.silver.hybrid except for silver_training.silver_source, so the
+# Identical to repr.silver.rule_falcon_medgemma except for silver_training.silver_source, so the
 # comparison isolates the label-generation method.
-# Output: outputs/shared_encoder/silver_encoder/sl00_medgemma/weight_rspect_multitask/
+# Output: outputs/shared_encoder/silver_encoder/medgemma/weight_rspect_multitask/
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_rspect_multitask.yaml
-  - ../../../components/task/silver_adaptation.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_rspect_multitask
+  - ../../../components/tasks.yaml#silver_adaptation
 experiment:
-  id: SE_silver_sl00_medgemma_weight_rspect_multitask
+  id: SE_silver_medgemma_weight_rspect_multitask
   name: repr.silver.medgemma
   stage: silver_encoder_adaptation
   family: shared_encoder
-  output_id: silver_encoder/sl00_medgemma/weight_rspect_multitask
+  output_id: silver_encoder/medgemma/weight_rspect_multitask
   variant_stamp: false
 data:
   mode: full
@@ -23,6 +23,6 @@ data:
   file_column: image_path
   label_columns: []
 silver_training:
-  silver_source: SL00
+  silver_source: medgemma
 lineage:
   supervision_type: silver_multitask

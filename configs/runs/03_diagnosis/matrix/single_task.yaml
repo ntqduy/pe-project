@@ -3,11 +3,11 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
-  - ../../../components/task/diagnosis.yaml
-  - ../../../components/training/diagnosis.yaml
-  - ../../../components/fusion/concat_mlp.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/fusions.yaml#concat_mlp
 experiment:
   id: DX_matrix_single_task
   name: diag.matrix.single_task
@@ -21,6 +21,17 @@ data:
   file_column: image_path
   label_columns: [pe_positive]
   mask_columns: {}
+diagnosis:
+  mode: single_task
+  primary_task: pe_positive
+  tasks: [pe_positive]
+finetuning:
+  strategy: lora
+  lora:
+    target_modules: [attn, projection]
+    rank: 8
+    alpha: 16
+    dropout: 0.05
 task:
   primary_target: pe_positive
   targets:

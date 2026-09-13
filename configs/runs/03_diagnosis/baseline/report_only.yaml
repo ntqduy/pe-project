@@ -10,8 +10,8 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/alignment/image_report.yaml
-  - ../../../components/task/diagnosis.yaml
+  - ../../../components/objectives.yaml#image_report_alignment
+  - ../../../components/tasks.yaml#diagnosis
 experiment:
   id: DX_report_only
   name: diag.report_only

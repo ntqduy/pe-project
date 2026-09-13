@@ -1,0 +1,57 @@
+# Primary external diagnosis evaluation named by the PI and proposal.
+# The Turkey cohort is test-only: its labels never select a threshold or update weights.
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_diagnosis
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/tasks.yaml#diagnosis_anatomy_reference
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/fusions.yaml#concat_mlp
+experiment:
+  id: DX_external_turkey_test
+  name: diag.external.turkey_test
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  root: /mnt/Turkey_dataset
+  dataset: Turkey
+  cohort: turkey_external_test
+  manifest: manifests/turkey_diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  roi_manifest: roi/ROI_turkey_anatomy_and_controls/roi_manifest.csv
+  roi_mask_ids:
+    _replace_: true
+    heart: ROI2
+    pa: ROI4
+    lung: ROI6
+task:
+  primary_target: pe_present
+  targets:
+    _replace_: true
+    pe_present: 1
+  regions: [heart, pa, lung]
+  silver_targets: []
+  silver_loss_weight: 0.0
+external_evaluation:
+  test_only: true
+  threshold_source: internal_validation_artifact
+  threshold_artifact: diagnosis/DX_anatomy_concat/result.json
+  evaluation_split: test
+  prohibit_training: true
+lineage:
+  source_experiment: DX_anatomy_concat
+  source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
+  transfer_modules: [image_encoder, roi, organ_adapters, fusion, heads]
+  supervision_type: external_native_test_only
+supervision:
+  require_masks: true
+  masks: segmentation/SEG_turkey_pseudo_anatomy
+  require_rois: true
+  rois: roi/ROI_turkey_anatomy_and_controls
+  require_silver_labels: false
+seed: 42

@@ -3,32 +3,11 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
 from numbers import Real
 from pathlib import Path
 from typing import Any, Protocol
 
 from .schema import canonical_target, target_spec, validate_target_value
-
-
-@dataclass(frozen=True)
-class ProviderIdentity:
-    provider: str
-    model_id: str
-    revision: str | None = None
-    checksum_sha256: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.provider.strip() or not self.model_id.strip():
-            raise ValueError("provider identity requires provider and model_id")
-        if self.checksum_sha256 is not None:
-            digest = self.checksum_sha256.lower().strip()
-            if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-                raise ValueError("provider checksum_sha256 must contain exactly 64 hexadecimal characters")
-            object.__setattr__(self, "checksum_sha256", digest)
-
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 class StructuredProvider(Protocol):

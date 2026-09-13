@@ -60,6 +60,12 @@ DEFAULT_PROGNOSIS_COHORTS = {
         "conditions": {"pe_positive_nlp": "TRUE"},
     },
 }
+PROGNOSIS_COHORT_ALIASES = {
+    "all_patient": "all_comers",
+    "all_comers": "all_comers",
+    "PE_positive": "pe_positive_only",
+    "pe_positive_only": "pe_positive_only",
+}
 IDENTITY_COLUMNS = ("patient_id", "study_id", "split", "image_path")
 TRACE_COLUMNS = ("person_id", "image_id", "impression_id", "note_id", "procedure_datetime")
 
@@ -172,7 +178,12 @@ def _cohort_specs(value: Mapping[str, Mapping[str, Any]] | None) -> dict[str, di
         if not filename or path.name != filename or path.suffix.lower() != ".csv":
             raise ValueError(f"prognosis cohort {name!r} needs a simple .csv manifest name")
         conditions = dict(specification.get("conditions") or {})
-        result[str(name)] = {"manifest": filename, "conditions": conditions}
+        external_name = str(name)
+        result[external_name] = {
+            "manifest": filename,
+            "conditions": conditions,
+            "canonical_name": PROGNOSIS_COHORT_ALIASES.get(external_name, external_name),
+        }
     if not result:
         raise ValueError("at least one prognosis cohort is required")
     return result
@@ -351,6 +362,8 @@ def build_manifests(
         prognosis_fields,
     )
     summary["prognosis_cohorts"] = {}
+    cohort_membership_rows: list[dict[str, Any]] = []
+    all_index_studies = first_index_study(records)
     cohort_fields = [
         *IDENTITY_COLUMNS,
         *TRACE_COLUMNS[2:],
@@ -373,6 +386,40 @@ def build_manifests(
         summary["prognosis_cohorts"][cohort_name] = _write(
             directory / specification["manifest"], rows, cohort_fields
         )
+        condition_text = ";".join(
+            f"{key}={value}" for key, value in sorted(specification["conditions"].items())
+        )
+        for patient_id in sorted(all_index_studies):
+            included = selected.get(patient_id)
+            reference = included or all_index_studies[patient_id]
+            cohort_membership_rows.append(
+                {
+                    "patient_id": patient_id,
+                    "study_id": included.study_id if included else "",
+                    "reference_study_id": reference.study_id,
+                    "split": reference.split,
+                    "cohort_name": specification["canonical_name"],
+                    "cohort_config_key": cohort_name,
+                    "pe_status": normalize_binary(reference.labels.get("pe_positive_nlp")),
+                    "inclusion_status": "included" if included else "excluded",
+                    "exclusion_reason": "" if included else f"no_study_satisfies:{condition_text}",
+                }
+            )
+    summary["prognosis_cohort_membership"] = _write(
+        directory / "prognosis_cohort_membership.csv",
+        cohort_membership_rows,
+        [
+            "patient_id",
+            "study_id",
+            "reference_study_id",
+            "split",
+            "cohort_name",
+            "cohort_config_key",
+            "pe_status",
+            "inclusion_status",
+            "exclusion_reason",
+        ],
+    )
     summary["cohort_definitions"] = {
         "ctpa": "every eligible study after filtering and QC",
         "diagnosis": "every eligible study, native PE labels",
@@ -384,6 +431,7 @@ def build_manifests(
             name: {
                 "manifest": specification["manifest"],
                 "conditions": dict(specification["conditions"]),
+                "canonical_name": specification["canonical_name"],
             }
             for name, specification in cohorts.items()
         },

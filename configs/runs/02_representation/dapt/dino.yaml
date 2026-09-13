@@ -6,10 +6,10 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_pretrained.yaml
-  - ../../../components/dapt/dino.yaml
-  - ../../../components/training/dapt.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_pretrained
+  - ../../../components/objectives.yaml#dapt_dino
+  - ../../../components/training.yaml#dapt
 experiment:
   id: D_dapt_dino
   name: repr.dapt.dino

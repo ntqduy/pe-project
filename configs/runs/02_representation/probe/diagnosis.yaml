@@ -2,7 +2,7 @@
 #
 # Question: which representation checkpoint carries the most PE information?
 # Frozen encoder -> global average pool -> fixed linear head -> PE +/-.
-# Nothing about the probe may be tuned per checkpoint; see components/training/probe.yaml.
+# Nothing about the probe may be tuned per checkpoint; see components/training.yaml#probe.
 # The best epoch is selected on validation; the test split is never used for selection.
 #
 # To probe a different representation, override the checkpoint AND the experiment id so
@@ -17,10 +17,10 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
-  - ../../../components/task/diagnosis.yaml
-  - ../../../components/training/probe.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/training.yaml#probe
 experiment:
   id: DX_probe_diagnosis
   name: probe.diag

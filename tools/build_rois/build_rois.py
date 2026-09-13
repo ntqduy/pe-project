@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -16,7 +17,8 @@ from source.roi import build_roi_dataset
 from source.utils.config import load_config, validate_config
 from source.utils.environment import environment_report
 from source.utils.logger import RunLogger
-from tools._common import select_patient_rows, write_parquet_atomic
+from source.utils.qc import qc_row
+from tools._common import select_patient_rows, write_csv_atomic
 
 
 def main() -> int:
@@ -80,6 +82,22 @@ def main() -> int:
         snapshot,
         overwrite=args.overwrite,
     )
+    started = time.perf_counter()
+    logger = RunLogger(run_dir / "logs" / "run.log")
+    previous_excepthook = sys.excepthook
+    sys.excepthook = lambda exc_type, exc, tb: (
+        logger.exception("roi status=failed", exc),
+        previous_excepthook(exc_type, exc, tb),
+    )[-1]
+    logger.log(
+        f"roi run={experiment_id} status=started resumed={resumed} "
+        f"workers={int(roi_config.get('workers', 1))}"
+    )
+    logger.log(f"command={' '.join(sys.argv)}")
+    logger.log(
+        f"config={args.config.resolve()} dataset_profile={config['data'].get('profile')} "
+        f"segmentation_checkpoint={manifest_path.resolve()}"
+    )
     segmentation_rows = select_patient_rows(read_rows(manifest_path), args.patient_ids)
     generated, evaluation = build_roi_dataset(
         segmentation_rows,
@@ -89,8 +107,38 @@ def main() -> int:
         seed=int(config.get("seed", 42)),
         source_segmentation_run=segmentation_run.name,
         source_segmentation_manifest=manifest_path,
+        progress=logger.log,
     )
-    write_parquet_atomic(generated, run_dir / "manifest.parquet")
+    write_csv_atomic(generated, run_dir / "roi_manifest.csv")
+    write_csv_atomic(
+        [
+            qc_row(
+                run_id=experiment_id,
+                patient_id=row.get("patient_id"),
+                study_id=row.get("study_id"),
+                stage="roi",
+                item_name=f"{row.get('roi_code', row.get('roi_id'))}_{row.get('roi_name', '')}",
+                status=row.get("status"),
+                input_path=row.get("image_path"),
+                output_path=row.get("mask_path", row.get("roi_path")),
+                qc_checks=json.dumps(
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "qc_severity", "voxel_count", "physical_volume_mm3",
+                            "geometry_match", "body_contained", "overlap_voxels",
+                            "forbidden_overlap_voxels", "dice_with_source",
+                            "physical_volume_error_mm3",
+                        )
+                    },
+                    sort_keys=True,
+                ),
+                failure_reason=row.get("failure_reason", row.get("reason")),
+            )
+            for row in generated
+        ],
+        run_dir / "logs" / "roi_qc.csv",
+    )
     result = compact_result(
         config,
         status="completed" if not evaluation["studies"]["failed"] else "completed_with_failures",
@@ -104,12 +152,13 @@ def main() -> int:
         evaluation=evaluation,
         reproducibility=environment_report(paths.code_root),
     )
-    manager.write_result(run_dir, result)
-    RunLogger(run_dir / "logs" / "generation.log", echo=False).log(
+    manager.write_result(run_dir, result, split_artifacts=False)
+    logger.log(
         f"requested={evaluation['studies']['requested']} processed={evaluation['studies']['processed']} "
         f"failed={evaluation['studies']['failed']}"
     )
-    print(json.dumps(evaluation, indent=2, sort_keys=True))
+    logger.log(json.dumps(evaluation, indent=2, sort_keys=True))
+    logger.log(f"roi run={experiment_id} status=finished elapsed_sec={time.perf_counter()-started:.3f}")
     return 0 if not evaluation["studies"]["failed"] else 1
 
 

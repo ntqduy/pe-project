@@ -1,0 +1,129 @@
+# Encoder checkpoint sources and named initialization selections.
+# Select a fragment with: path/to/encoders.yaml#<preset>
+_presets_:
+  sources:
+    # Where each kind of encoder checkpoint lives.
+    #
+    # One diagnosis/prognosis model, named upstream initializations, plus an explicit custom
+    # checkpoint option. Nothing here selects one; a run chooses it through
+    # `encoder.init_source` (or the shared matrix launchers' WEIGHT_SOURCE).
+    #
+    #   pretrained  the original public backbone weights, loaded through the backbone contract
+    #   dapt        an encoder after domain-adaptive pretraining on INSPECT CTPA
+    #   c0          the image-report aligned encoder (this project's C0)
+    #   rspect_*    an external RSPECT supervised-transfer encoder
+    #   silver      C0 after accepted-silver adaptation (C_silver)
+    #   diagnosis   encoder transferred from the canonical diagnosis checkpoint
+    #   custom      requires encoder.checkpoint; there is intentionally no default path
+    #
+    # The defaults point at the canonical run of each stage. Any other checkpoint --
+    # a different backbone's DAPT run, a different DAPT method, a different silver source --
+    # is selected with `--set encoder.checkpoint=<path>` plus the matching
+    # `encoder.source_experiment`, so the checkpoint's provenance stays recorded in lineage.
+    encoder:
+      # Defaults to the run's model.backbone; set it to move backbone and weights together.
+      backbone: null
+      init_source: null
+      checkpoint: null
+      source_experiment: null
+      # Recorded in checkpoint lineage so a result says which upstream adaptation produced it.
+      dapt_method: null
+      silver_source: null
+      sources:
+        pretrained: null
+        dapt: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/dapt/D_dapt_dino/best.ckpt
+        c0: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
+        rspect_multitask: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/rspect/multitask/weight_alignment/best.ckpt
+        rspect_single: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/rspect/single_pe/weight_alignment/best.ckpt
+        silver: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/silver_encoder/rule_falcon_medgemma/weight_rspect_multitask/best.ckpt
+        diagnosis: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
+        custom: null
+      source_experiments:
+        dapt: D_dapt_dino
+        c0: AL_image_report_c0
+        rspect_multitask: DX_rspect_multitask_weight_alignment
+        rspect_single: DX_rspect_single_weight_alignment
+        silver: SE_silver_rule_falcon_medgemma_weight_rspect_multitask
+        diagnosis: DX_anatomy_concat
+        custom: null
+
+  from_pretrained:
+    # Start from the original public backbone weights — no adaptation of any kind.
+    #
+    # Used by the pretrained baseline evaluations and by every DAPT arm: DAPT loads the
+    # public checkpoint itself, so no foundation stage has to be run first.
+    _base_:
+      - encoders.yaml#sources
+    encoder:
+      init_source: pretrained
+    experiment:
+      baseline_init: pretrained
+
+  from_dapt:
+    # Start from a DAPT checkpoint (the adapted encoder, before any report alignment).
+    _base_:
+      - encoders.yaml#sources
+    encoder:
+      init_source: dapt
+      dapt_method: DINO
+    experiment:
+      baseline_init: dapt
+
+  from_c0:
+    # Start from C0, the image-report aligned encoder.
+    #
+    # This is the historical default for the downstream tasks, so a config that inherits this
+    # file keeps exactly the output directory it has today. Switching a run to another
+    # initialization (`--set encoder.init_source=dapt`) gives it its own directory instead.
+    _base_:
+      - encoders.yaml#sources
+    encoder:
+      init_source: c0
+      dapt_method: DINO
+    experiment:
+      baseline_init: c0
+
+  from_rspect_multitask:
+    # Start from the externally supervised RSPECT multitask encoder.  The canonical source
+    # is configurable in sources.yaml; a launcher may select another upstream checkpoint with
+    # WEIGHT_SOURCE/WEIGHT_PATH without duplicating this model config.
+    _base_:
+      - encoders.yaml#sources
+    encoder:
+      init_source: rspect_multitask
+      weight_source: rspect_multitask
+    experiment:
+      baseline_init: rspect_multitask
+
+  from_rspect_single:
+    # Start from the externally supervised RSPECT PE-only encoder.
+    _base_:
+      - encoders.yaml#sources
+    encoder:
+      init_source: rspect_single
+      weight_source: rspect_single
+    experiment:
+      baseline_init: rspect_single
+
+  from_silver:
+    # Start from C_silver, the silver-adapted encoder.
+    _base_:
+      - encoders.yaml#sources
+    encoder:
+      init_source: silver
+      dapt_method: DINO
+      silver_source: rule_falcon_medgemma
+    experiment:
+      baseline_init: silver
+
+  from_diagnosis:
+    # Transfer the image encoder from the canonical anatomy-aware diagnosis model.
+    # Full-model external evaluation still loads its explicit checkpoint strictly;
+    # this preset keeps provenance and preflight pointed at the same source run.
+    _base_:
+      - encoders.yaml#sources
+    encoder:
+      init_source: diagnosis
+      weight_source: diagnosis
+    experiment:
+      baseline_init: diagnosis

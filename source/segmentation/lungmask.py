@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +35,14 @@ class LungMaskRunner:
             )
         return resolved
 
-    def run(self, input_path: Path, destination: Path, *, gpu_id: int | None) -> Path:
+    def run(
+        self,
+        input_path: Path,
+        destination: Path,
+        *,
+        gpu_id: int | None,
+        log: Callable[[str], None] | None = None,
+    ) -> Path:
         executable = self.verify()
         temporary = destination.with_name(f".{destination.name}.lungmask.tmp.nii.gz")
         temporary.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +61,13 @@ class LungMaskRunner:
         environment = dict(os.environ)
         if gpu_id is not None:
             environment["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        if log:
+            log(f"LungMask command={subprocess.list2cmdline(command)}")
         result = subprocess.run(command, check=False, text=True, capture_output=True, env=environment)
+        if log and result.stdout.strip():
+            log(f"LungMask stdout:\n{result.stdout.strip()}")
+        if log and result.stderr.strip():
+            log(f"LungMask stderr:\n{result.stderr.strip()}")
         if result.returncode:
             temporary.unlink(missing_ok=True)
             detail = result.stderr.strip() or result.stdout.strip() or f"exit_code={result.returncode}"

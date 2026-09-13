@@ -7,7 +7,6 @@ import torch
 from torch import Tensor
 
 from source.roi.counterfactual import MaskingPolicy, apply_mask_transform
-from source.roi.random_controls import stable_control_seed
 
 
 def _constant_transform(volume: Tensor, mask: Tensor, fill: float | Tensor, operation: str) -> Tensor:
@@ -59,78 +58,17 @@ def matched_random_mask(
     control_for: str = "roi",
     return_metadata: bool = False,
 ) -> Tensor | tuple[Tensor, list[dict[str, Any]]]:
-    """Exact-volume random control inside a valid body region and outside the target."""
+    """Deprecated runtime fallback; use the precomputed, QC-audited ROI8 mask.
 
-    if body is None:
-        raise ValueError("matched random ROI requires a body mask")
-    if mask.shape != body.shape:
-        raise ValueError("matched ROI and body masks must have identical shapes")
-    if body_wall is not None and body_wall.shape != mask.shape:
-        raise ValueError("body-wall mask must have the same shape as the matched ROI")
-    batch = mask.shape[0]
-    if patient_ids is not None and len(patient_ids) != batch:
-        raise ValueError("patient_ids length must equal random-mask batch size")
-    if study_ids is not None and len(study_ids) != batch:
-        raise ValueError("study_ids length must equal random-mask batch size")
-    flat = mask.reshape(mask.shape[0], -1)
-    flat_body = body.reshape(body.shape[0], -1) > 0.5
-    flat_wall = body_wall.reshape(body_wall.shape[0], -1) > 0.5 if body_wall is not None else None
-    result = torch.zeros_like(flat)
-    metadata: list[dict[str, Any]] = []
-    for index, row in enumerate(flat):
-        count = int((row > 0.5).sum().item())
-        if count <= 0:
-            raise ValueError("cannot match an empty target ROI")
-        outside_target = row <= 0.5
-        body_candidate = flat_body[index] & outside_target
-        wall_candidate = flat_wall[index] & body_candidate if flat_wall is not None else None
-        if wall_candidate is not None and int(wall_candidate.sum().item()) >= count:
-            candidate = wall_candidate
-            candidate_name = "body_wall_outside_target"
-        elif int(body_candidate.sum().item()) >= count:
-            candidate = body_candidate
-            candidate_name = "body_outside_target"
-        else:
-            raise ValueError(
-                f"eligible body voxels cannot match target volume: target={count} "
-                f"eligible={int(body_candidate.sum().item())}"
-            )
-        identity_seed = int(seed or 0)
-        if patient_ids is not None or study_ids is not None:
-            identity_seed = stable_control_seed(
-                identity_seed,
-                str(patient_ids[index] if patient_ids is not None else index),
-                str(study_ids[index] if study_ids is not None else index),
-                control_for,
-            )
-        generator = torch.Generator(device=flat.device).manual_seed(identity_seed)
-        eligible = torch.nonzero(candidate, as_tuple=False).flatten()
-        coordinates = torch.nonzero(
-            candidate.reshape(mask.shape[1:]), as_tuple=False
-        ).to(dtype=torch.float32)
-        anchor_index = int(
-            torch.randint(
-                coordinates.shape[0], (1,), generator=generator, device=row.device
-            ).item()
-        )
-        squared_distance = ((coordinates - coordinates[anchor_index]) ** 2).sum(dim=1)
-        nearest = torch.argsort(squared_distance)[:count]
-        selected = eligible[nearest]
-        result[index, selected] = 1
-        metadata.append(
-            {
-                "method": "random_anchor_nearest_eligible_voxels",
-                "candidate_region": candidate_name,
-                "seed": identity_seed,
-                "target_voxels": count,
-                "actual_voxels": int(selected.numel()),
-                "eligible_voxels": int(eligible.numel()),
-                "overlap_voxels": 0,
-                "volume_matched": int(selected.numel()) == count,
-            }
-        )
-    output = result.reshape_as(mask)
-    return (output, metadata) if return_metadata else output
+    A runtime tensor does not carry physical spacing or the complete forbidden-anatomy
+    union, so it cannot satisfy the ROI8 scientific contract. Failing is safer than
+    silently generating a different kind of control.
+    """
+
+    raise ValueError(
+        "matched random controls must be precomputed by data.roi as ROI8; "
+        "runtime nearest-voxel controls are prohibited"
+    )
 
 
 def apply_counterfactual(

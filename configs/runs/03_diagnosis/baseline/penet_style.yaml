@@ -1,0 +1,48 @@
+# Strong non-foundation, end-to-end 3D diagnosis baseline requested by the PI.
+# It uses the same INSPECT cohort, target, preprocessing and evaluation as the FM
+# single-task arm, but starts from random weights and trains the whole encoder.
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#penet_style
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/fusions.yaml#concat_mlp
+experiment:
+  id: DX_penet_style
+  name: diag.baseline.penet_style
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  cohort: all_eligible_ctpa
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_positive]
+  mask_columns: {}
+diagnosis:
+  mode: single_task
+  primary_task: pe_positive
+  tasks: [pe_positive]
+task:
+  primary_target: pe_positive
+  targets:
+    _replace_: true
+    pe_positive: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+peft:
+  _replace_: true
+  method: full
+lineage:
+  backbone: PENet-style
+  initialization: random
+  source_experiment: null
+  source_checkpoint: null
+  transfer_modules: []
+  supervision_type: native_labels
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false

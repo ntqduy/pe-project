@@ -20,7 +20,7 @@ from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
 from source.distributed.gather import gather_prediction_rows
 from source.distributed.setup import initialize_distributed, rank_zero_call, wrap_ddp
-from source.engine.checkpoint import load_checkpoint
+from source.engine.checkpoint import checkpoint_sha256, load_checkpoint
 from source.engine.experiment import OutputManager, atomic_write_json
 from source.engine.factory import build_task_model
 from source.engine.trainer import move_to_device
@@ -41,6 +41,35 @@ def _read_prediction_rows(path: Path) -> list[dict[str, Any]]:
     import pandas as pd
 
     return pd.read_parquet(path).to_dict(orient="records")
+
+
+def _locked_external_threshold(config, paths, checkpoint: Path) -> tuple[float, Path]:
+    """Read a threshold selected on the internal validation cohort.
+
+    An external test set must never supply a validation subset for threshold tuning.
+    The artifact is normally the ``result.json`` beside the source checkpoint after
+    internal evaluation, but can be named explicitly for exported checkpoints.
+    """
+    external = dict(config.get("external_evaluation") or {})
+    raw = external.get("threshold_artifact")
+    artifact = Path(str(raw)) if raw else checkpoint.parent / "result.json"
+    if raw and not artifact.is_absolute():
+        artifact = paths.output_asset(artifact)
+    if not artifact.is_file():
+        raise FileNotFoundError(
+            "external test requires the internal-validation result containing the locked "
+            f"threshold: {artifact}"
+        )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    evaluation = dict(payload.get("evaluation") or {})
+    if evaluation.get("threshold") is None:
+        raise ValueError(f"threshold is absent from internal evaluation artifact: {artifact}")
+    if str(evaluation.get("threshold_source") or "") != "validation":
+        raise ValueError(
+            "external threshold artifact must record threshold_source=validation: "
+            f"{artifact}"
+        )
+    return float(evaluation["threshold"]), artifact.resolve()
 
 
 def _loader(config, paths, split, context, *, patient_ids=None, maximum=None):
@@ -94,7 +123,8 @@ def _classification_rows(model, loader, stage, primary, label_index, context, ta
         elif stage == "diagnosis":
             logits = model(moved["volume"], moved["masks"])["logits"][primary].squeeze(-1)
         else:
-            logits = model(moved)["logits"]
+            output = model(moved)
+            logits = output.get("target_logits", {}).get(primary, output["logits"])
         probability = torch.sigmoid(logits).detach().cpu().tolist()
         truth = batch["labels"][:, label_index].int().tolist()
         local.extend(
@@ -159,6 +189,19 @@ def main() -> int:
     if args.max_cases is not None and args.max_cases < 1:
         raise SystemExit("--max-cases must be positive")
     config = resolve_cli_config(args)
+    external_evaluation = dict(config.get("external_evaluation") or {})
+    if external_evaluation.get("test_only"):
+        if args.checkpoint is None:
+            raise SystemExit("test-only external evaluation requires an explicit --checkpoint")
+        if (
+            str(external_evaluation.get("threshold_source"))
+            != "internal_validation_artifact"
+            or str(external_evaluation.get("evaluation_split")) != "test"
+        ):
+            raise SystemExit(
+                "external evaluation contract requires an internal-validation threshold "
+                "artifact and evaluation_split=test"
+            )
     config["resume"] = True
     context = initialize_distributed(str(config["compute"].get("distributed_backend") or "") or None)
     try:
@@ -198,7 +241,7 @@ def main() -> int:
             scope = {"mode": "full_test"}
             evaluation_dir = run_dir
         model, _ = build_task_model(config)
-        load_checkpoint(checkpoint, model=model, strict=True)
+        checkpoint_payload = load_checkpoint(checkpoint, model=model, strict=True)
         model = wrap_ddp(model, context)
         stage = str(config["experiment"]["stage"])
         task_config = dict(config.get("task") or {})
@@ -215,30 +258,41 @@ def main() -> int:
             if primary not in labels:
                 raise ValueError(f"primary target {primary!r} is absent from data.label_columns")
             label_index = labels.index(primary)
-            validation_loader, validation_expected = _loader(config, paths, "validation", context)
-            validation_local = _classification_rows(
-                model,
-                validation_loader,
-                stage,
-                primary,
-                label_index,
-                context,
-                task_config,
-                seed,
-            )
-            validation_rows = gather_prediction_rows(
-                validation_local,
-                context,
-                expected_ids=validation_expected,
-            )
-            if context.is_main:
-                threshold = select_threshold_on_validation(
-                    [row["y_true"] for row in validation_rows],
-                    [row["y_prob"] for row in validation_rows],
-                    method=str(evaluation_config.get("threshold_method", "youden")),
-                )
+            threshold_artifact = None
+            if external_evaluation.get("test_only"):
+                if context.is_main:
+                    threshold, threshold_artifact = _locked_external_threshold(
+                        config, paths, Path(checkpoint)
+                    )
+                else:
+                    threshold = None
             else:
-                threshold = None
+                validation_loader, validation_expected = _loader(
+                    config, paths, "validation", context
+                )
+                validation_local = _classification_rows(
+                    model,
+                    validation_loader,
+                    stage,
+                    primary,
+                    label_index,
+                    context,
+                    task_config,
+                    seed,
+                )
+                validation_rows = gather_prediction_rows(
+                    validation_local,
+                    context,
+                    expected_ids=validation_expected,
+                )
+                if context.is_main:
+                    threshold = select_threshold_on_validation(
+                        [row["y_true"] for row in validation_rows],
+                        [row["y_prob"] for row in validation_rows],
+                        method=str(evaluation_config.get("threshold_method", "youden")),
+                    )
+                else:
+                    threshold = None
             if context.distributed:
                 value = [threshold]
                 dist.broadcast_object_list(value, src=0)
@@ -291,7 +345,13 @@ def main() -> int:
                 result_evaluation: dict[str, Any] = {
                     "primary_target": primary,
                     "threshold": threshold,
-                    "threshold_source": "validation",
+                    "threshold_source": (
+                        "internal_validation_artifact"
+                        if external_evaluation.get("test_only") else "validation"
+                    ),
+                    "threshold_artifact": (
+                        str(threshold_artifact) if threshold_artifact is not None else None
+                    ),
                     "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
                     "metrics": metrics,
                     "evaluated_patients": patient_count,
@@ -414,6 +474,12 @@ def main() -> int:
                 }
             result["evaluation"] = result_evaluation
             result["evaluation_scope"] = scope
+            result["evaluation_checkpoint"] = {
+                "path": str(Path(checkpoint).resolve()),
+                "sha256": checkpoint_sha256(checkpoint),
+                "lineage": checkpoint_payload.get("lineage"),
+                "load_report": checkpoint_payload.get("load_report"),
+            }
             atomic_write_json(result_path, result)
             if stage in {"diagnosis", "prognosis"}:
                 from source.metrics.reporting import stard_ai_checklist, tripod_ai_checklist

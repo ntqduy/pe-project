@@ -1,0 +1,44 @@
+# Test-only external evaluation. tools/tasks/train_task.py rejects this config; evaluate.py
+# uses the threshold already selected on INSPECT validation and applies it once to RSPECT test.
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/fusions.yaml#concat_mlp
+experiment:
+  id: DX_external_rspect_test
+  name: diag.external.rspect_test
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  root: /mnt/RSPECT_dataset
+  dataset: RSPECT
+  cohort: rspect_external_test
+  manifest: manifests/rsna_diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns: {}
+task:
+  primary_target: pe_present
+  targets:
+    pe_present: 1
+  regions: []
+  silver_targets: []
+  silver_loss_weight: 0.0
+external_evaluation:
+  test_only: true
+  threshold_source: internal_validation_artifact
+  threshold_artifact: diagnosis/DX_global_single/result.json
+  evaluation_split: test
+  prohibit_training: true
+lineage:
+  transfer_modules: [image_encoder]
+  supervision_type: external_native_test_only
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+seed: 42

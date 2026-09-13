@@ -229,28 +229,34 @@ def _safe_extract_archive(archive: Path, cache_root: Path, namespace: str) -> tu
     return expected, {"status": "extracted", "cache": str(expected), "archive": fingerprint}
 
 
-def _load_prohibited_policy(path: Path, code_descriptions: Mapping[str, str]) -> tuple[set[str], set[str], dict[str, Any]]:
-    if not path.is_file():
-        raise EhrBuildError(f"EHR prohibited-input policy is missing: {path}")
-    raw = path.read_bytes()
+def _load_prohibited_policy(
+    config: Mapping[str, Any],
+    code_descriptions: Mapping[str, str],
+) -> tuple[set[str], set[str], dict[str, Any]]:
+    payload = dict(config)
+    raw_patterns = payload.get("code_description_patterns", [])
+    raw_tables = payload.get("excluded_tables", [])
+    if not isinstance(raw_patterns, list) or not isinstance(raw_tables, list):
+        raise EhrBuildError(
+            "ehr.prohibited.code_description_patterns and excluded_tables must be lists"
+        )
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise EhrBuildError(f"invalid EHR prohibited-input policy: {path}") from exc
-    patterns = [re.compile(str(value), re.IGNORECASE) for value in payload.get("code_description_patterns", [])]
+        patterns = [re.compile(str(value), re.IGNORECASE) for value in raw_patterns]
+    except re.error as exc:
+        raise EhrBuildError(f"invalid regex in ehr.prohibited: {exc}") from exc
     prohibited_codes = {
         code
         for code, description in code_descriptions.items()
         if any(pattern.search(f"{code} {description}") for pattern in patterns)
     }
     prohibited_tables = {
-        str(value).strip().lower() for value in payload.get("excluded_tables", []) if str(value).strip()
+        str(value).strip().lower() for value in raw_tables if str(value).strip()
     }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return prohibited_codes, prohibited_tables, {
-        "path": str(path),
-        "sha256": hashlib.sha256(raw).hexdigest(),
+        "sha256": hashlib.sha256(canonical).hexdigest(),
         "excluded_tables": sorted(prohibited_tables),
-        "code_description_patterns": [str(value) for value in payload.get("code_description_patterns", [])],
+        "code_description_patterns": [str(value) for value in raw_patterns],
         "matched_code_count": len(prohibited_codes),
     }
 
@@ -285,8 +291,8 @@ def _settings(config: Mapping[str, Any] | None) -> dict[str, Any]:
         raise EhrBuildError("ehr.batch_size must be positive")
     if not str(data.get("archive") or "").strip():
         raise EhrBuildError("ehr.archive is required")
-    if not str(data.get("prohibited_config") or "").strip():
-        raise EhrBuildError("ehr.prohibited_config is required")
+    if not isinstance(data.get("prohibited"), Mapping):
+        raise EhrBuildError("ehr.prohibited must be a mapping")
     return data
 
 
@@ -403,7 +409,6 @@ def build_ehr_readiness(
     cache_root: Path,
     output_dir: Path,
     config: Mapping[str, Any] | None,
-    code_root: Path,
 ) -> EhrArtifacts:
     """Build safe, patient-linked pre-CTPA EHR readiness artifacts for one profile."""
     settings = _settings(config)
@@ -419,12 +424,14 @@ def build_ehr_readiness(
     source_root, extraction = _safe_extract_archive(archive, cache_root, namespace)
     _, _, _, pq = _load_pyarrow()
     descriptions = _load_code_descriptions(source_root / "metadata" / "codes.parquet", pq)
-    policy_path = Path(str(settings["prohibited_config"]))
-    if not policy_path.is_absolute():
-        policy_path = code_root / policy_path
-    prohibited_codes, prohibited_tables, policy = _load_prohibited_policy(policy_path, descriptions)
+    prohibited_codes, prohibited_tables, policy = _load_prohibited_policy(
+        settings["prohibited"], descriptions
+    )
 
-    states = [_CaseState(record=record, index_time=_parse_time(record.procedure_datetime)) for record in records]
+    states = [
+        _CaseState(record=record, index_time=_parse_time(record.procedure_datetime))
+        for record in records
+    ]
     cases_by_patient: dict[str, list[_CaseState]] = defaultdict(list)
     for case in states:
         # The EHR parquet identifier is only trusted for study rows that the release's
@@ -523,7 +530,6 @@ def build_ehr_profiles(
     cache_root: Path,
     output_dir: Path,
     config: Mapping[str, Any] | None,
-    code_root: Path,
 ) -> EhrProfilesArtifacts:
     """Materialize every configured pre-CTPA EHR profile without post-index leakage.
 
@@ -565,7 +571,6 @@ def build_ehr_profiles(
             cache_root=cache_root,
             output_dir=artifact_dir,
             config=profile,
-            code_root=code_root,
         )
         columns = tuple(
             column if not prefix else prefix + column.removeprefix("ehr_")

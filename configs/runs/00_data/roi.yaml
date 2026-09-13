@@ -5,13 +5,14 @@
 # Runs on CPU workers (roi.workers), not on the GPU launcher.
 #
 # Output: outputs/roi/ROI_anatomy_and_controls/
-#   masks/<study_id>/ROI{1..8}[_for_ROI{2,4,6}].nii.gz  the eight ROI definitions:
+#   rois/<patient_id>/<study_id>/ROI<code>_<semantic_name>.nii.gz:
 #       ROI1 heart+mediastinum   ROI2 strict heart        ROI3 dilated central PA (removal)
 #       ROI4 PA tree             ROI5 whole lung          ROI6 lung parenchyma minus vessels
-#       ROI7 heart+hilar (removal)                        ROI8 volume-matched random control,
-#                                                              one per ROI2/ROI4/ROI6 target
-#   manifest.parquet   per study: mask paths, recipe, QC flags, feasibility, control seed
-#   previews/, state/, result.json, logs/
+#       ROI7 heart+hilar (removal)                        ROI8 rigid translated control,
+#                                                              exact match for ROI2/ROI4/ROI6
+#   previews/<patient_id>/<study_id>/rois/<semantic_name>/*.png  representative overlays
+#   roi_manifest.csv, logs/roi_qc.csv, result.json   ROI index/QC and run summary
+#   state/<patient_id>/<study_id>.json, logs/run.log  resume state and terminal log
 _base_:
   - ../../paths.yaml
   - ../../compute/cpu.yaml
@@ -27,7 +28,18 @@ data:
 roi:
   segmentation_run: segmentation/SEG_pseudo_anatomy
   workers: 4
-  preview_cases: 5
+  preview_cases: null
+  preview_slices_per_roi: 3
+  preview_rois: [ROI2, ROI4, ROI6, ROI8]
+  preview_window_width: 700
+  preview_window_level: 100
   body_threshold_hu: -900
   hilar_mask_names: []
+  control_roi:
+    seed: 42
+    max_attempts: 500
+    exclusion_margin_mm: 5
+    require_exact_voxel_match: true
+    preserve_z_range: true
+    excluded_anatomies: [heart, mediastinum, central_pa, lung_arteries, lung_veins, hilar_vessels]
 seed: 42

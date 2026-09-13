@@ -7,8 +7,8 @@ guessed.
 
 ## Where this repository is right now
 
-`python run.py list` shows 59 experiments. Four are `ready`; the rest are `blocked` on an
-artifact that does not exist yet, and say so rather than guessing.
+`python run.py list` is the authoritative experiment inventory; blocked entries state the
+missing artifact or unresolved contract instead of guessing.
 
 | | state |
 |---|---|
@@ -21,7 +21,7 @@ artifact that does not exist yet, and say so rather than guessing.
 
 So the runnable path today is: install the requirements, then build a dataset profile. Every
 image experiment stays blocked until a backbone contract is filled in from a real inspected
-checkpoint — see [docs/BLOCKERS.md](docs/BLOCKERS.md).
+checkpoint; `python run.py plan <experiment>` names the missing artifact for any arm.
 
 ## Quick start
 
@@ -34,6 +34,7 @@ python3 run.py preflight data.dataset.smoke_30                         # 1. chec
 bash scripts/0_data_preprocessing/build_smoke_30.sh                    # 2. technical smoke
 ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh # 3. rehearsal
 python3 run.py plan diag.anatomy.concat                                 # 4. what is left
+PROFILE=smoke_30 bash scripts/ana.sh                                    # 5. describe the cohort
 ```
 
 Everything the pipeline produces goes to `/mnt/pe-storage` — cohorts under
@@ -85,7 +86,7 @@ independent — otherwise no two results are comparable.
 |---|---|---|
 | **dataset** | `data.profile` / `DATASET` | `test_500_sample`, `full_inspect` |
 | **method** | which experiment you run | one config each |
-| **encoder weight** | `model.backbone` × `encoder.init_source` | `ct_fm`/`ct_clip`/`totalfm` × `pretrained`/`dapt`/`c0`/`silver` |
+| **encoder weight** | `model.backbone` × `encoder.init_source` | `ct_fm`/`ct_clip`/`totalfm` × `pretrained`/`dapt`/`c0`/`silver`/`diagnosis`/`rspect_*` |
 | **run scope** | `--patient-id` / `--max-cases` / `--allow-full` | generation stages |
 
 None is a code path. Each is a config value, and the run id is stamped with whatever deviates
@@ -118,7 +119,7 @@ Everything derived lives under `/mnt/pe-storage` in this workspace: cohorts unde
 |---|---|---|---|
 | **0 data preprocessing** | `scripts/0_data_preprocessing/build_*.sh` | the read-only INSPECT release | `derived/datasets/<profile>/`: `manifests/*.csv`, physical CT cache `volumes/*.npy` plus geometry/patch sidecars, `clinical/*`, `data_quality.{md,json}`, `audit/*`, `dataset.json` |
 | **1 segmentation** | `scripts/1_segmentation/totalsegmentator.sh`, then `roi.sh` | `manifests/ctpa.csv` | `outputs/segmentation/SEG_pseudo_anatomy/` (19 masks/study + QC manifest), then `outputs/roi/ROI_anatomy_and_controls/` (ROI1–ROI8 + matched random controls) |
-| **2 silver label** | `scripts/2_silver_label/sl0*.sh` | `manifests/reports.csv` | `outputs/silver_label/SL_*/labels.parquet` + `audit.jsonl` |
+| **2 silver label** | `scripts/2_silver_label/<method>.sh` | `manifests/reports.csv` | `outputs/silver_label/<method>/silver_labels.csv` + `silver_label_confidence.csv` + `logs/run.log` |
 | **3 shared encoder** | `scripts/3_shared_encoder/<n>_<stage>/*.sh` | `manifests/ctpa.csv`, `manifests/paired_reports.csv`, silver labels | `outputs/pretraining/{dapt,alignment,silver}/<id>/best.ckpt` with full lineage |
 | **4 diagnosis** | `scripts/4_diagnosis/*.sh` | `manifests/diagnosis.csv`, ROI masks, silver labels, an encoder checkpoint | `outputs/diagnosis/DX_*/` (`best.ckpt`, `result.json`, predictions) |
 | **5 prognosis** | `scripts/5_prognosis/*.sh` | `manifests/prognosis.csv`, `clinical/ehr_features.csv`, `clinical/pesi_features.csv`, ROI masks, an encoder checkpoint | `outputs/prognosis/PR_*/` |
@@ -134,9 +135,10 @@ READY / MISSING / BLOCKED. It never runs a prerequisite for you.
   `source/dataset/profiles/_common.yaml`. Each build writes `data_quality.md/json`,
   `dataset.json`, and detailed findings under `audit/` next to the manifests.
 - **DATA** — support artifacts built on top of a profile: pseudo-anatomy masks
-  (`data.segmentation`, TotalSegmentator with a LungMask lung-Dice cross-check), ROI crops and
+  (`data.segmentation`, TotalSegmentator with a LungMask lung-Dice cross-check), ROI masks and
   volume-matched random controls (`data.roi`), and report-derived silver labels
-  (`data.silver.*`: SL00 MedGemma, SL01 rules+Falcon, SL02 adjudicated hybrid). Support
+  (`data.silver.*`: seven arms named after their cascade, from `rule` to
+  `rule_falcon_medgemma`). Support
   artifacts are inputs, never results, and only `accepted` silver rows are ever trained on.
   There is no `SEG02`, no segmentation fine-tuning: without expert masks, the masks stay
   pseudo-labels and are labelled as such.
@@ -157,11 +159,11 @@ READY / MISSING / BLOCKED. It never runs a prerequisite for you.
   deltas, no retraining) and sufficiency (`anatomy.*_student[_kd]`: ROI-only students from C0,
   with and without frozen-teacher distillation), both against a volume-matched random control.
 
-Contour and the concept bottleneck are deferred; see `configs/runs/90_deferred/`.
+Contour and the concept bottleneck are deferred; see `configs/runs/06_deferred/`.
 
-Full detail: **[docs/PIPELINE.md](docs/PIPELINE.md)**. Row-per-experiment table:
-**[docs/EXPERIMENT_MAP.md](docs/EXPERIMENT_MAP.md)**. Everything unresolved:
-**[docs/BLOCKERS.md](docs/BLOCKERS.md)**.
+Per-stage detail lives in [`docs/`](docs/); the experiment run plan for a paper is
+[docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). `python run.py list` is the authoritative
+inventory and marks every unresolved contract.
 
 ## Architecture
 
@@ -202,7 +204,7 @@ branches cost nothing extra and cannot disagree about what they saw. `model.back
 small adapter (`bottleneck_mlp`, `residual` or `lora`) mapping the pooled feature to one
 shared width (`task.expert_dim`, default 128). A branch whose mask is missing for a patient
 is zeroed and flagged unavailable, and stays flagged all the way into fusion. Configure with
-`configs/components/adapter/organ.yaml`; `organ_adapter.include_global: false` drops the
+`configs/components/anatomy.yaml#organ_adapter`; `organ_adapter.include_global: false` drops the
 whole-volume branch, `task.regions: []` drops the organ branches and leaves a global-only
 model.
 
@@ -228,7 +230,7 @@ feature-fusion MLP and a `concat_mlp` model has no unused per-branch heads.
 or PESI, by design: its number has to be attributable to the scan. Optional auxiliary heads
 attach accepted-silver findings to the branch whose anatomy they describe (RV findings and
 septal bowing → heart, clot location and acuity → PA, effusion / fibrosis / emphysema →
-lung), which is what `configs/components/task/diagnosis_organ_silver.yaml` encodes. Silver
+lung), which is what `configs/components/tasks.yaml#diagnosis_organ_silver` encodes. Silver
 labels are supervision only; they are never evaluation labels.
 
 ```bash
@@ -278,7 +280,7 @@ classes and sPESI, and returns `None` — never a guess — when any component i
 ends normally with `pesi_status.json: blocked` and no score is fabricated. Every prognosis arm
 with `pesi` in `task.modalities` fails preflight until a clinical steward approves all eleven
 components **and** supplies an approved study-level `pesi.components_table`. See
-[docs/BLOCKERS.md](docs/BLOCKERS.md) §6.
+`python run.py show prog.image_ehr_pesi`.
 
 The candidate component table is deliberately separate from the approved score. It contains
 raw configured values (where a candidate event can be found), a missingness indicator for
@@ -289,7 +291,7 @@ but cannot be presented as original PESI/sPESI until the mapping contract is app
 
 There is no `*_mask_path` column in any stage-0 manifest, and none is invented. Anatomy masks
 are a stage-1 artifact, read straight from the stored ROI run through `data.roi_manifest` +
-`data.roi_mask_ids` (`configs/components/data/anatomy_masks.yaml`), with the same
+`data.roi_mask_ids` (`configs/components/anatomy.yaml#anatomy_masks`), with the same
 PASS/SUSPICIOUS QC filter the students and counterfactuals use:
 
 ```text
@@ -325,18 +327,104 @@ dataset profile it was adapted on — so a number always says where it came from
 
 ### The fixed probes
 
-`probe.diag` and `probe.prog` put a fixed head on a frozen encoder, as a cheap comparison
-instrument for the same question. The split, preprocessing, head, optimizer, epochs, seed and
-metrics are fixed by
-[`configs/components/training/probe.yaml`](configs/components/training/probe.yaml) so that
-scores are comparable across checkpoints:
+`probe.diag`, `probe.diag.multitask` and `probe.prog` put a fixed head on a frozen encoder,
+as a cheap comparison instrument for the same question. The encoder never receives a gradient
+and LoRA never applies: `source/engine/factory.py` returns the probe before `apply_peft` runs.
+The split, preprocessing, head, optimizer, epochs, early-stopping patience, seed and metrics
+are fixed by the `probe` preset in
+[`configs/components/training.yaml`](configs/components/training.yaml), so that scores are
+comparable across checkpoints:
 
 ```bash
 python run.py run probe.diag --gpus 0 --set encoder.init_source=dapt
+ENCODER_SOURCE=silver bash scripts/4_diagnosis/probe_multitask.sh
 ```
+
+The diagnosis probe head is a single `nn.Linear` (or one per label in multitask); the
+prognosis probe head is `Linear → GELU → Linear`, so that arm is a **non-linear** probe and
+its numbers compare only with other prognosis probes.
 
 Representations are chosen on **validation** performance, never on pretraining loss alone and
 never on the test split.
+
+## Cross-validation and ablations
+
+Three additions that make the study protocol runnable. All of them wrap the existing
+trainer — none of them replaces it.
+
+### Patient-level K-fold cross-validation
+
+The protocol prefers a temporal hold-out and falls back to patient-level stratified
+three-fold CV. `tools/tasks/train_cv.py` materialises one manifest per fold with the `split`
+column rewritten, then runs the unchanged `train_task.py` and `evaluate.py` once per fold:
+
+```bash
+bash scripts/run_cv.sh configs/runs/03_diagnosis/matrix/single_task.yaml
+FOLDS=3 GPUS=0 bash scripts/run_cv.sh configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
+DRY_RUN=1 bash scripts/run_cv.sh configs/runs/03_diagnosis/baseline/global_single.yaml
+```
+
+Folds are assigned at **patient** level and stratified on the primary target, so a patient
+is never in two roles of the same fold. When a class is too small to stratify, the runner
+falls back to unstratified patient K-fold and records that in `cv_summary.json` instead of
+silently changing the design.
+
+Enable it in a config with:
+
+```yaml
+evaluation:
+  split_strategy: patient_stratified_cv
+  cross_validation: {enabled: true, folds: 3, nested_inner_folds: 3}
+```
+
+Output: `outputs/cross_validation/<family>/<experiment_id>/` — `folds/fold_<k>/manifest.csv`,
+`fold_plan.json`, `cv_summary.json`, `CV_SUMMARY.md` (mean ± std per metric), `logs/run.log`.
+
+### Architecture ablation
+
+Six variants, each retrained from C0, changing only `task.regions` and the fusion component:
+
+```bash
+GPUS=0 DATASET=full_inspect bash scripts/run_ablation_arch.sh
+ACTION=preflight bash scripts/run_ablation_arch.sh          # check all six, train none
+VARIANTS="global_only full_moe" bash scripts/run_ablation_arch.sh
+CV=1 bash scripts/run_ablation_arch.sh                      # K-fold per variant
+```
+
+| Variant | `task.regions` | Fusion |
+|---|---|---|
+| `global_only` | `[]` | concat + MLP |
+| `global_heart` | `[heart]` | concat + MLP |
+| `global_pa` | `[pa]` | concat + MLP |
+| `global_lung` | `[lung]` | concat + MLP |
+| `full_moe` | `[heart, pa, lung]` | Soft-MoE router |
+| `full_no_router` | `[heart, pa, lung]` | concat + fusion MLP |
+
+`full_moe` vs `full_no_router` isolates the router; the four partial rows isolate each
+expert. Output: `outputs/ablation/architecture/AB_arch_<variant>/`.
+
+### EHR variable ablation
+
+Two axes: variable set (all / common subset) × missingness indicators (on / off).
+
+```bash
+ACTION=preflight bash scripts/run_ablation_ehr.sh
+EHR_COLUMNS="[age,sex,hr,sbp]" EHR_COLUMNS_COMMON="[age,sex]" bash scripts/run_ablation_ehr.sh
+```
+
+| Variant | Variables | `task.ehr_include_missingness` |
+|---|---|---|
+| `all_with_missingness` | all | `true` |
+| `all_no_missingness` | all | `false` |
+| `common_with_missingness` | common subset | `true` |
+| `common_no_missingness` | common subset | `false` |
+
+Turning indicators off halves the clinical encoder's input width
+(`source/clinical/encoder.py`), so the model no longer knows which values were imputed.
+`data.ehr_columns` and `data.ehr_columns_common` are still empty placeholders — pass real
+lists through `EHR_COLUMNS` / `EHR_COLUMNS_COMMON` or fill them in
+`components/tasks.yaml#prognosis_primary_cohort` first.
+Output: `outputs/ablation/ehr/AB_ehr_<variant>/`.
 
 ## Layout
 
@@ -346,18 +434,17 @@ pe-project/
 ├── scripts/                thin wrappers around run.py, one per experiment
 │   ├── _lib.sh             env (DATASET / BACKBONE / ENCODER_SOURCE / SCOPE) -> run.py
 │   ├── 0_data_preprocessing/  1_segmentation/  2_silver_label/
-│   ├── 3_shared_encoder/{0_pretrained_eval,1_dapt,2_alignment,3_silver_encoder}/
+│   ├── 3_shared_encoder/{0_pretrained_eval,1_dapt,2_alignment,4_silver_encoder}/
 │   └── 4_diagnosis/  5_prognosis/  6_counterfactual/
 ├── configs/
 │   ├── experiments.yaml    the experiment registry: names, questions, requirements, status
-│   ├── components/         reusable fragments: backbone registry, encoder initialization,
-│   │                       dapt, task, fusion, adapter, data (anatomy mask source),
-│   │                       alignment, silver, training
-│   ├── clinical/           PESI/sPESI mapping contract, EHR feature policy
+│   ├── components/         eight preset catalogs: backbones, encoders, objectives,
+│   │                       tasks, training, fusion, anatomy, and silver labels
+│   ├── clinical/           PESI/sPESI mapping contract
 │   ├── runs/               one file per runnable experiment, grouped by pipeline stage
 │   │   ├── 00_data/{dataset,silver}/  01_foundation/  02_representation/
 │   │   ├── 03_diagnosis/  04_prognosis/  05_anatomy_analysis/
-│   │   └── 90_deferred/
+│   │   └── 06_deferred/
 │   ├── compute/            GPU default or CPU
 │   └── paths.yaml          data/output roots
 ├── source/
@@ -367,14 +454,15 @@ pe-project/
 │   ├── components/         encoders, organ adapters, ROI pooling, fusion, PEFT
 │   ├── tasks/              diagnosis / prognosis / contour models and heads
 │   └── ...                 data, training engine, metrics, QC, silver, ROI, segmentation
+├── analysis/               EDA over a built dataset profile (see analysis/README.md)
 ├── tools/                  Python CLIs per domain (see tools/README.md)
-├── docs/                   PIPELINE, EXPERIMENT_MAP, BLOCKERS
+├── docs/                   per-stage guides + EXPERIMENTS.md (paper result tables)
 └── third_party/            upstream clones and local weights (see third_party/README.md)
 ```
 
-A run config inherits only from `components/` — never from another run config. Two levels
-maximum, so you can read one file and know what it does. A script never contains an
-experiment: if a change belongs in a wrapper, it belongs in a config instead.
+A run config selects named catalog presets such as `components/tasks.yaml#diagnosis`; it
+never inherits from another run. See [`configs/README.md`](configs/README.md) for the
+compact layout and selector syntax.
 
 ## Install
 
@@ -502,7 +590,7 @@ export DATASET=test_500_sample
 ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh   # cohort + manifests + clinical
 ALLOW_ALL=1 GPUS=0 bash scripts/1_segmentation/totalsegmentator.sh       # 19 pseudo-anatomy masks/study
 ALLOW_ALL=1        bash scripts/1_segmentation/roi.sh                    # ROI1..ROI8 + random controls
-ALLOW_ALL=1 GPUS=0 bash scripts/2_silver_label/sl02_hybrid.sh            # accepted silver labels
+ALLOW_ALL=1 GPUS=0 bash scripts/2_silver_label/rule_falcon_medgemma.sh            # accepted silver labels
 
 GPUS=0 bash scripts/3_shared_encoder/1_dapt/dino.sh                      # adapt the shared encoder
 GPUS=0 bash scripts/3_shared_encoder/2_alignment/image_report.sh         # -> C0
@@ -535,9 +623,9 @@ stages — dataset build, segmentation, ROI, silver labels, counterfactual infer
 ```bash
 python run.py run data.segmentation  --gpus 0 --patient-id PATIENT_001
 python run.py run data.roi                    --max-cases 5
-python run.py run data.silver.hybrid --gpus 0 --max-reports 10
+python run.py run data.silver.rule_falcon_medgemma --gpus 0 --max-reports 10
 python run.py run anatomy.remove_pa  --gpus 0 --patient-id PATIENT_001   # smoke, isolated output
-python run.py run data.silver.hybrid --gpus 0,1 --allow-full
+python run.py run data.silver.rule_falcon_medgemma --gpus 0,1 --allow-full
 ```
 
 A **training** stage has no per-case limit, and none was invented: its scope *is* the dataset
@@ -551,7 +639,7 @@ overwrite a full evaluation.
 ## GPUs
 
 - Training uses PyTorch DDP, one process per GPU (`--gpus 0,1,2,3`).
-- Silver generation shards reports across ranks; SL02 loads both LLMs on every rank, so check
+- Silver generation shards reports across ranks; rule_falcon_medgemma loads both LLMs on every rank, so check
   VRAM before a full run.
 - Segmentation shards studies across `--gpus` without DDP; ROI construction is CPU-parallel
   via `roi.workers`.
@@ -597,22 +685,24 @@ overwrite a full evaluation.
 
 Unresolved contracts — public encoder factory/feature_dim, report embedding columns, the 32
 EHR variables, the external RSPECT manifest, expert segmentation annotations — are listed in
-[docs/BLOCKERS.md](docs/BLOCKERS.md) and make preflight fail on purpose. Fill them from the
+`python run.py plan` and make preflight fail on purpose. Fill them from the
 real artifacts; do not guess.
 
 Two places where the honest answer is narrower than the label suggests:
 
 - **`pretrained_eval` fits a head.** The public checkpoints carry no PE head, so no metric
   exists without one. These arms freeze the backbone (`peft.method: frozen`) and fit only the
-  fixed probe head from `components/training/probe.yaml`. No pretrained weight is updated, and
+  fixed probe head from `components/training.yaml#probe`. No pretrained weight is updated, and
   the probe contract is identical for every checkpoint — but this is a linear probe, not
   zero-shot classification, and must not be reported as one.
 - **Training stages have no per-case limit.** The trainer has no batch cap and none was added,
   because a `--max-cases` for training would be a pilot-only code path. A training arm's scope
   is its dataset profile.
 
-There is no test suite in this repository yet, and no pytest workflow. Preflight, `dry`,
-`plan` and one-patient generation runs are the available checks.
+`tests/` holds unit tests for ROI controls, checkpoint loading, silver abstention, the QC
+schema, preview slice selection, diagnosis configs, prognosis cohorts and the data run layout.
+All but `test_qc_schema.py` need the runtime dependencies installed. Preflight, `dry`, `plan`
+and one-patient generation runs remain the end-to-end checks.
 
 ## Where things are
 
@@ -623,7 +713,7 @@ There is exactly one place for each thing: run configs in `configs/runs/`, share
 `scripts/` are wrappers around `run.py`, not a second definition of an experiment.
 
 The pre-refactor experiment ids are recorded as `legacy_id` in the registry and in
-[docs/EXPERIMENT_MAP.md](docs/EXPERIMENT_MAP.md), which is enough to trace an old note or
+`legacy_id` in `configs/experiments.yaml`, which is enough to trace an old note or
 result folder to the arm that replaced it.
 
 [`info.md`](info.md) is a Vietnamese companion overview. Its `source/` module descriptions

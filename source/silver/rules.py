@@ -4,7 +4,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Pattern
 
-from .schema import TARGETS, canonical_target
+from .schema import canonical_target
 
 
 RULE_VERSION = "pe_rules_v2"
@@ -274,7 +274,3 @@ def apply_rule(report: str, target: str) -> RuleDecision:
         return _ratio_value_decision(text)
     positive, negative = _BOOLEAN_PATTERNS[canonical]
     return _boolean_decision(text, canonical, positive, negative)
-
-
-def apply_rules(report: str) -> dict[str, RuleDecision]:
-    return {target: apply_rule(report, target) for target in TARGETS}

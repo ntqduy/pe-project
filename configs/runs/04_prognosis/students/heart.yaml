@@ -1,0 +1,53 @@
+# prog.heart_student — SUFFICIENCY (prognosis): is the heart region alone enough to
+# predict 30-day mortality?
+#
+# The email's "strict-heart prognosis model". Same idea as anatomy.heart_student on the
+# diagnosis side, but the reference arm it is read against is prog.image, so the
+# architecture is prog.image's exactly and ONLY the input differs:
+#
+#   task.regions: []      global encoder, no organ branches — identical to prog.image
+#   task.modalities:      image only — no EHR, no PESI, so the score is attributable to
+#                         this one region and the arm inherits neither the ehr_columns
+#                         blocker nor the PESI clinical-approval blocker
+#   input_counterfactual: keep_only_heart — everything outside ROI2 is replaced by the
+#                         shared local_mean policy, so the model never sees the rest of
+#                         the chest
+#
+# Keeping regions empty is deliberate. If the students carried heart/pa/lung branches
+# while prog.image does not, a difference between the two rows would mix "which anatomy"
+# with "which architecture". Set `--set task.regions=[heart,pa,lung]` to compare against
+# prog.anatomy.* instead; the arm is then no longer paired with prog.image.
+#
+# No distillation: task_steps.py wires the frozen teacher for the diagnosis stage only.
+# Read against prog.random_student, never on its own.
+# Output: outputs/roi_students/prognosis/RS_prog_heart_only_gt/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/tasks.yaml#prognosis_primary_cohort
+  - ../../../components/training.yaml#prognosis
+  - ../../../components/anatomy.yaml#anatomy_masks
+  - ../../../components/fusions.yaml#concat_mlp
+  - ../../../components/tasks.yaml#roi_student
+experiment:
+  id: RS_prog_heart_only_gt
+  name: prog.heart_student
+  stage: roi_student
+  family: prognosis_roi_student
+data:
+  # Only the mask this arm actually consumes is loaded; the shared preset's heart/pa/lung
+  # set would cost three mask reads per sample for a single-region student.
+  roi_mask_ids:
+    _replace_: true
+    heart: ROI2
+task:
+  base_stage: prognosis
+  modalities: [image]
+  regions: []
+  input_counterfactual: keep_only_heart
+supervision:
+  require_ehr: false
+  require_pesi: false

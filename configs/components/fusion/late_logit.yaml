@@ -1,9 +1,0 @@
-# Logit-level late fusion: every branch gets its own head, and the branch logits are
-# averaged with masked, renormalized weights (source/components/fusion/late_logit.py).
-# learned: false keeps equal fixed weights; learned: true trains a softmax over branches.
-# Unavailable branches are dropped from the average instead of contributing zeros.
-fusion:
-  type: late_logit
-  learned: false
-task:
-  architecture: late_logit

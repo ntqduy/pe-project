@@ -47,6 +47,7 @@ class Trainer:
         precision: str = "fp32",
         accumulation_steps: int = 1,
         maximize_metric: bool = True,
+        early_stopping_patience: int | None = None,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -58,12 +59,19 @@ class Trainer:
         self.precision = precision
         self.accumulation_steps = int(accumulation_steps)
         self.maximize_metric = maximize_metric
+        # None disables early stopping and keeps the historical "always run every epoch"
+        # behaviour, so a config that does not set it is unaffected.
+        self.early_stopping_patience = (
+            None if early_stopping_patience is None else int(early_stopping_patience)
+        )
+        if self.early_stopping_patience is not None and self.early_stopping_patience < 1:
+            raise ValueError("training.early_stopping_patience must be a positive integer or null")
         if self.accumulation_steps < 1:
             raise ValueError("gradient accumulation must be positive")
         self.autocast_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
         self.amp_enabled = context.device.type == "cuda" and precision in {"bf16", "fp16"}
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled and precision == "fp16")
-        self.logger = RunLogger(run_dir / "logs" / "train.log", echo=context.is_main) if context.is_main else None
+        self.logger = RunLogger(run_dir / "logs" / "run.log", echo=context.is_main) if context.is_main else None
 
     def _reduce_mean(self, value: float) -> float:
         tensor = torch.tensor(value, device=self.context.device, dtype=torch.float64)
@@ -174,8 +182,12 @@ class Trainer:
     ) -> dict[str, Any]:
         best = float("-inf") if self.maximize_metric else float("inf")
         history: list[dict[str, Any]] = []
+        stalled_epochs = 0
+        stopped_early = False
+        epochs_run = 0
         started = time.perf_counter()
         for epoch in range(1, int(epochs) + 1):
+            epochs_run = epoch
             epoch_started = time.perf_counter()
             train_loss, train_metrics = self.train_epoch(train_loader, epoch)
             val_loss, validation_metrics = self.validation_loss(validation_loader)
@@ -217,10 +229,31 @@ class Trainer:
                     )
             if improved:
                 best = primary
+                stalled_epochs = 0
+            else:
+                stalled_epochs += 1
             self.context.barrier()
+            # Every rank derives `improved` from rank-reduced values, so this stop decision is
+            # identical on all ranks. Deciding it per-rank would leave some ranks waiting at
+            # the next barrier forever.
+            if (
+                self.early_stopping_patience is not None
+                and stalled_epochs >= self.early_stopping_patience
+            ):
+                stopped_early = True
+                if self.context.is_main and self.logger is not None:
+                    self.logger.log(
+                        f"early_stopping epoch={epoch} patience={self.early_stopping_patience} "
+                        f"epochs_without_improvement={stalled_epochs} best={best:.6f}"
+                    )
+                break
         return {
             "best_validation_metric": best,
+            # `epochs` stays the configured budget; `epochs_run` is what was actually spent.
             "epochs": int(epochs),
+            "epochs_run": epochs_run,
+            "early_stopping_patience": self.early_stopping_patience,
+            "stopped_early": stopped_early,
             "training_time_min": (time.perf_counter() - started) / 60,
             "history": history,
         }

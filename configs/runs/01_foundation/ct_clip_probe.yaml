@@ -3,16 +3,16 @@
 # Question: does the CT-CLIP image tower carry more PE signal than CT-FM or TotalFM?
 # Only the image tower is probed here; the text tower is not used (see ct_clip_zero_shot.yaml
 # for the separate, currently unavailable zero-shot contract).
-# BLOCKER: configs/components/backbone/ct_clip.yaml still needs factory / output_adapter /
+# BLOCKER: configs/components/backbones.yaml#ct_clip still needs factory / output_adapter /
 # feature_dim from the inspected checkpoint, and the weights must be staged locally.
 # Output: outputs/diagnosis/DX_probe_ct_clip/
 _base_:
   - ../../paths.yaml
   - ../../compute/default.yaml
-  - ../../components/backbone/ct_clip.yaml
-  - ../../components/encoder/from_pretrained.yaml
-  - ../../components/task/diagnosis.yaml
-  - ../../components/training/probe.yaml
+  - ../../components/backbones.yaml#ct_clip
+  - ../../components/encoders.yaml#from_pretrained
+  - ../../components/tasks.yaml#diagnosis
+  - ../../components/training.yaml#probe
 experiment:
   id: DX_probe_ct_clip
   name: repr.foundation.ct_clip

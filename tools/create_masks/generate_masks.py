@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -16,7 +17,8 @@ from source.segmentation.pipeline import generate_pseudo_anatomy
 from source.utils.config import load_config, parse_devices
 from source.utils.environment import environment_report
 from source.utils.logger import RunLogger
-from tools._common import select_patient_rows, write_parquet_atomic
+from source.utils.qc import qc_row
+from tools._common import select_patient_rows, write_csv_atomic, write_parquet_atomic
 
 
 def main() -> int:
@@ -77,6 +79,19 @@ def main() -> int:
     run_dir, resumed = prepare_resumable_run(
         manager, "segmentation", experiment_id, snapshot, overwrite=args.overwrite
     )
+    started = time.perf_counter()
+    logger = RunLogger(run_dir / "logs" / "run.log")
+    previous_excepthook = sys.excepthook
+    sys.excepthook = lambda exc_type, exc, tb: (
+        logger.exception("segmentation status=failed", exc),
+        previous_excepthook(exc_type, exc, tb),
+    )[-1]
+    logger.log(
+        f"segmentation run={experiment_id} status=started resumed={resumed} "
+        f"gpus={gpu_ids or ['cpu']}"
+    )
+    logger.log(f"command={' '.join(sys.argv)}")
+    logger.log(f"config={args.config.resolve()} dataset_profile={config['data'].get('profile')} split=all")
     manifest_path = Path(str(config["data"]["manifest"]))
     if not manifest_path.is_absolute():
         manifest_path = paths.dataset_root_for(config) / manifest_path
@@ -89,8 +104,30 @@ def main() -> int:
         segmentation_config=segmentation,
         maximum_cases=args.max_cases,
         gpu_ids=gpu_ids,
+        progress=logger.log,
     )
     write_parquet_atomic(generated, run_dir / "manifest.parquet")
+    write_csv_atomic(
+        [
+            qc_row(
+                run_id=experiment_id,
+                patient_id=row.get("patient_id"),
+                study_id=row.get("study_id"),
+                stage="segmentation",
+                item_name=row.get("anatomy"),
+                status=row.get("status"),
+                input_path=row.get("image_path"),
+                output_path=row.get("mask_path"),
+                qc_checks=json.dumps(
+                    {key: row.get(key) for key in ("status", "reason", "volume_ml", "cross_model_dice")},
+                    sort_keys=True,
+                ),
+                failure_reason=row.get("reason") if str(row.get("status")) in {"FAIL", "UNAVAILABLE"} else "",
+            )
+            for row in generated
+        ],
+        run_dir / "logs" / "segmentation_qc.csv",
+    )
     result = compact_result(
         config,
         status="completed" if not evaluation["studies"]["failed"] else "completed_with_failures",
@@ -99,12 +136,13 @@ def main() -> int:
         evaluation=evaluation,
         reproducibility=environment_report(paths.code_root),
     )
-    manager.write_result(run_dir, result)
-    RunLogger(run_dir / "logs" / "generation.log", echo=False).log(
+    manager.write_result(run_dir, result, split_artifacts=False)
+    logger.log(
         f"requested={evaluation['studies']['requested']} processed={evaluation['studies']['processed']} "
         f"failed={evaluation['studies']['failed']} backend={evaluation['backend']}"
     )
-    print(json.dumps(evaluation, indent=2, sort_keys=True))
+    logger.log(json.dumps(evaluation, indent=2, sort_keys=True))
+    logger.log(f"segmentation run={experiment_id} status=finished elapsed_sec={time.perf_counter()-started:.3f}")
     return 0 if not evaluation["studies"]["failed"] else 1
 
 

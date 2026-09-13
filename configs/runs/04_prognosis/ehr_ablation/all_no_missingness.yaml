@@ -1,0 +1,50 @@
+# ablation.ehr.all_no_missingness — EHR ablation: toàn bộ biến, BỎ missingness indicator.
+#
+# Ablation biến lâm sàng của proposal (slide 12): giữ nguyên cohort, endpoint, split và
+# optimizer; **chỉ đổi tập biến EHR và có/không missingness indicator**.
+#
+# Biến đang đổi:
+#   data.ehr_columns             = ehr_columns_full
+#   task.ehr_include_missingness = false
+#
+# BLOCKER: `data.ehr_columns` và `data.ehr_columns_common` hiện còn rỗng (xem
+# components/tasks.yaml#prognosis_primary_cohort). Điền danh sách thật trước khi chạy;
+# độ dài phải khớp `task.ehr_input_dim`. Với biến thể `common`, truyền danh sách con qua
+#   SET="data.ehr_columns=[...]"  hoặc  --set data.ehr_columns=[...]
+#
+# Output: outputs/ablation/ehr/AB_ehr_all_no_missingness/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/tasks.yaml#prognosis_primary_cohort
+  - ../../../components/training.yaml#prognosis
+experiment:
+  id: AB_ehr_all_no_missingness
+  name: ablation.ehr.all_no_missingness
+  stage: ablation
+  family: ehr_ablation
+task:
+  base_stage: prognosis
+  modalities: [ehr]
+  regions: []
+  # Tắt indicator nghĩa là ClinicalEncoder chỉ nhận giá trị thô: input width giảm một nửa
+  # (source/clinical/encoder.py), nên model không còn biết giá trị nào là đã impute.
+  ehr_include_missingness: false
+lineage:
+  backbone: clinical_mlp
+  initialization: tabular_random
+  source_experiment: null
+  source_checkpoint: null
+  transfer_modules: []
+  supervision_type: native_labels
+  ablation_axis: ehr_variables
+  ablation_variant: all_no_missingness
+supervision:
+  require_masks: false
+  require_ehr: true
+  ehr: clinical/ehr_features.csv
+  require_pesi: false
+peft:
+  _replace_: true
+  method: full

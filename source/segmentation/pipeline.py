@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -11,7 +11,7 @@ import numpy as np
 
 from source.engine.experiment import atomic_write_json
 from source.imaging.nifti import binary_dice, load_nifti, mask_qc
-from source.imaging.preview import write_overlay_preview
+from source.imaging.preview import write_overlay_previews
 
 from .lungmask import LungMaskRunner
 from .totalsegmentator import TASK_CLASSES, TotalSegmentatorRunner
@@ -37,6 +37,7 @@ ANATOMIES = (
     "la",
     "lung_lungmask",
 )
+# Preview paths and the patient/study output hierarchy are part of cached rows.
 STATE_SCHEMA_VERSION = 3
 
 ANATOMY_TASK = {
@@ -100,17 +101,25 @@ def _process_study(
     segmentation_config: Mapping[str, Any],
     gpu_id: int | None,
     preview: bool,
+    progress: Callable[[str], None] | None,
 ) -> list[dict[str, Any]]:
     patient_id = str(row.get("patient_id") or "")
     study_id = str(row.get("study_id") or "")
     if not patient_id or not study_id:
         raise ValueError("segmentation rows require patient_id and study_id")
-    state_path = run_dir / "state" / f"{study_id}.json"
+    state_path = run_dir / "state" / patient_id / f"{study_id}.json"
     cached = _cached_rows(state_path)
     if cached is not None:
+        if progress:
+            progress(f"segmentation study={study_id} patient={patient_id} status=cached")
         return cached
     image_path = _source_image(row, data_root, image_column)
-    study_root = run_dir / "masks" / study_id
+    study_root = run_dir / "masks" / patient_id / study_id
+    if progress:
+        progress(
+            f"segmentation study={study_id} patient={patient_id} "
+            f"device={_device(gpu_id)} status=started"
+        )
     if backend == "totalsegmentator":
         runner = TotalSegmentatorRunner(
             executable=str(segmentation_config.get("executable") or "TotalSegmentator"),
@@ -121,7 +130,12 @@ def _process_study(
             hilar_proximity_mm=float(segmentation_config.get("hilar_proximity_mm", 12.0)),
             extra_arguments=tuple(segmentation_config.get("extra_arguments") or ()),
         )
-        generated = runner.run(image_path, study_root, device=_device(gpu_id))
+        generated = runner.run(
+            image_path,
+            study_root,
+            device=_device(gpu_id),
+            log=progress,
+        )
         lungmask_config = dict(segmentation_config.get("lungmask") or {})
         if lungmask_config.get("enabled", True):
             try:
@@ -132,7 +146,7 @@ def _process_study(
                     force_cpu=bool(lungmask_config.get("force_cpu", False)),
                 )
                 path = study_root / "canonical" / "lung_lungmask.nii.gz"
-                lungmask.run(image_path, path, gpu_id=gpu_id)
+                lungmask.run(image_path, path, gpu_id=gpu_id, log=progress)
                 generated["masks"]["lung_lungmask"] = path
             except Exception as exc:  # noqa: BLE001 - independent QC model may be unavailable
                 generated["errors"]["lungmask"] = f"{type(exc).__name__}: {exc}"
@@ -222,23 +236,39 @@ def _process_study(
                 )
 
     if preview:
+        preview_anatomies = {
+            str(value)
+            for value in segmentation_config.get(
+                "preview_anatomies", ("lung", "strict_heart", "pa_tree")
+            )
+        }
+        preview_slices = int(segmentation_config.get("preview_slices_per_mask", 2))
+        if preview_slices not in {1, 2, 3}:
+            raise ValueError("segmentation.preview_slices_per_mask must be 1, 2, or 3")
+        study_previews = run_dir / "previews" / patient_id / study_id / "segmentation"
         for item in rows:
-            if item.get("mask_path") and item["anatomy"] in {
-                "lung", "heart", "strict_heart", "mediastinum", "central_pa",
-                "lung_arteries", "lung_veins", "lung_vessels", "pa_tree",
-                "hilar_vessels", "body_wall",
-            }:
-                destination = run_dir / "previews" / study_id / f"{item['anatomy']}_overlay.png"
-                write_overlay_preview(
+            if item.get("mask_path") and item["anatomy"] in preview_anatomies:
+                anatomy_name = str(item["anatomy"])
+                preview_paths = write_overlay_previews(
                     image_path,
                     Path(str(item["mask_path"])),
-                    destination,
+                    study_previews / anatomy_name,
                     study_id=study_id,
-                    anatomy=str(item["anatomy"]),
+                    patient_id=patient_id,
+                    anatomy=anatomy_name,
                     source=str(item["source_model"]),
                     status=str(item["status"]),
+                    maximum_slices=preview_slices,
+                    voxel_count=int(item.get("voxel_count") or 0),
+                    physical_volume_mm3=(
+                        float(item["volume_ml"]) * 1000.0
+                        if item.get("volume_ml") is not None else None
+                    ),
+                    overlay_color="orange",
+                    window_width=float(segmentation_config.get("preview_window_width", 700.0)),
+                    window_level=float(segmentation_config.get("preview_window_level", 100.0)),
                 )
-                item["preview_path"] = str(destination)
+                item["preview_paths"] = json.dumps([str(path) for path in preview_paths])
     atomic_write_json(
         state_path,
         {
@@ -248,6 +278,12 @@ def _process_study(
             "rows": rows,
         },
     )
+    if progress:
+        available = sum(bool(item.get("mask_path")) for item in rows)
+        progress(
+            f"segmentation study={study_id} patient={patient_id} "
+            f"status=completed masks={available}/{len(rows)}"
+        )
     return rows
 
 
@@ -260,12 +296,21 @@ def generate_pseudo_anatomy(
     segmentation_config: Mapping[str, Any],
     maximum_cases: int | None,
     gpu_ids: Sequence[int],
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected = list(source_rows if maximum_cases is None else source_rows[:maximum_cases])
     backend = str(segmentation_config.get("backend") or "totalsegmentator")
-    preview_cases = int(segmentation_config.get("preview_cases", 5))
+    raw_preview_cases = segmentation_config.get("preview_cases")
+    preview_cases = None if raw_preview_cases is None else max(0, int(raw_preview_cases))
     assignments = list(gpu_ids) or [None]
-    workers = len(assignments)
+    # One worker per GPU by default. segmentation.workers raises that independently, which
+    # is what a CPU run needs: the device list is empty there, so the default would be a
+    # single worker and the whole run would serialise. Studies keep round-robining over the
+    # devices regardless of how many workers draw from them.
+    configured_workers = segmentation_config.get("workers")
+    workers = (
+        len(assignments) if configured_workers is None else max(1, int(configured_workers))
+    )
     results: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
 
@@ -278,7 +323,8 @@ def generate_pseudo_anatomy(
             backend=backend,
             segmentation_config=segmentation_config,
             gpu_id=assignments[index % len(assignments)],
-            preview=index < preview_cases,
+            preview=preview_cases is None or index < preview_cases,
+            progress=progress,
         )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -288,6 +334,14 @@ def generate_pseudo_anatomy(
             try:
                 results.extend(future.result())
             except Exception as exc:  # noqa: BLE001 - preserve per-study failure accounting
+                study_id = str(source.get("study_id") or "")
+                message = (
+                    f"segmentation study={study_id} "
+                    f"patient={source.get('patient_id')} status=failed "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                if progress:
+                    progress(message)
                 failures.append(
                     {
                         "patient_id": str(source.get("patient_id") or ""),

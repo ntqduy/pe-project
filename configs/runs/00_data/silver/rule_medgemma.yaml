@@ -1,0 +1,26 @@
+# data.silver.rule_medgemma — rules first, then MedGemma.
+#
+# Question: does the medical LLM add more on top of rules than Falcon does?
+# Pairs with data.silver.rule_falcon: identical cascade, different model.
+# Support artifact: only rows with status=accepted may be used for training, and silver is
+# never used as a gold evaluation label.
+#
+# Output: outputs/silver_label/rule_medgemma/
+#   silver_labels.csv            final normalized labels, one row per report/target
+#   silver_label_confidence.csv  confidence, thresholds, decision and evidence
+#   result.json           run summary: counts, timing, sources used, full QC aggregate
+#   logs/run.log          whole terminal stream: progress, provider errors, final summary
+#   resolved_config.yaml  the exact merged config, including real model paths
+#   .state/<report_hash>.json  internal per-report resume cache
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/silver.yaml#rule_medgemma
+experiment:
+  id: rule_medgemma
+  name: data.silver.rule_medgemma
+  stage: silver
+  family: silver
+data:
+  mode: full
+seed: 42

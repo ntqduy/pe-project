@@ -37,7 +37,7 @@ from source.components.fusion.factory import LATE_LOGIT, build_fusion, is_late_l
 from source.components.fusion.late_logit import LateLogitFusion
 from source.components.roi.feature_extractor import ROIFeatureExtractor
 
-from .heads import PrognosisHead
+from .heads import PrognosisHeads
 
 CLINICAL_BRANCHES = ("ehr", "pesi")
 
@@ -54,6 +54,8 @@ class PrognosisModel(nn.Module):
         architecture: str = "soft_moe",
         organ_adapter: Mapping[str, Any] | None = None,
         fusion: Mapping[str, Any] | None = None,
+        targets: tuple[str, ...] = ("mortality_30d",),
+        primary_target: str = "mortality_30d",
     ):
         super().__init__()
         if image_encoder is None and ehr_encoder is None and pesi_encoder is None:
@@ -64,6 +66,10 @@ class PrognosisModel(nn.Module):
         self.ehr_encoder = ehr_encoder
         self.pesi_encoder = pesi_encoder
         self.regions = tuple(regions)
+        self.targets = tuple(dict.fromkeys(str(name) for name in targets))
+        self.primary_target = str(primary_target)
+        if not self.targets or self.primary_target not in self.targets:
+            raise ValueError("primary prognosis target must be present in task targets")
 
         branch_names: list[str] = []
         if image_encoder is not None:
@@ -108,7 +114,7 @@ class PrognosisModel(nn.Module):
         self.fusion_type = str(options.get("type") or architecture).lower()
         if is_late_logit(self.fusion_type):
             self.branch_heads = nn.ModuleDict(
-                {name: PrognosisHead(branch_dim) for name in self.branch_names}
+                {name: PrognosisHeads(branch_dim, self.targets) for name in self.branch_names}
             )
             self.logit_fusion = LateLogitFusion(
                 self.branch_names,
@@ -116,26 +122,31 @@ class PrognosisModel(nn.Module):
                 weights=options.get("weights"),
             )
             self.fusion = None
-            self.head = None
+            self.heads = None
         else:
             self.fusion = build_fusion(
                 fusion, self.branch_names, branch_dim, fallback_type=architecture
             )
-            self.head = PrognosisHead(self.fusion.output_dim)
+            self.heads = PrognosisHeads(self.fusion.output_dim, self.targets)
             self.branch_heads = None
             self.logit_fusion = None
 
     def predict(
         self, branch_features: Mapping[str, Tensor], branch_present: Mapping[str, Tensor]
-    ) -> tuple[Tensor, Tensor | None, Tensor]:
+    ) -> tuple[dict[str, Tensor], Tensor | None, Tensor]:
         """Turn adapted branch features into the mortality logit, routing and features."""
         if self.logit_fusion is None:
             fused, routing = self.fusion(branch_features, branch_present)
-            return self.head(fused), routing, fused
+            return self.heads(fused), routing, fused
         branch_logits = {
             name: head(branch_features[name]) for name, head in self.branch_heads.items()
         }
-        logits, routing = self.logit_fusion(branch_logits, branch_present)
+        logits: dict[str, Tensor] = {}
+        routing: Tensor | None = None
+        for target in self.targets:
+            logits[target], routing = self.logit_fusion(
+                {name: values[target] for name, values in branch_logits.items()}, branch_present
+            )
         fused = torch.cat([branch_features[name] for name in self.branch_names], dim=1)
         return logits, routing, fused
 
@@ -191,9 +202,13 @@ class PrognosisModel(nn.Module):
             )
         if not features:
             raise RuntimeError("no prognosis modality was evaluated")
-        logits, routing, fused = self.predict(features, availability)
+        target_logits, routing, fused = self.predict(features, availability)
         output: dict[str, Any] = {
-            "logits": logits,
+            # Keep the historical primary tensor for existing evaluators/checkpoints while
+            # exposing every configured endpoint under an explicit multitask mapping.
+            "logits": target_logits[self.primary_target],
+            "target_logits": target_logits,
+            "primary_target": self.primary_target,
             "routing": routing,
             "features": fused,
             "branch_features": features,

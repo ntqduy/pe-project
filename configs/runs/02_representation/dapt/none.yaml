@@ -7,9 +7,9 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_pretrained.yaml
-  - ../../../components/dapt/none.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_pretrained
+  - ../../../components/objectives.yaml#dapt_none
 experiment:
   id: D_dapt_none
   name: repr.dapt.none

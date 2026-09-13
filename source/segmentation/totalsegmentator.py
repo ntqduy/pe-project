@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -107,31 +107,54 @@ class TotalSegmentatorRunner:
             command.append("--fast")
         return [*command, *self.extra_arguments]
 
-    def _run_task(self, input_path: Path, root: Path, task: str, device: str) -> tuple[Path, str | None]:
+    def _run_task(
+        self,
+        input_path: Path,
+        root: Path,
+        task: str,
+        device: str,
+        log: Callable[[str], None] | None,
+    ) -> tuple[Path, str | None]:
         destination = root / "tasks" / task
         destination.mkdir(parents=True, exist_ok=True)
         environment = dict(os.environ)
         environment["TOTALSEG_WEIGHTS_PATH"] = str(self.weights_directory.resolve())
+        command = self._command(input_path, destination, task, device)
+        if log:
+            log(f"TotalSegmentator task={task} command={subprocess.list2cmdline(command)}")
         result = subprocess.run(
-            self._command(input_path, destination, task, device),
+            command,
             check=False,
             text=True,
             capture_output=True,
             env=environment,
         )
+        if log and result.stdout.strip():
+            log(f"TotalSegmentator task={task} stdout:\n{result.stdout.strip()}")
+        if log and result.stderr.strip():
+            log(f"TotalSegmentator task={task} stderr:\n{result.stderr.strip()}")
         if result.returncode:
             detail = result.stderr.strip() or result.stdout.strip() or f"exit_code={result.returncode}"
             return destination, detail[-2000:]
         return destination, None
 
-    def run(self, input_path: Path, output_directory: Path, *, device: str) -> dict[str, Any]:
+    def run(
+        self,
+        input_path: Path,
+        output_directory: Path,
+        *,
+        device: str,
+        log: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         if not input_path.is_file():
             raise FileNotFoundError(input_path)
         output_directory.mkdir(parents=True, exist_ok=True)
         task_roots: dict[str, Path] = {}
         errors: dict[str, str] = {}
         for task in TASK_CLASSES:
-            task_roots[task], error = self._run_task(input_path, output_directory, task, device)
+            task_roots[task], error = self._run_task(
+                input_path, output_directory, task, device, log
+            )
             if error:
                 errors[task] = error
 
@@ -355,9 +378,10 @@ class TotalSegmentatorRunner:
                 "body_wall": "morphological shell used only as a negative-control candidate region",
             },
         }
-        (output_directory / "provenance.json").write_text(
-            json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        # Raw task outputs are only intermediates used to build the canonical masks above.
+        # Their provenance is already embedded in every manifest row, so retaining them
+        # would roughly duplicate the per-study mask tree and make review unnecessarily hard.
+        shutil.rmtree(output_directory / "tasks", ignore_errors=True)
         return {
             "masks": paths,
             "errors": errors,

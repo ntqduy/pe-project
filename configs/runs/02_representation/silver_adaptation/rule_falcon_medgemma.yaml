@@ -1,0 +1,27 @@
+# repr.silver.rule_falcon_medgemma — adapt the RSPECT multitask encoder with accepted rule_falcon_medgemma labels.
+#
+# Question: does accepted report-derived supervision improve the externally supervised
+# RSPECT representation? The input source remains configurable through WEIGHT_SOURCE.
+# Output: outputs/shared_encoder/silver_encoder/rule_falcon_medgemma/weight_rspect_multitask/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_rspect_multitask
+  - ../../../components/tasks.yaml#silver_adaptation
+experiment:
+  id: SE_silver_rule_falcon_medgemma_weight_rspect_multitask
+  name: repr.silver.rule_falcon_medgemma
+  stage: silver_encoder_adaptation
+  family: shared_encoder
+  output_id: silver_encoder/rule_falcon_medgemma/weight_rspect_multitask
+  variant_stamp: false
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+silver_training:
+  silver_source: rule_falcon_medgemma
+lineage:
+  supervision_type: silver_multitask

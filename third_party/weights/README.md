@@ -42,4 +42,5 @@ Sau khi thêm/thay weight:
 4. chạy preflight cho experiment dùng weight đó.
 
 Nếu silver model không tương thích `AutoModelForCausalLM`/`AutoTokenizer`, đổi `auto_model_class` hoặc
-`tokenizer_class` trong `configs/components/silver/*.yaml`; không sửa cascade chỉ để né integration contract.
+`tokenizer_class` trong preset tương ứng của `configs/components/silver.yaml`; không sửa
+cascade chỉ để né integration contract.

@@ -9,10 +9,8 @@ from typing import Any, Mapping
 class AuditRecord:
     """Full decision trail for one report/target silver-label decision.
 
-    Kept out of the compact ``labels.parquet`` training table (which stays a small,
-    training-convenient long-form table) and written to a separate ``audit.jsonl``
-    instead, so free-text evidence and every provider's raw output remain inspectable
-    without slowing down training reads.
+    Internal decision detail used to build the compact confidence CSV and aggregate QC.
+    Provider payloads are not duplicated into a second public artifact.
     """
 
     patient_id: str

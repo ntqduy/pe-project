@@ -11,23 +11,15 @@ import numpy as np
 
 from source.engine.experiment import atomic_write_json
 from source.imaging.nifti import load_nifti, mask_qc, same_geometry, save_binary_mask
-from source.imaging.preview import write_overlay_preview
+from source.imaging.preview import write_overlay_previews
 
 from .masks import body_mask_from_hu, dilate_mask, subtract_masks, union_masks
 from .random_controls import matched_random_control, stable_control_seed
+from .registry import ROI_DEFINITIONS, roi_filename, roi_name
 
-SOURCE_OK = {"PASS", "SUSPICIOUS"}
-ROI_OPERATIONS = {
-    "ROI1": "KEEP_ONLY",
-    "ROI2": "KEEP_ONLY",
-    "ROI3": "REMOVE_ROI",
-    "ROI4": "KEEP_ONLY",
-    "ROI5": "KEEP_ONLY",
-    "ROI6": "KEEP_ONLY",
-    "ROI7": "REMOVE_ROI",
-    "ROI8": "KEEP_ONLY",
-}
-STATE_SCHEMA_VERSION = 4
+SOURCE_OK = {"PASS", "SUSPICIOUS", "pass"}
+ROI_OPERATIONS = {code: definition.operation for code, definition in ROI_DEFINITIONS.items()}
+STATE_SCHEMA_VERSION = 5
 
 
 def _cached_rows(path: Path) -> list[dict[str, Any]] | None:
@@ -102,12 +94,21 @@ def _unavailable(
     return {
         **base,
         "roi_id": roi_id,
+        "roi_code": roi_id,
+        "roi_name": roi_name(roi_id, control_for),
         "control_for": control_for,
+        "source_roi": control_for or "",
         "operation": ROI_OPERATIONS[roi_id],
-        "status": "UNAVAILABLE",
+        "status": "failed",
+        "qc_severity": "UNAVAILABLE",
         "feasible": False,
         "reason": reason,
+        "failure_reason": reason,
         "roi_path": None,
+        "mask_path": None,
+        "generation_seed": None,
+        "voxel_count": 0,
+        "physical_volume_mm3": 0.0,
         "source_anatomies": json.dumps(list(sources)),
         "source_mask_paths": json.dumps([]),
         "source_statuses": json.dumps([]),
@@ -126,6 +127,7 @@ def _process_study(
     preview: bool,
     source_segmentation_run: str,
     source_segmentation_manifest: Path,
+    progress: Callable[[str], None] | None,
 ) -> list[dict[str, Any]]:
     first = study_rows[0]
     patient_id = str(first.get("patient_id") or "")
@@ -135,10 +137,14 @@ def _process_study(
         raise ValueError(
             f"invalid segmentation group: patient={patient_id!r}, study={study_id!r}, image={image_path}"
         )
-    state_path = run_dir / "state" / f"{study_id}.json"
+    state_path = run_dir / "state" / patient_id / f"{study_id}.json"
     cached = _cached_rows(state_path)
     if cached is not None:
+        if progress:
+            progress(f"roi study={study_id} patient={patient_id} status=cached")
         return cached
+    if progress:
+        progress(f"roi study={study_id} patient={patient_id} status=started")
 
     anatomy = {str(row.get("anatomy")): row for row in study_rows}
     basic_paths = {
@@ -162,9 +168,16 @@ def _process_study(
     }
     volume, reference = load_nifti(image_path)
     spacing = tuple(float(value) for value in reference.header.get_zooms()[:3])
-    output_root = run_dir / "masks" / study_id
+    output_root = run_dir / "rois" / patient_id / study_id
     rows: list[dict[str, Any]] = []
     built: dict[str, np.ndarray] = {}
+    preview_rois = {
+        str(value)
+        for value in roi_config.get("preview_rois", ("ROI2", "ROI4", "ROI6"))
+    }
+    preview_slices = int(roi_config.get("preview_slices_per_roi", 2))
+    if preview_slices not in {1, 2, 3}:
+        raise ValueError("roi.preview_slices_per_roi must be 1, 2, or 3")
 
     def load_sources(names: Sequence[str]) -> tuple[dict[str, np.ndarray] | None, str | None]:
         problem = _source_reason(names, anatomy)
@@ -197,36 +210,42 @@ def _process_study(
         control_for: str | None = None,
         extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        suffix = f"_for_{control_for}" if control_for else ""
-        path = save_binary_mask(mask, reference, output_root / f"{roi_id}{suffix}.nii.gz")
+        semantic_name = roi_name(roi_id, control_for)
+        path = save_binary_mask(mask, reference, output_root / roi_filename(roi_id, control_for)).resolve()
         qc = mask_qc(path, image_path)
         source_rows = [anatomy[name] for name in sources if name in anatomy]
         source_statuses = [str(item.get("status")) for item in source_rows]
-        status = (
-            "FAIL"
-            if qc["status"] == "FAIL"
-            else "SUSPICIOUS"
-            if "SUSPICIOUS" in source_statuses
-            else "PASS"
+        qc_severity = (
+            "FAIL" if qc["status"] == "FAIL" else
+            "SUSPICIOUS" if "SUSPICIOUS" in source_statuses or qc["status"] == "SUSPICIOUS" else
+            "PASS"
         )
+        status = "failed" if qc_severity == "FAIL" else "pass"
         body_contained = bool(np.all(~np.asarray(mask, dtype=bool) | body))
         flags: list[str] = []
         if qc.get("reason") != "basic_qc_pass":
             flags.extend(str(qc.get("reason") or "").split(";"))
         if not body_contained:
             flags.append("outside_body")
-            if status == "PASS":
-                status = "SUSPICIOUS"
+            status = "failed"
+            qc_severity = "FAIL"
         fallbacks = [str(item.get("fallback")) for item in source_rows if item.get("fallback")]
         item = {
             **base,
             "roi_id": roi_id,
+            "roi_code": roi_id,
+            "roi_name": semantic_name,
             "control_for": control_for,
+            "source_roi": control_for or "",
             "operation": ROI_OPERATIONS[roi_id],
             "status": status,
-            "feasible": status in SOURCE_OK,
+            "qc_severity": qc_severity,
+            "feasible": status == "pass",
             "reason": ";".join(flags) or "basic_qc_pass",
+            "failure_reason": ";".join(flags) if status == "failed" else "",
             "roi_path": str(path),
+            "mask_path": str(path),
+            "generation_seed": (extra or {}).get("seed"),
             "source_anatomies": json.dumps(list(sources)),
             "source_mask_paths": json.dumps([str(item["mask_path"]) for item in source_rows]),
             "source_statuses": json.dumps(source_statuses),
@@ -235,6 +254,9 @@ def _process_study(
             "qc_flags": json.dumps(flags),
             "voxel_count": qc.get("voxel_count"),
             "volume_ml": qc.get("volume_ml"),
+            "physical_volume_mm3": (
+                float(qc["volume_ml"]) * 1000.0 if qc.get("volume_ml") is not None else None
+            ),
             "component_count": qc.get("component_count"),
             "shape": json.dumps(qc.get("shape")),
             "spacing": json.dumps(qc.get("spacing")),
@@ -244,18 +266,27 @@ def _process_study(
             "body_contained": body_contained,
             **dict(extra or {}),
         }
-        if preview:
-            preview_path = run_dir / "previews" / study_id / f"{roi_id}{suffix}_overlay.png"
-            write_overlay_preview(
+        if preview and roi_id in preview_rois:
+            preview_dir = run_dir / "previews" / patient_id / study_id / "rois" / semantic_name
+            preview_paths = write_overlay_previews(
                 image_path,
                 path,
-                preview_path,
+                preview_dir,
                 study_id=study_id,
-                anatomy=f"{roi_id}/{control_for}" if control_for else roi_id,
+                patient_id=patient_id,
+                anatomy=f"{roi_id}_{semantic_name}",
                 source="derived pseudo-anatomy recipe",
                 status=status,
+                maximum_slices=preview_slices,
+                voxel_count=int(qc.get("voxel_count") or 0),
+                physical_volume_mm3=(
+                    float(qc["volume_ml"]) * 1000.0 if qc.get("volume_ml") is not None else None
+                ),
+                overlay_color="deepskyblue" if roi_id == "ROI8" else "orange",
+                window_width=float(roi_config.get("preview_window_width", 700.0)),
+                window_level=float(roi_config.get("preview_window_level", 100.0)),
             )
-            item["preview_path"] = str(preview_path)
+            item["preview_paths"] = json.dumps([str(path) for path in preview_paths])
         rows.append(item)
         built[roi_id if control_for is None else f"{roi_id}:{control_for}"] = mask
         return item
@@ -371,6 +402,20 @@ def _process_study(
             roi7_recipe,
         )
 
+    control_config = dict(roi_config.get("control_roi") or {})
+    control_base_seed = int(control_config.get("seed", seed))
+    forbidden_names = tuple(
+        str(value) for value in control_config.get(
+            "excluded_anatomies",
+            ("heart", "mediastinum", "central_pa", "lung_arteries", "lung_veins", "hilar_vessels"),
+        )
+    )
+    forbidden_values, forbidden_problem = load_sources(forbidden_names) if forbidden_names else ({}, None)
+    forbidden_union = (
+        union_masks(*(forbidden_values[name] for name in forbidden_names))
+        if forbidden_values
+        else np.zeros(body.shape, dtype=bool)
+    )
     for control_for, label in (("ROI2", "heart"), ("ROI4", "pa"), ("ROI6", "lung")):
         target = built.get(control_for)
         random_recipe = _recipe(
@@ -379,9 +424,12 @@ def _process_study(
             masking_policy=masking_policy,
             parameters={
                 "control_for": control_for,
-                "exclusion_margin_mm": float(roi_config.get("random_exclusion_margin_mm", 2.0)),
+                "exclusion_margin_mm": float(control_config.get("exclusion_margin_mm", 5.0)),
+                "max_attempts": int(control_config.get("max_attempts", 500)),
+                "preserve_z_range": bool(control_config.get("preserve_z_range", True)),
+                "excluded_anatomies": list(forbidden_names),
             },
-            approximation_note="Physical volume is matched exactly; control shape is not claimed matched.",
+            approximation_note="Rigid translation preserves shape, voxel count and physical volume.",
         )
         if target is None:
             rows.append(
@@ -395,17 +443,36 @@ def _process_study(
                 )
             )
             continue
-        control_seed = stable_control_seed(seed, patient_id, study_id, control_for)
+        if forbidden_problem:
+            rows.append(
+                _unavailable(
+                    base,
+                    "ROI8",
+                    f"forbidden_anatomy_unavailable:{forbidden_problem}",
+                    (control_for, *forbidden_names),
+                    random_recipe,
+                    control_for=control_for,
+                )
+            )
+            continue
+        control_seed = stable_control_seed(control_base_seed, patient_id, study_id, control_for)
         try:
             control, metadata = matched_random_control(
                 target=target,
                 body=body,
                 body_wall=body_wall,
+                forbidden=forbidden_union,
                 spacing=spacing,
                 seed=control_seed,
-                exclusion_margin_mm=float(roi_config.get("random_exclusion_margin_mm", 2.0)),
+                exclusion_margin_mm=float(control_config.get("exclusion_margin_mm", 5.0)),
+                max_attempts=int(control_config.get("max_attempts", 500)),
+                require_exact_voxel_match=bool(control_config.get("require_exact_voxel_match", True)),
+                preserve_z_range=bool(control_config.get("preserve_z_range", True)),
             )
-        except ValueError as exc:
+        # RuntimeError is the exact-voxel-match guard. Rigid translation preserves the voxel
+        # count by construction, so it should be unreachable, but a control that cannot meet
+        # its own contract must be recorded as a failed ROI rather than kill the whole study.
+        except (ValueError, RuntimeError) as exc:
             rows.append(
                 _unavailable(
                     base,
@@ -421,7 +488,7 @@ def _process_study(
         anatomy[control_for] = {
             **base,
             "mask_path": source_item["roi_path"],
-            "status": source_item["status"],
+            "status": source_item["qc_severity"],
             "fallback": None,
         }
         store(
@@ -442,6 +509,12 @@ def _process_study(
             "rows": rows,
         },
     )
+    if progress:
+        available = sum(bool(item.get("roi_path")) for item in rows)
+        progress(
+            f"roi study={study_id} patient={patient_id} "
+            f"status=completed rois={available}/{len(rows)}"
+        )
     return rows
 
 
@@ -454,6 +527,7 @@ def build_roi_dataset(
     seed: int,
     source_segmentation_run: str,
     source_segmentation_manifest: Path,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in segmentation_rows:
@@ -462,7 +536,8 @@ def build_roi_dataset(
     if maximum_cases is not None:
         selected = selected[:maximum_cases]
     workers = max(1, int(roi_config.get("workers", 1)))
-    preview_cases = max(0, int(roi_config.get("preview_cases", 5)))
+    raw_preview_cases = roi_config.get("preview_cases")
+    preview_cases = None if raw_preview_cases is None else max(0, int(raw_preview_cases))
     output: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -473,9 +548,10 @@ def build_roi_dataset(
                 run_dir=run_dir,
                 roi_config=roi_config,
                 seed=seed,
-                preview=index < preview_cases,
+                preview=preview_cases is None or index < preview_cases,
                 source_segmentation_run=source_segmentation_run,
                 source_segmentation_manifest=source_segmentation_manifest,
+                progress=progress,
             ): study_id
             for index, (study_id, rows) in enumerate(selected)
         }
@@ -483,6 +559,11 @@ def build_roi_dataset(
             try:
                 output.extend(future.result())
             except Exception as exc:  # noqa: BLE001 - preserve per-study failure accounting
+                if progress:
+                    progress(
+                        f"roi study={futures[future]} status=failed "
+                        f"reason={type(exc).__name__}: {exc}"
+                    )
                 failures.append({"study_id": futures[future], "reason": f"{type(exc).__name__}: {exc}"})
     output.sort(
         key=lambda row: (str(row["study_id"]), str(row["roi_id"]), str(row.get("control_for") or ""))
@@ -504,7 +585,7 @@ def build_roi_dataset(
         "roi": {
             roi_id: {
                 status: counts[(roi_id, status)]
-                for status in ("PASS", "SUSPICIOUS", "FAIL", "UNAVAILABLE")
+                for status in ("pass", "failed", "skipped", "abstained")
             }
             for roi_id in ROI_OPERATIONS
         },

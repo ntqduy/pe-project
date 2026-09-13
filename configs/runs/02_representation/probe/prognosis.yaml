@@ -3,7 +3,7 @@
 # Question: which representation checkpoint carries the most outcome-relevant information?
 # Frozen encoder -> global average pool -> fixed small prognosis head -> 30-day mortality.
 # Image only: no EHR and no PESI, so the score reflects the representation alone.
-# Probe hyperparameters are fixed by components/training/probe.yaml and must not be tuned
+# Probe hyperparameters are fixed by components/training.yaml#probe and must not be tuned
 # per checkpoint. Checkpoint selection uses validation, never test.
 #
 # To probe another representation, override lineage.source_experiment,
@@ -12,10 +12,10 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
-  - ../../../components/task/prognosis.yaml
-  - ../../../components/training/probe.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/training.yaml#probe
 experiment:
   id: PR_probe_prognosis
   name: probe.prog

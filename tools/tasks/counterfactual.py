@@ -15,7 +15,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from source.components.roi.masks import matched_random_mask, remove_roi
+from source.components.roi.masks import remove_roi
 from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
 from source.distributed.gather import gather_prediction_rows
@@ -118,17 +118,10 @@ def _counterfactual_rows(model, loader, primary, label_index, context, task, see
                     for _ in range(volume.shape[0])
                 ]
             else:
-                selected_mask, controls = matched_random_mask(
-                    masks[matched_region],
-                    seed=seed,
-                    body=masks.get("body"),
-                    body_wall=masks.get("body_wall"),
-                    patient_ids=batch["patient_id"],
-                    study_ids=batch["study_id"],
-                    control_for=matched_region,
-                    return_metadata=True,
+                raise ValueError(
+                    "random counterfactual requires the precomputed ROI8 mask from "
+                    "roi_manifest.csv; runtime random controls are prohibited"
                 )
-                random_metadata = list(controls)
         else:
             selected_mask = masks[region]
             random_metadata = [None] * volume.shape[0]

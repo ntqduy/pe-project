@@ -1,0 +1,121 @@
+# Silver-label generation methods.
+# Select a fragment with: path/to/silver.yaml#<preset>
+#
+# A method name is its cascade, in order: rule | falcon | medgemma | rule_falcon |
+# rule_medgemma | falcon_medgemma | rule_falcon_medgemma.
+# Cheapest deterministic source that can settle a target wins; two LLMs are adjudicated
+# and disagreement abstains. Logic: source/silver/generator.py.
+_presets_:
+
+  # ---- shared pieces; not runnable on their own ----
+
+  reports_input:
+    silver:
+      # Written by data.dataset.<profile> as CSV; read_rows also accepts .parquet/.jsonl.
+      reports: reports.csv
+      prompt_version: v1
+      # Provider confidence is confidence in the returned class/value, not a calibrated
+      # probability of PE. Every model decision is threshold-gated; validation calibration
+      # metadata must be supplied before reporting clinical performance.
+      confidence_threshold: 0.8
+      medgemma_confidence_threshold: 0.8
+      agreement_confidence_threshold: 0.6
+      threshold_calibration:
+        split: validation
+        method: fixed_pending_validation_calibration
+        artifact: null
+
+  falcon_model:
+    silver:
+      falcon:
+        # Informational label only; the actual model is model_path/model_id +
+        # provider_factory, so swapping models never requires a code change.
+        provider: falcon
+        model_path: third_party/weights/falcon-7b
+        # Exact revision and architecture: third_party/versions.yaml (components.falcon).
+        model_id: tiiuae/falcon-7b
+        provider_factory: source.silver.providers:build_transformers_provider
+        provider_kwargs:
+          auto_model_class: AutoModelForCausalLM
+          tokenizer_class: AutoTokenizer
+          device_map: auto
+          torch_dtype: bfloat16
+          local_files_only: true
+
+  medgemma_model:
+    silver:
+      medgemma:
+        # provider: medgemma | gemma4 | ... - informational, same as falcon.provider.
+        provider: medgemma
+        model_path: third_party/weights/medgemma
+        # Exact revision and architecture: third_party/versions.yaml (components.medgemma).
+        model_id: google/medgemma-1.5-4b-it
+        provider_factory: source.silver.providers:build_transformers_provider
+        provider_kwargs:
+          # The staged checkpoint declares Gemma3ForConditionalGeneration (see
+          # third_party/versions.yaml), which AutoModelForCausalLM does not resolve.
+          # Report mining is text-only, so AutoTokenizer is still the right input path:
+          # no CT volume is ever passed to MedGemma by this stage.
+          auto_model_class: AutoModelForImageTextToText
+          tokenizer_class: AutoTokenizer
+          device_map: auto
+          torch_dtype: bfloat16
+          local_files_only: true
+
+  # ---- single-source methods ----
+
+  rule:
+    _base_:
+      - silver.yaml#reports_input
+    silver:
+      # Regex only (RULE_VERSION pe_rules_v2). No model is loaded, so this runs on CPU.
+      method: rule
+
+  falcon:
+    _base_:
+      - silver.yaml#reports_input
+      - silver.yaml#falcon_model
+    silver:
+      method: falcon
+
+  medgemma:
+    _base_:
+      - silver.yaml#reports_input
+      - silver.yaml#medgemma_model
+    silver:
+      method: medgemma
+
+  # ---- two-source cascades ----
+
+  rule_falcon:
+    _base_:
+      - silver.yaml#reports_input
+      - silver.yaml#falcon_model
+    silver:
+      method: rule_falcon
+
+  rule_medgemma:
+    _base_:
+      - silver.yaml#reports_input
+      - silver.yaml#medgemma_model
+    silver:
+      method: rule_medgemma
+
+  falcon_medgemma:
+    _base_:
+      - silver.yaml#reports_input
+      - silver.yaml#falcon_model
+      - silver.yaml#medgemma_model
+    silver:
+      # No rule stage: both models run on every target, so this is the most expensive arm.
+      method: falcon_medgemma
+
+  # ---- full cascade ----
+
+  rule_falcon_medgemma:
+    _base_:
+      - silver.yaml#reports_input
+      - silver.yaml#falcon_model
+      - silver.yaml#medgemma_model
+    silver:
+      method: rule_falcon_medgemma

@@ -1,3 +1,10 @@
+"""Patient-level cross-validation splits.
+
+The study protocol makes patient-level stratified K-fold the primary evaluation for
+diagnosis (three folds) and repeated/nested CV the fallback for prognosis when the event
+count is too small for a single hold-out. Every function here assigns *patients*, never
+studies, so a patient can never appear in two folds of the same assignment.
+"""
 from __future__ import annotations
 
 import random
@@ -92,11 +99,11 @@ def repeated_kfold_patient_splits(
     *,
     patient_column: str = "patient_id",
 ) -> list[dict[str, int]]:
-    """Independent, deterministic K-fold assignments for repeated CV on a small prognosis cohort.
+    """Independent, deterministic K-fold assignments for repeated CV on a small cohort.
 
-    Each element is one complete patient->fold assignment (section 13: repeated or nested CV
-    must be supported for small event counts). Repeats use distinct, deterministic seeds derived
-    from ``seed`` so the whole set is reproducible from one integer.
+    Each element is one complete patient->fold assignment. Repeats use distinct
+    deterministic seeds derived from ``seed`` so the whole set is reproducible from one
+    integer.
     """
     if repeats < 1:
         raise CrossValidationError("repeats must be at least 1")
@@ -115,11 +122,10 @@ def nested_kfold_patient_splits(
     *,
     patient_column: str = "patient_id",
 ) -> list[dict[str, Any]]:
-    """Nested CV: each outer fold holds out test patients; the rest are split into inner folds.
+    """Nested CV: each outer fold holds out test patients; the rest split into inner folds.
 
-    Returns one entry per outer fold: ``{"outer_fold", "test_patients", "inner_folds"}``, where
-    ``inner_folds`` maps each non-test patient to an inner fold index (used for train/validation
-    within that outer fold). No patient appears in both a fold's test set and its inner folds.
+    Returns one entry per outer fold: ``{"outer_fold", "test_patients", "inner_folds"}``.
+    No patient appears in both a fold's test set and its inner folds.
     """
     patients = [str(row[patient_column]) for row in rows]
     outer = patient_kfold_assignments(patients, outer_k, seed)

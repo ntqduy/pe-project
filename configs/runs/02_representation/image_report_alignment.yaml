@@ -10,10 +10,10 @@
 _base_:
   - ../../paths.yaml
   - ../../compute/default.yaml
-  - ../../components/backbone/ct_fm.yaml
-  - ../../components/encoder/from_dapt.yaml
-  - ../../components/alignment/image_report.yaml
-  - ../../components/training/alignment.yaml
+  - ../../components/backbones.yaml#ct_fm
+  - ../../components/encoders.yaml#from_dapt
+  - ../../components/objectives.yaml#image_report_alignment
+  - ../../components/training.yaml#alignment
 experiment:
   id: AL_image_report_c0
   name: repr.align

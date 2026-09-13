@@ -10,9 +10,9 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/task/prognosis.yaml
-  - ../../../components/task/prognosis_primary_cohort.yaml
-  - ../../../components/training/prognosis.yaml
+  - ../../../components/tasks.yaml#prognosis
+  - ../../../components/tasks.yaml#prognosis_primary_cohort
+  - ../../../components/training.yaml#prognosis
 experiment:
   id: PR_ehr_only
   name: prog.ehr

@@ -1,9 +1,0 @@
-# Feature-level fusion: concatenate every available named branch, then one MLP.
-# Branches are masked before concatenation, so a missing branch contributes zeros.
-# Diagnosis branches: global (+ heart/pa/lung when task.regions is non-empty).
-# Prognosis branches: the image branches plus ehr/pesi when those modalities are enabled.
-fusion:
-  type: concat_mlp
-  dropout: 0.0
-task:
-  architecture: concat_mlp

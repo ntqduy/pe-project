@@ -1,47 +1,51 @@
-# 08. Tổng hợp các bước chạy
-
-## Thứ tự chuẩn
+# 08. Thứ tự pipeline và chạy song song
 
 ```text
-01 Dataset build
-   ↓
-02 Segmentation pseudo-masks
-   ↓
-03 ROI / anatomy artifacts (nếu cần)
-   ↓
-04 Silver labels (nếu dùng silver supervision)
-   ↓
-05 DAPT / image-report alignment → C0
-   ↓
-06 Diagnosis baselines → anatomy/silver diagnosis
-   ↓
-07 Prognosis baselines → multimodal/anatomy prognosis
-   ↓
-08 Contour (deferred, chỉ khi có reviewed embolus masks)
+dataset build
+  -> segmentation ---------> ROI
+  -> silver labels
+  -> DAPT -> alignment/C0 -> diagnosis -> prognosis
+  -> RSPECT supervised transfer (optional)
+  -> Turkey normalization -> segmentation/ROI -> primary test-only evaluation
 ```
 
-## Trước mỗi stage
+Segmentation các study chạy song song theo GPU. ROI các study hoàn tất chạy song song theo
+CPU. Silver report sharding cũng độc lập. Các nhánh này có thể chạy đồng thời miễn là input
+của từng case đã tồn tại và không ghi cùng run directory.
+
+Trước stage model:
 
 ```bash
-python run.py preflight <experiment>
 python run.py plan <experiment>
+python run.py preflight <experiment>
 ```
 
-Kiểm tra: manifest tồn tại, split không leakage, checkpoint đúng lineage, weights/model có thật và output root writable.
+Trước full run, dùng `--max-cases 1` hoặc profile `smoke_30`, kiểm tra PNG/QC/log rồi mới
+`--allow-full`. Không sửa status thủ công để vượt `failed/UNAVAILABLE`.
 
-## Các blocker hiện tại cần xử lý
+## RSPECT và Turkey
 
-1. Backbone configs còn `factory/output_adapter` rỗng và `feature_dim: 0`.
-2. Alignment chưa có `report_embedding_columns` thật.
-3. EHR columns chưa cấu hình đủ 32 chiều.
-4. PESI còn chờ clinical approval.
-5. RSPECT mới có ZIP tại `/mnt/RSPECT_dataset`; cần giải nén và tạo patient-level manifest.
-6. Contour còn trỏ checkpoint `DX01` cũ.
+Tên chuẩn trong repo là `RSPECT`; nguồn release được mô tả là RSNA-STR Pulmonary Embolism
+Detection. Theo email, RSPECT là nguồn public cho pretraining/supervised transfer. Chuỗi này:
 
-## Quy tắc debug
+1. giải nén và tạo `/mnt/RSPECT_dataset/manifests/rsna_diagnosis.csv` với patient-level
+   train/validation/test;
+2. chạy `data.segmentation.rspect`;
+3. chạy `data.roi.rspect` nếu model cần anatomy;
+4. train/freeze encoder transfer theo config `repr.rspect.*` nếu dùng nhánh này.
 
-- Chạy smoke/small cohort trước full.
-- Mỗi stage phải đọc `result.json`, `data_quality`, `qc.json` hoặc manifest output.
-- Không bỏ qua `FAIL`, `SUSPICIOUS`, `UNAVAILABLE` bằng cách đổi status thủ công.
-- Khi sửa bug, ghi rõ input, expected output và test/preflight đã chạy.
+Turkey mới là external test chính của proposal. Sau khi nhận dữ liệu, normalize thành
+`/mnt/Turkey_dataset/manifests/turkey_diagnosis.csv`, chạy `data.segmentation.turkey`,
+`data.roi.turkey`, rồi evaluate `diag.external.turkey_test`.
+
+Config external evaluation không thể chạy bằng `train_task.py`. Threshold chỉ được chọn trên
+INSPECT validation, khóa trong source `result.json`, rồi áp dụng một lần lên Turkey/RSPECT
+test. Hiện normalized data chưa có nên registry đánh dấu các stage này `blocked`.
+
+## Blocker còn lại
+
+- backbone factory/output adapter và real checkpoint cần được điền sau khi inspect weight;
+- RSPECT và Turkey normalized manifests chưa sẵn sàng;
+- EHR columns và PESI clinical approval còn thiếu cho một số prognosis arms;
+- contour cần expert-reviewed embolus masks.
 

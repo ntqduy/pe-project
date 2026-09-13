@@ -122,7 +122,7 @@ class CTPADataset(Dataset[dict[str, Any]]):
                     observed_control = ""
                 if observed_control != expected_control:
                     continue
-                if str(roi_row.get("status")) not in {"PASS", "SUSPICIOUS"}:
+                if str(roi_row.get("status")) not in {"PASS", "SUSPICIOUS", "pass"}:
                     continue
                 path = str(roi_row.get("roi_path") or "")
                 if not path:

@@ -24,7 +24,7 @@
 project_blockers:
   - id: backbone_contract
     what: >-
-      configs/components/backbone/{ct_fm,ct_clip,totalfm}.yaml still have empty factory /
+      configs/components/backbones.yaml still has empty factory /
       output_adapter and feature_dim 0. Every image experiment fails preflight until the
       inspected checkpoint contract is filled in and the weights are staged locally.
   - id: inspect_manifests
@@ -40,7 +40,7 @@ project_blockers:
       score exists.
       Every prognosis arm with `pesi` in task.modalities stays blocked until a clinical
       steward approves all eleven components and supplies pesi.components_table. No score
-      is ever pattern-matched out of raw events. See docs/BLOCKERS.md section 6.
+      is ever pattern-matched out of raw events.
 
 experiments:
 
@@ -132,7 +132,7 @@ experiments:
     config: configs/runs/00_data/roi.yaml
     group: DATA
     legacy_id: ROI01
-    description: ROI1-ROI8 crops and volume-matched random controls from a finished segmentation run
+    description: ROI1-ROI8 semantic masks and rigid volume-matched random controls from a finished segmentation run
     question: Which studies have usable ROI artifacts and matched random controls?
     representation: none
     task: roi
@@ -147,11 +147,132 @@ experiments:
     produces: [ROI1-ROI8 masks, ROI manifest, QC report]
     status: ready
 
+  data.segmentation.rspect:
+    config: configs/runs/00_data/segmentation_rspect.yaml
+    group: DATA
+    description: Apply the identical pseudo-anatomy segmentation contract to normalized RSPECT
+    question: Are external RSPECT volumes anatomically usable before model evaluation?
+    representation: none
+    task: segmentation
+    modalities: [image]
+    anatomy: produces
+    supervision: none
+    fusion: none
+    requires:
+      - what: Extracted RSPECT volumes and normalized patient-level manifest
+        path_key: data.manifest
+        blocker: rspect_manifest
+    produces: [external anatomy masks, QC CSV, review previews]
+    status: blocked
+    blockers: [The normalized RSPECT manifest and extracted volumes are not present.]
+
+  data.roi.rspect:
+    config: configs/runs/00_data/roi_rspect.yaml
+    group: DATA
+    description: Derive semantic ROIs and rigid matched controls for normalized RSPECT
+    question: Are the same anatomy-aware inputs available on the external cohort?
+    representation: none
+    task: roi
+    modalities: [image]
+    anatomy: produces
+    supervision: none
+    fusion: none
+    requires:
+      - what: Completed external segmentation run
+        experiment: data.segmentation.rspect
+        path_key: roi.segmentation_run
+    produces: [external ROI masks, ROI QC CSV, review previews]
+    status: blocked
+    blockers: [Depends on normalized RSPECT data and external segmentation.]
+
+  data.segmentation.turkey:
+    config: configs/runs/00_data/segmentation_turkey.yaml
+    group: DATA
+    description: Apply the frozen INSPECT segmentation contract to the Turkey external cohort
+    question: Are Turkey volumes anatomically usable under the same mask protocol?
+    representation: none
+    task: segmentation
+    modalities: [image]
+    anatomy: produces
+    supervision: none
+    fusion: none
+    requires:
+      - what: Turkey volumes and normalized test-only manifest from the study team
+        path_key: data.manifest
+        blocker: turkey_manifest
+    produces: [Turkey anatomy masks, QC CSV, review previews]
+    status: blocked
+    blockers: [The Turkey server path, normalized manifest and exact case count are not available.]
+
+  data.roi.turkey:
+    config: configs/runs/00_data/roi_turkey.yaml
+    group: DATA
+    description: Derive ROI1-ROI8 and matched controls for the Turkey cohort
+    question: Are the same anatomy-aware inputs available for primary external testing?
+    representation: none
+    task: roi
+    modalities: [image]
+    anatomy: produces
+    supervision: none
+    fusion: none
+    requires:
+      - what: Completed Turkey segmentation run
+        experiment: data.segmentation.turkey
+        path_key: roi.segmentation_run
+    produces: [Turkey ROI masks, ROI QC CSV, review previews]
+    status: blocked
+    blockers: [Depends on delivery and segmentation of the Turkey cohort.]
+
+
+  # Seven silver arms, one implementation. The name IS the cascade, in order: the cheapest
+  # deterministic source that can settle a target wins, and two LLMs are adjudicated so that
+  # disagreement abstains rather than guessing. Logic: source/silver/generator.py.
+  # data.silver.rule needs no weights and is the only arm that is not blocked.
+
+  data.silver.rule:
+    config: configs/runs/00_data/silver/rule.yaml
+    group: DATA
+    description: Deterministic regex extraction only, no model
+    question: How far does a rule-only extractor get before any LLM is involved?
+    representation: none
+    task: silver
+    modalities: [reports]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Report table with report_id and report_text
+        experiment: data.dataset.full_inspect
+        path_key: silver.reports
+    produces: [accepted/abstained labels from regex only, audit trail, QC review queue]
+    status: ready
+
+  data.silver.falcon:
+    config: configs/runs/00_data/silver/falcon.yaml
+    group: DATA
+    description: Falcon extraction only, no rule prior
+    question: What does a general-purpose LLM extract from the reports without rules?
+    representation: none
+    task: silver
+    modalities: [reports]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Report table with report_id and report_text
+        experiment: data.dataset.full_inspect
+        path_key: silver.reports
+      - what: Local Falcon weights
+        blocker: silver_model_weights
+    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
+    status: blocked
+    blockers:
+      - Local Falcon model directory is not staged and its exact model id/revision is unrecorded.
+
   data.silver.medgemma:
     config: configs/runs/00_data/silver/medgemma.yaml
     group: DATA
-    legacy_id: SL00_medgemma_only
-    description: SL00 report-derived silver labels from MedGemma alone
+    description: MedGemma extraction only, no rule prior (report text only)
     question: What supervision can a single medical LLM extract from the reports?
     representation: none
     task: silver
@@ -165,16 +286,15 @@ experiments:
         path_key: silver.reports
       - what: Local MedGemma weights
         blocker: silver_model_weights
-    produces: [accepted/abstained/no_result labels, audit trail, QC summary]
+    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
     status: blocked
     blockers:
       - Local MedGemma model directory is not staged and its exact model id/revision is unrecorded.
 
-  data.silver.rules_falcon:
-    config: configs/runs/00_data/silver/rules_falcon.yaml
+  data.silver.rule_falcon:
+    config: configs/runs/00_data/silver/rule_falcon.yaml
     group: DATA
-    legacy_id: SL01_rules_falcon
-    description: SL01 deterministic rules plus Falcon extraction
+    description: Deterministic rules, then Falcon for whatever the rules leave unresolved
     question: Does a rule-first cascade extract report supervision more reliably than an LLM alone?
     representation: none
     task: silver
@@ -188,16 +308,59 @@ experiments:
         path_key: silver.reports
       - what: Local Falcon weights
         blocker: silver_model_weights
-    produces: [accepted/abstained/no_result labels, audit trail, QC summary]
+    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
     status: blocked
     blockers:
       - Local Falcon model directory is not staged and its exact model id/revision is unrecorded.
 
-  data.silver.hybrid:
-    config: configs/runs/00_data/silver/hybrid.yaml
+  data.silver.rule_medgemma:
+    config: configs/runs/00_data/silver/rule_medgemma.yaml
     group: DATA
-    legacy_id: SL02_hybrid
-    description: SL02 rules plus Falcon plus MedGemma with agreement adjudication
+    description: Deterministic rules, then MedGemma for whatever the rules leave unresolved
+    question: Does the medical LLM add more on top of rules than the general-purpose one?
+    representation: none
+    task: silver
+    modalities: [reports]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Report table with report_id and report_text
+        experiment: data.dataset.full_inspect
+        path_key: silver.reports
+      - what: Local MedGemma weights
+        blocker: silver_model_weights
+    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
+    status: blocked
+    blockers:
+      - Local MedGemma model directory is not staged and its exact model id/revision is unrecorded.
+
+  data.silver.falcon_medgemma:
+    config: configs/runs/00_data/silver/falcon_medgemma.yaml
+    group: DATA
+    description: Falcon plus MedGemma with agreement adjudication, no rule prior
+    question: How much of the accepted yield comes from the rules rather than from the models?
+    representation: none
+    task: silver
+    modalities: [reports]
+    anatomy: false
+    supervision: none
+    fusion: none
+    requires:
+      - what: Report table with report_id and report_text
+        experiment: data.dataset.full_inspect
+        path_key: silver.reports
+      - what: Local Falcon and MedGemma (both loaded per GPU rank) weights
+        blocker: silver_model_weights
+    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
+    status: blocked
+    blockers:
+      - Local Falcon and MedGemma (both loaded per GPU rank) model directory is not staged and its exact model id/revision is unrecorded.
+
+  data.silver.rule_falcon_medgemma:
+    config: configs/runs/00_data/silver/rule_falcon_medgemma.yaml
+    group: DATA
+    description: Rules plus Falcon plus MedGemma with agreement adjudication
     question: Does two-model adjudication produce more trustworthy accepted labels?
     representation: none
     task: silver
@@ -209,12 +372,12 @@ experiments:
       - what: Report table with report_id and report_text
         experiment: data.dataset.full_inspect
         path_key: silver.reports
-      - what: Local Falcon and MedGemma weights (both loaded per GPU rank)
+      - what: Local Falcon and MedGemma (both loaded per GPU rank) weights
         blocker: silver_model_weights
-    produces: [accepted silver labels used by the multitask arms, audit trail, QC summary]
+    produces: [accepted silver labels used by the multitask arms, audit trail, QC review queue]
     status: blocked
     blockers:
-      - Local Falcon and MedGemma model directories are not staged.
+      - Local Falcon and MedGemma (both loaded per GPU rank) model directory is not staged and its exact model id/revision is unrecorded.
 
   # ----------------------------------------------------------- FOUNDATION
   repr.foundation.ct_fm:
@@ -478,6 +641,29 @@ experiments:
     blockers:
       - Depends on a representation checkpoint, which depends on the backbone contract.
 
+  probe.diag.multitask:
+    config: configs/runs/02_representation/probe/diagnosis_multitask.yaml
+    group: PROBE
+    description: Fixed frozen-encoder probe over the three native diagnosis labels
+    question: Which representation checkpoint carries the most information about all three reviewed labels?
+    representation: any (override lineage.source_checkpoint)
+    task: diagnosis probe
+    modalities: [image]
+    anatomy: false
+    supervision: native pe_positive / pe_acute / pe_subsegmental labels
+    fusion: none (one fixed linear head per label)
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: The representation checkpoint under test (default C0)
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+    produces: [comparable multitask probe metrics per representation checkpoint]
+    status: blocked
+    blockers:
+      - Depends on a representation checkpoint, which depends on the backbone contract.
+
   probe.prog:
     config: configs/runs/02_representation/probe/prognosis.yaml
     group: PROBE
@@ -548,11 +734,58 @@ experiments:
         incomplete (the .kaggle-partial marker reports a larger expected byte count), and
         no extracted patient-level-split normalized manifest exists yet.
 
-  repr.silver.hybrid:
-    config: configs/runs/02_representation/silver_adaptation/hybrid.yaml
+  diag.external.rspect_test:
+    config: configs/runs/03_diagnosis/external/rspect_test.yaml
+    group: DIAGNOSIS
+    description: Test-only RSPECT evaluation for an explicitly selected INSPECT checkpoint
+    question: Does a selected checkpoint generalize to the external RSPECT test split?
+    representation: supplied checkpoint
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: external native label used only for evaluation
+    fusion: concat_mlp
+    requires:
+      - what: Normalized RSPECT patient-level test manifest
+        path_key: data.manifest
+        blocker: rspect_manifest
+      - what: Explicit --checkpoint argument from the model-selection protocol
+    produces: [INSPECT-validation-locked threshold, test predictions and bootstrap metrics]
+    status: blocked
+    blockers:
+      - Normalized RSPECT data are absent; train_task.py explicitly refuses this config.
+
+  diag.external.turkey_test:
+    config: configs/runs/03_diagnosis/external/turkey_test.yaml
+    group: DIAGNOSIS
+    description: Primary test-only Turkey evaluation of the anatomy-aware diagnosis model
+    question: Does the final INSPECT-selected architecture generalize to the Turkey cohort?
+    representation: frozen DX_anatomy_concat checkpoint
+    task: diagnosis
+    modalities: [image]
+    anatomy: true
+    supervision: Turkey native PE label used only for evaluation
+    fusion: concat_mlp
+    requires:
+      - what: Turkey patient-level test manifest and volumes
+        path_key: data.manifest
+        blocker: turkey_manifest
+      - what: Turkey ROI artifacts produced under the frozen INSPECT mask protocol
+        experiment: data.roi.turkey
+        path_key: data.roi_manifest
+      - what: Trained and internally evaluated anatomy-aware diagnosis checkpoint
+        experiment: diag.anatomy.concat
+        path_key: lineage.source_checkpoint
+    produces: [locked-threshold Turkey predictions and patient-bootstrap metrics]
+    status: blocked
+    blockers:
+      - Turkey data, exact count and normalized native-label schema have not been delivered.
+
+  repr.silver.rule_falcon_medgemma:
+    config: configs/runs/02_representation/silver_adaptation/rule_falcon_medgemma.yaml
     group: REPRESENTATION
     legacy_id: SE01
-    description: Adapt the canonical RSPECT multitask encoder with accepted SL02 labels
+    description: Adapt the canonical RSPECT multitask encoder with accepted rule_falcon_medgemma labels
     question: Does accepted report-derived supervision improve the RSPECT representation?
     representation: C_silver
     task: silver encoder adaptation
@@ -564,8 +797,8 @@ experiments:
       - what: Canonical RSPECT multitask checkpoint
         experiment: repr.rspect.multitask
         path_key: init.checkpoint
-      - what: Accepted SL02 silver labels
-        experiment: data.silver.hybrid
+      - what: Accepted rule_falcon_medgemma silver labels
+        experiment: data.silver.rule_falcon_medgemma
       - what: CTPA manifest
         experiment: data.dataset.full_inspect
         path_key: data.manifest
@@ -576,9 +809,9 @@ experiments:
   repr.silver.medgemma:
     config: configs/runs/02_representation/silver_adaptation/medgemma.yaml
     group: REPRESENTATION
-    description: Adapt the canonical RSPECT multitask encoder with accepted SL00 labels
+    description: Adapt the canonical RSPECT multitask encoder with accepted medgemma labels
     question: Does the silver source change what the adapted representation learns?
-    representation: C_silver (SL00)
+    representation: C_silver (medgemma)
     task: silver encoder adaptation
     modalities: [image]
     anatomy: false
@@ -588,21 +821,21 @@ experiments:
       - what: Canonical RSPECT multitask checkpoint
         experiment: repr.rspect.multitask
         path_key: init.checkpoint
-      - what: Accepted SL00 silver labels
+      - what: Accepted medgemma silver labels
         experiment: data.silver.medgemma
       - what: CTPA manifest
         experiment: data.dataset.full_inspect
         path_key: data.manifest
-    produces: [C_silver (SL00) checkpoint]
+    produces: [C_silver (medgemma) checkpoint]
     status: blocked
-    blockers: ["Depends on RSPECT multitask and on accepted SL00 silver labels."]
+    blockers: ["Depends on RSPECT multitask and on accepted medgemma silver labels."]
 
-  repr.silver.rules_falcon:
-    config: configs/runs/02_representation/silver_adaptation/rules_falcon.yaml
+  repr.silver.rule_falcon:
+    config: configs/runs/02_representation/silver_adaptation/rule_falcon.yaml
     group: REPRESENTATION
-    description: Adapt the canonical RSPECT multitask encoder with accepted SL01 labels
+    description: Adapt the canonical RSPECT multitask encoder with accepted rule_falcon labels
     question: Does the rule-first silver source produce a better adapted representation?
-    representation: C_silver (SL01)
+    representation: C_silver (rule_falcon)
     task: silver encoder adaptation
     modalities: [image]
     anatomy: false
@@ -612,14 +845,14 @@ experiments:
       - what: Canonical RSPECT multitask checkpoint
         experiment: repr.rspect.multitask
         path_key: init.checkpoint
-      - what: Accepted SL01 silver labels
-        experiment: data.silver.rules_falcon
+      - what: Accepted rule_falcon silver labels
+        experiment: data.silver.rule_falcon
       - what: CTPA manifest
         experiment: data.dataset.full_inspect
         path_key: data.manifest
-    produces: [C_silver (SL01) checkpoint]
+    produces: [C_silver (rule_falcon) checkpoint]
     status: blocked
-    blockers: ["Depends on RSPECT multitask and on accepted SL01 silver labels."]
+    blockers: ["Depends on RSPECT multitask and on accepted rule_falcon silver labels."]
 
   # ----------------------------------------------------------- DIAGNOSIS
   diag.report_only:
@@ -643,6 +876,26 @@ experiments:
     status: blocked
     blockers:
       - alignment.report_embedding_columns is empty; the real manifest columns must be named.
+
+  diag.baseline.penet_style:
+    config: configs/runs/03_diagnosis/baseline/penet_style.yaml
+    group: DIAGNOSIS
+    description: Randomly initialized end-to-end PENet-style 3D CNN baseline
+    question: Does FM initialization and staged adaptation beat a comparable non-FM 3D model?
+    representation: random end-to-end 3D CNN
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: native PE label
+    fusion: concat_mlp
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+    produces: [non-foundation diagnosis baseline metrics]
+    status: blocked
+    blockers:
+      - Requires the built INSPECT diagnosis manifest; no public backbone weights are needed.
 
   diag.global.single:
     config: configs/runs/03_diagnosis/baseline/global_single.yaml
@@ -708,8 +961,8 @@ experiments:
       - what: C0 checkpoint
         experiment: repr.align
         path_key: lineage.source_checkpoint
-      - what: Accepted SL02 silver labels
-        experiment: data.silver.hybrid
+      - what: Accepted rule_falcon_medgemma silver labels
+        experiment: data.silver.rule_falcon_medgemma
         path_key: supervision.silver_labels
     produces: [silver-multitask diagnosis metrics]
     status: blocked
@@ -770,8 +1023,8 @@ experiments:
       - what: ROI manifest supplying the heart/PA/lung branch masks
         experiment: data.roi
         path_key: data.roi_manifest
-      - what: Accepted SL02 silver labels
-        experiment: data.silver.hybrid
+      - what: Accepted rule_falcon_medgemma silver labels
+        experiment: data.silver.rule_falcon_medgemma
         path_key: supervision.silver_labels
     produces: [anatomy silver-multitask metrics, concat cell of the fusion comparison]
     status: blocked
@@ -801,8 +1054,8 @@ experiments:
       - what: ROI manifest supplying the heart/PA/lung branch masks
         experiment: data.roi
         path_key: data.roi_manifest
-      - what: Accepted SL02 silver labels
-        experiment: data.silver.hybrid
+      - what: Accepted rule_falcon_medgemma silver labels
+        experiment: data.silver.rule_falcon_medgemma
         path_key: supervision.silver_labels
     produces: [late-logit cell of the fusion comparison]
     status: blocked
@@ -833,8 +1086,8 @@ experiments:
       - what: ROI manifest supplying the heart/PA/lung branch masks
         experiment: data.roi
         path_key: data.roi_manifest
-      - what: Accepted SL02 silver labels
-        experiment: data.silver.hybrid
+      - what: Accepted rule_falcon_medgemma silver labels
+        experiment: data.silver.rule_falcon_medgemma
         path_key: supervision.silver_labels
     produces: [Soft-MoE cell of the fusion comparison]
     status: blocked
@@ -1186,6 +1439,139 @@ experiments:
     produces: [Soft-MoE cell of the anatomy fusion comparison]
     status: blocked
     blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
+
+  prog.anatomy.multitask_moe:
+    config: configs/runs/04_prognosis/anatomy/multitask_soft_moe.yaml
+    group: PROGNOSIS
+    description: Proposal Figure 3.2 with seven masked native outcome heads and Soft-MoE
+    question: Do auxiliary outcome horizons improve primary 30-day mortality prediction?
+    representation: C0
+    task: multitask prognosis
+    modalities: [image, ehr, pesi]
+    anatomy: true
+    supervision: seven native INSPECT outcome labels
+    fusion: soft_moe
+    requires:
+      - what: Confirmed acute-PE prognosis manifest with all seven native outcomes
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: Anatomy ROI masks
+        experiment: data.roi
+        path_key: data.roi_manifest
+      - what: Reviewed EHR columns and PESI mapping
+        blocker: ehr_columns_and_pesi_mapping
+    produces: [primary 30-day prediction plus masked auxiliary outcome heads]
+    status: blocked
+    blockers: [Requires C0, ROI artifacts, reviewed EHR columns and approved PESI mapping.]
+
+  # ROI-only prognosis students (SUFFICIENCY). The prognosis counterpart of
+  # anatomy.*_student, and the three arms the email names under "Summary of prognosis
+  # experiments": strict-heart, artery-only and lung-only. Each is prog.image with the
+  # volume outside one ROI erased, so the reference row is prog.image and the difference
+  # between them is the input, not the architecture. prog.random_student is the control
+  # every organ row must clear before it means anything.
+  prog.heart_student:
+    config: configs/runs/04_prognosis/students/heart.yaml
+    group: PROGNOSIS
+    description: Heart-only ROI student trained from C0 for 30-day mortality
+    question: Is the heart region alone sufficient to predict 30-day mortality?
+    representation: C0
+    task: prognosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI2 heart masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [heart-only mortality sufficiency metrics]
+    status: blocked
+    blockers: ["Depends on C0, the prognosis manifest and ROI artifacts."]
+
+  prog.pa_student:
+    config: configs/runs/04_prognosis/students/pa.yaml
+    group: PROGNOSIS
+    description: PA-only ROI student trained from C0 for 30-day mortality
+    question: Is the pulmonary-artery region alone sufficient to predict 30-day mortality?
+    representation: C0
+    task: prognosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI4 PA masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [clot-region mortality sufficiency metrics]
+    status: blocked
+    blockers: ["Depends on C0, the prognosis manifest and ROI artifacts."]
+
+  prog.lung_student:
+    config: configs/runs/04_prognosis/students/lung.yaml
+    group: PROGNOSIS
+    description: Lung-parenchyma-only ROI student trained from C0 for 30-day mortality
+    question: Is the lung parenchyma alone sufficient to predict 30-day mortality?
+    representation: C0
+    task: prognosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI6 lung parenchyma masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [parenchyma-only mortality sufficiency metrics]
+    status: blocked
+    blockers: ["Depends on C0, the prognosis manifest and ROI artifacts."]
+
+  prog.random_student:
+    config: configs/runs/04_prognosis/students/random.yaml
+    group: PROGNOSIS
+    description: Volume-matched random-region prognosis student (sufficiency control)
+    question: How much of an organ student's mortality score is cohort shortcut rather than anatomy?
+    representation: C0
+    task: prognosis (ROI student)
+    modalities: [image]
+    anatomy: true
+    supervision: native mortality label
+    fusion: concat_mlp
+    requires:
+      - what: Prognosis manifest for the confirmed-acute-PE cohort
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI8 matched random control masks
+        experiment: data.roi
+        path_key: supervision.rois
+    produces: [the control the three organ prognosis students must beat]
+    status: blocked
+    blockers: ["Depends on C0, the prognosis manifest and ROI artifacts."]
 
   # --------------------------------------------------- ANATOMY ANALYSIS
   anatomy.remove_heart:
@@ -1543,8 +1929,273 @@ experiments:
       - Requires the selected encoder checkpoint and a built dataset profile.
 
   # ------------------------------------------------------------ DEFERRED
+
+  # -------------------------------------------------------- EHR ABLATION
+  # Ablation biến lâm sàng của proposal: cùng cohort/endpoint/split, chỉ đổi tập
+  # biến EHR và có/không missingness indicator.
+
+  ablation.ehr.all_with_missingness:
+    config: configs/runs/04_prognosis/ehr_ablation/all_with_missingness.yaml
+    group: PROGNOSIS
+    description: "EHR ablation: all variables, with missingness indicators"
+    question: "Baseline clinical record: every configured variable plus its missingness indicator."
+    representation: none (tabular only)
+    task: prognosis
+    modalities: [ehr]
+    anatomy: false
+    supervision: native outcome label
+    fusion: none
+    requires:
+      - what: Prognosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: EHR feature table
+        experiment: data.dataset.full_inspect
+        path_key: supervision.ehr
+      - what: Concrete EHR column list
+        blocker: ehr_columns
+    produces: [EHR ablation metrics for one variable configuration]
+    status: blocked
+    blockers:
+      - data.ehr_columns / data.ehr_columns_common are still empty placeholders.
+
+  ablation.ehr.all_no_missingness:
+    config: configs/runs/04_prognosis/ehr_ablation/all_no_missingness.yaml
+    group: PROGNOSIS
+    description: "EHR ablation: all variables, missingness indicators removed"
+    question: Do the missingness indicators carry information beyond the raw values?
+    representation: none (tabular only)
+    task: prognosis
+    modalities: [ehr]
+    anatomy: false
+    supervision: native outcome label
+    fusion: none
+    requires:
+      - what: Prognosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: EHR feature table
+        experiment: data.dataset.full_inspect
+        path_key: supervision.ehr
+      - what: Concrete EHR column list
+        blocker: ehr_columns
+    produces: [EHR ablation metrics for one variable configuration]
+    status: blocked
+    blockers:
+      - data.ehr_columns / data.ehr_columns_common are still empty placeholders.
+
+  ablation.ehr.common_with_missingness:
+    config: configs/runs/04_prognosis/ehr_ablation/common_with_missingness.yaml
+    group: PROGNOSIS
+    description: "EHR ablation: common-variable subset, with missingness"
+    question: Does the high-availability variable subset match the full record?
+    representation: none (tabular only)
+    task: prognosis
+    modalities: [ehr]
+    anatomy: false
+    supervision: native outcome label
+    fusion: none
+    requires:
+      - what: Prognosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: EHR feature table
+        experiment: data.dataset.full_inspect
+        path_key: supervision.ehr
+      - what: Concrete EHR column list
+        blocker: ehr_columns
+    produces: [EHR ablation metrics for one variable configuration]
+    status: blocked
+    blockers:
+      - data.ehr_columns / data.ehr_columns_common are still empty placeholders.
+
+  ablation.ehr.common_no_missingness:
+    config: configs/runs/04_prognosis/ehr_ablation/common_no_missingness.yaml
+    group: PROGNOSIS
+    description: "EHR ablation: common-variable subset, no missingness"
+    question: "Smallest clinical configuration: common variables, raw values only."
+    representation: none (tabular only)
+    task: prognosis
+    modalities: [ehr]
+    anatomy: false
+    supervision: native outcome label
+    fusion: none
+    requires:
+      - what: Prognosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: EHR feature table
+        experiment: data.dataset.full_inspect
+        path_key: supervision.ehr
+      - what: Concrete EHR column list
+        blocker: ehr_columns
+    produces: [EHR ablation metrics for one variable configuration]
+    status: blocked
+    blockers:
+      - data.ehr_columns / data.ehr_columns_common are still empty placeholders.
+
+  # ------------------------------------------------ ARCHITECTURE ABLATION
+  # Ablation 1 của proposal: mọi arm retrain từ C0, chỉ đổi kiến trúc.
+  # task.regions bật/tắt expert; fusion component bật/tắt router.
+
+  ablation.arch.global_only:
+    config: configs/runs/05_anatomy_analysis/architecture/global_only.yaml
+    group: ANATOMY ANALYSIS
+    description: "Architecture ablation: global branch only, no organ expert"
+    question: Do the organ experts add anything over a global-only model?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: consumes
+    supervision: native PE label
+    fusion: see config
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 image-report checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI manifest for the organ branches
+        experiment: data.roi
+        path_key: data.roi_manifest
+    produces: [architecture ablation metrics for one variant]
+    status: blocked
+    blockers:
+      - Depends on C0, which depends on the backbone contract.
+
+  ablation.arch.global_heart:
+    config: configs/runs/05_anatomy_analysis/architecture/global_heart.yaml
+    group: ANATOMY ANALYSIS
+    description: "Architecture ablation: global + heart expert"
+    question: How much does the heart expert alone contribute?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: consumes
+    supervision: native PE label
+    fusion: see config
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 image-report checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI manifest for the organ branches
+        experiment: data.roi
+        path_key: data.roi_manifest
+    produces: [architecture ablation metrics for one variant]
+    status: blocked
+    blockers:
+      - Depends on C0, which depends on the backbone contract.
+
+  ablation.arch.global_pa:
+    config: configs/runs/05_anatomy_analysis/architecture/global_pa.yaml
+    group: ANATOMY ANALYSIS
+    description: "Architecture ablation: global + PA-tree expert"
+    question: How much does the pulmonary-artery expert alone contribute?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: consumes
+    supervision: native PE label
+    fusion: see config
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 image-report checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI manifest for the organ branches
+        experiment: data.roi
+        path_key: data.roi_manifest
+    produces: [architecture ablation metrics for one variant]
+    status: blocked
+    blockers:
+      - Depends on C0, which depends on the backbone contract.
+
+  ablation.arch.global_lung:
+    config: configs/runs/05_anatomy_analysis/architecture/global_lung.yaml
+    group: ANATOMY ANALYSIS
+    description: "Architecture ablation: global + lung expert"
+    question: How much does the lung expert alone contribute?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: consumes
+    supervision: native PE label
+    fusion: see config
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 image-report checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI manifest for the organ branches
+        experiment: data.roi
+        path_key: data.roi_manifest
+    produces: [architecture ablation metrics for one variant]
+    status: blocked
+    blockers:
+      - Depends on C0, which depends on the backbone contract.
+
+  ablation.arch.full_moe:
+    config: configs/runs/05_anatomy_analysis/architecture/full_moe.yaml
+    group: ANATOMY ANALYSIS
+    description: "Architecture ablation: all four experts with Soft-MoE router"
+    question: Does the full expert set with a router beat every partial configuration?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: consumes
+    supervision: native PE label
+    fusion: see config
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 image-report checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI manifest for the organ branches
+        experiment: data.roi
+        path_key: data.roi_manifest
+    produces: [architecture ablation metrics for one variant]
+    status: blocked
+    blockers:
+      - Depends on C0, which depends on the backbone contract.
+
+  ablation.arch.full_no_router:
+    config: configs/runs/05_anatomy_analysis/architecture/full_no_router.yaml
+    group: ANATOMY ANALYSIS
+    description: "Architecture ablation: all four experts, router removed"
+    question: Is the router itself doing work, or is plain concatenation enough?
+    representation: C0
+    task: diagnosis
+    modalities: [image]
+    anatomy: consumes
+    supervision: native PE label
+    fusion: see config
+    requires:
+      - what: Diagnosis manifest with patient-level split
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: C0 image-report checkpoint
+        experiment: repr.align
+        path_key: lineage.source_checkpoint
+      - what: ROI manifest for the organ branches
+        experiment: data.roi
+        path_key: data.roi_manifest
+    produces: [architecture ablation metrics for one variant]
+    status: blocked
+    blockers:
+      - Depends on C0, which depends on the backbone contract.
+
   deferred.contour:
-    config: configs/runs/90_deferred/contour/train.yaml
+    config: configs/runs/06_deferred/contour/train.yaml
     group: DEFERRED
     legacy_id: CT01
     description: Clot contour / segmentation refinement
@@ -1566,7 +2217,7 @@ experiments:
       - Deferred from the active pipeline; needs a reviewed embolus-mask manifest.
 
   deferred.concept_bottleneck:
-    config: configs/runs/90_deferred/concept_bottleneck/prognosis.yaml
+    config: configs/runs/06_deferred/concept_bottleneck/prognosis.yaml
     group: DEFERRED
     legacy_id: PR17_concept_bottleneck
     description: Interpretable concept-bottleneck prognosis, disabled by default

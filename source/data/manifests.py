@@ -344,13 +344,6 @@ def patient_ids_for_splits(
     }
 
 
-def require_valid_manifest(*args: Any, **kwargs: Any) -> ManifestAudit:
-    audit = audit_manifest(*args, **kwargs)
-    if not audit.ok:
-        raise ManifestError("; ".join(audit.errors))
-    return audit
-
-
 def create_patient_split(
     rows: Iterable[Mapping[str, Any]],
     seed: int,

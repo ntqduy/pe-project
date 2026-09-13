@@ -2,7 +2,7 @@
 #
 # Question: does accepted report-derived (silver) auxiliary supervision improve the primary
 # PE +/- head when no anatomy pooling is used?
-# Native supervision stays PE +/- only; the auxiliary heads are trained from accepted SL02
+# Native supervision stays PE +/- only; the auxiliary heads are trained from accepted rule_falcon_medgemma
 # rows at task.silver_loss_weight. Silver rows are never used as evaluation labels, and
 # abstained / no_result rows are ignored.
 # Pairs with diag.global.native_multitask (same heads, different supervision source) and
@@ -11,11 +11,11 @@
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
-  - ../../../components/task/diagnosis.yaml
-  - ../../../components/training/diagnosis.yaml
-  - ../../../components/fusion/concat_mlp.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/fusions.yaml#concat_mlp
 experiment:
   id: DX_global_silver_multitask
   name: diag.global.silver_multitask
@@ -30,15 +30,15 @@ data:
   # No anatomy branches: this arm reads no masks.
   mask_columns: {}
 task:
-  # Heads and silver_targets come from components/task/diagnosis.yaml.
+  # Heads and silver_targets come from components/tasks.yaml#diagnosis.
   regions: []
   silver_loss_weight: 0.2
 lineage:
   transfer_modules: [image_encoder]
-  silver_method: SL02
+  silver_method: rule_falcon_medgemma
   supervision_type: native_pe_and_accepted_silver_multitask
 supervision:
   require_masks: false
   masks: null
   require_silver_labels: true
-  silver_labels: silver_label/SL_hybrid_adjudicated/labels.parquet
+  silver_labels: silver_label/rule_falcon_medgemma/silver_labels.csv

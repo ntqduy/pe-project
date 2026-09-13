@@ -1,0 +1,38 @@
+# Shared anatomy adapter and mask-source contracts.
+# Select a fragment with: path/to/anatomy.yaml#<preset>
+_presets_:
+  organ_adapter:
+    # Per-branch adapters between pooled encoder features and the shared fusion width.
+    # One independent adapter per branch (global/heart/pa/lung); hidden width follows
+    # task.hidden_dim so a single task setting stays authoritative.
+    # These values are the source defaults made explicit; they do not change behaviour.
+    organ_adapter:
+      enabled: true
+      type: bottleneck_mlp
+      include_global: true
+      dropout: 0.1
+
+  anatomy_masks:
+    # Where the heart / PA / lung branch masks come from.
+    #
+    # No stage-0 manifest has a *_mask_path column and none is invented: anatomy masks are a
+    # stage-1 artifact. They are read straight from the stored ROI run manifest, through the
+    # same `roi_manifest` + `roi_mask_ids` mechanism (and the same PASS/SUSPICIOUS QC filter)
+    # that the ROI-only students and the counterfactual arms use. A branch, the region erased
+    # from it and the student trained on it therefore refer to exactly the same voxels.
+    #
+    #   ROI2  strict heart        ROI4  PA tree        ROI6  lung parenchyma minus vessels
+    #
+    # Paths are relative to the persistent output root, so nothing here is machine-specific.
+    # Requires data.segmentation and then data.roi to have been run for the dataset profile.
+    data:
+      roi_manifest: roi/ROI_anatomy_and_controls/roi_manifest.csv
+      roi_mask_ids:
+        heart: ROI2
+        pa: ROI4
+        lung: ROI6
+    supervision:
+      require_masks: true
+      masks: segmentation/SEG_pseudo_anatomy
+      require_rois: true
+      rois: roi/ROI_anatomy_and_controls

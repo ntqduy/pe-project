@@ -133,6 +133,7 @@ def main() -> int:
             run_dir,
             lineage,
             precision=str(config["compute"].get("precision", "fp32")),
+            early_stopping_patience=training.get("early_stopping_patience"),
         )
         training_result = trainer.fit(train_loader, validation_loader, int(training.get("epochs", 1)))
         if context.is_main:

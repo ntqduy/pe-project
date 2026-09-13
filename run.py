@@ -293,7 +293,7 @@ def command_plan(registry: dict[str, Any], args: argparse.Namespace) -> int:
     print("  READY   the artifact exists now")
     print("  MISSING the artifact does not exist yet; run the experiment that produces it")
     print("  BLOCKED an unresolved data/checkpoint contract must be filled first"
-          " (see docs/BLOCKERS.md)")
+          " (run 'show' for the exact contract)")
     if summary != "READY":
         print("\nNothing was run. Prerequisites are never executed implicitly.")
     return 0

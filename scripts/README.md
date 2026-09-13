@@ -9,20 +9,26 @@ scripts/
 ├── _lib.sh                shared env -> run.py plumbing
 ├── _matrix_runner.sh      shared diagnosis/prognosis/RSPECT matrix mapping
 ├── run_all.sh             enumerate / execute the whole experiment matrix
+├── run_cv.sh              one config through patient-stratified K-fold instead of hold-out
+├── run_ablation_arch.sh   the six architecture ablation variants, in sequence
+├── run_ablation_ehr.sh    the four EHR ablation variants, in sequence
+├── run_prognosis_organ.sh the four organ-only prognosis students, in sequence
+├── ana.sh                 EDA over a built dataset profile (see analysis/README.md)
 ├── 0_data_preprocessing/  build a dataset profile from the read-only INSPECT release
-├── 1_segmentation/        TotalSegmentator pseudo-anatomy masks, LungMask QC, ROI crops
-├── 2_silver_label/        SL00 / SL01 / SL02 report-derived labels
+├── 1_segmentation/        TotalSegmentator pseudo-anatomy masks, LungMask QC, ROI masks
+├── 2_silver_label/        report-derived labels; one script per cascade (rule ... rule_falcon_medgemma)
 ├── 3_shared_encoder/      run these five sub-stages in the numbered order
 │   ├── 0_pretrained_eval/ the public backbones, evaluated before any adaptation
 │   ├── 1_dapt/            none / MAE / DINO / SimCLR / anatomy-DAPT
 │   ├── 2_alignment/       image-report alignment -> C0
 │   ├── 3_rspect/          external supervised transfer: multitask or PE-only
 │   └── 4_silver_encoder/  silver adaptation after the selected RSPECT encoder
-├── 4_diagnosis/
+├── 4_diagnosis/           probe.sh / probe_multitask.sh = frozen-encoder instruments
 │   ├── multi-task/        exact three-label protocol launcher (global.sh)
 │   └── single-task/       pe_positive / pe_acute / pe_subsegmental,
 │                          each with global.sh and probe.sh
-├── 5_prognosis/           cohort × EHR-profile × task × strategy symlink matrix
+├── 5_prognosis/           cohort × EHR-profile × task × strategy symlink matrix,
+│                        plus flat wrappers incl. heart/pa/lung/random_student.sh
 └── 6_counterfactual/      frozen-model region removal
 ```
 
@@ -40,7 +46,7 @@ WEIGHT_PATH=/path/to/checkpoint     # required only when WEIGHT_SOURCE=custom
 ```
 
 The canonical path for every named stage lives once in
-`configs/components/encoder/sources.yaml`; `WEIGHT_PATH` overrides it while preserving
+`configs/components/encoders.yaml#sources`; `WEIGHT_PATH` overrides it while preserving
 the source name in lineage. `alignment` and `silver_encoder` map internally to the
 legacy `c0` and `silver` source keys, so archived commands remain valid.
 
@@ -78,14 +84,14 @@ Matrix outputs are nested and collision checked:
 outputs/shared_encoder/rspect/<multitask|single_pe>/weight_<source>/
 outputs/shared_encoder/silver_encoder/<silver-label-source>/weight_<source>/
 outputs/diagnosis/<multi_task|single_task>/<label>/weight_<source>/<strategy>/
-outputs/prognosis/<all_patient|PE_positive>/<EHR_0_h|EHR_24_h>/<task>/weight_<source>/<strategy>/
+outputs/prognosis/<all_comers|pe_positive_only>/<EHR_0_h|EHR_24_h>/<task>/weight_<source>/<strategy>/
 ```
 
 Those are the paths of the **protocol run**, `DATASET=full_inspect`. A rehearsal on
 another profile is a different experiment and gets `weight_<source>__ds_<profile>/`
 instead -- the same rule `stamp_experiment_variant()` applies to the non-matrix stages,
 where only a deviation from the default profile is stamped. That is what keeps the
-canonical checkpoints named in `components/encoder/sources.yaml` resolvable: the
+canonical checkpoints named in `components/encoders.yaml#sources` resolvable: the
 `silver_encoder` a downstream run loads is the full-cohort one, not whichever rehearsal
 was last executed.
 
@@ -98,7 +104,10 @@ without `RESUME=1`/`OVERWRITE=1` is rejected rather than silently overwriting it
 
 `STRATEGY` is validated against the experiments that actually implement it -- diagnosis
 accepts `global` (both modes) and `probe` (single-task only), prognosis accepts the
-thirteen strategies above. An unmapped name is rejected rather than accepted, because
+thirteen strategies above plus the four ROI-only students (`heart_student`, `pa_student`,
+`lung_student`, `random_student`). The students are deliberately absent from
+`run_all.sh`'s default `STRATEGIES` list: they answer a sufficiency question on one
+endpoint, not a protocol axis to sweep. An unmapped name is rejected rather than accepted, because
 `STRATEGY` names the output directory: silently allowing `STRATEGY=anatomy_soft_moe`
 would label a directory as Soft-MoE while training the plain global model. Adding a
 strategy means adding a registry experiment, not a string in the launcher.
@@ -117,7 +126,7 @@ EXECUTE=1 GPUS=0 bash scripts/run_all.sh                 # train the matrix
 # any axis can be narrowed
 STAGES=diagnosis WEIGHT_SOURCES="dapt alignment" \
   EXECUTE=1 ACTION=dry bash scripts/run_all.sh
-STAGES=prognosis COHORTS=PE_positive EHR_PROFILES=EHR_24_h \
+STAGES=prognosis COHORTS=pe_positive_only EHR_PROFILES=EHR_24_h \
   TASKS=12_month_PH STRATEGIES=image_clinical_pesi bash scripts/run_all.sh
 ```
 

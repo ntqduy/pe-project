@@ -12,17 +12,29 @@ def adjudicate(
     medgemma: dict[str, Any],
     falcon_model_id: str | None = None,
     medgemma_model_id: str | None = None,
+    minimum_confidence: float = 0.0,
 ) -> SilverLabel:
     first = falcon.get("value")
     second = medgemma.get("value")
-    if first is not None and first == second:
+    confidences = [
+        float(payload["confidence"])
+        for payload in (falcon, medgemma)
+        if isinstance(payload.get("confidence"), (int, float))
+    ]
+    agreement_confidence = min(confidences) if len(confidences) == 2 else None
+    if (
+        first is not None
+        and first == second
+        and agreement_confidence is not None
+        and agreement_confidence >= float(minimum_confidence)
+    ):
         return SilverLabel(
             **identifiers,
             target=target,
             value=first,
             status="accepted",
             source="falcon_medgemma_agree",
-            confidence=float(falcon["confidence"]) if isinstance(falcon.get("confidence"), (int, float)) else None,
+            confidence=agreement_confidence,
             reason="falcon_medgemma_agree",
             falcon_value=first,
             medgemma_value=second,
@@ -35,7 +47,11 @@ def adjudicate(
         value=None,
         status="abstained",
         source="falcon_medgemma_agree",
-        reason="falcon_medgemma_disagree_no_expert_review",
+        reason=(
+            "falcon_medgemma_disagree_no_expert_review"
+            if first != second
+            else "falcon_medgemma_agreement_below_confidence_threshold"
+        ),
         falcon_value=first,
         medgemma_value=second,
         provider="falcon_medgemma_agree",

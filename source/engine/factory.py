@@ -33,7 +33,16 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
         if stage not in {"diagnosis", "prognosis"}:
             raise ValueError("representation probes support diagnosis and prognosis")
         encoder = build_image_encoder(model_config)
-        return RepresentationProbe(encoder, stage), {"method": "frozen", "modified_modules": []}
+        # task.targets selects single-task or multitask probing, normalized exactly as the
+        # full diagnosis model normalizes it. A probe that names no target stays single-task
+        # PE rather than inheriting the full diagnosis target set.
+        probe_targets = task.get("targets") if stage == "diagnosis" else None
+        if isinstance(probe_targets, list):
+            probe_targets = {name: 1 for name in probe_targets}
+        return (
+            RepresentationProbe(encoder, stage, probe_targets),
+            {"method": "frozen", "modified_modules": []},
+        )
     if stage == "diagnosis":
         targets = task.get("targets") or DEFAULT_TARGETS
         if isinstance(targets, list):
@@ -116,6 +125,8 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
             architecture=str(task.get("architecture", "soft_moe")),
             organ_adapter=config.get("organ_adapter"),
             fusion=config.get("fusion"),
+            targets=tuple((task.get("targets") or {task.get("primary_target", "mortality_30d"): 1}).keys()),
+            primary_target=str(task.get("primary_target", "mortality_30d")),
         )
     elif stage == "contour":
         encoder = build_image_encoder(model_config)

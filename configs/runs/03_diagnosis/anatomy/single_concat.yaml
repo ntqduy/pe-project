@@ -7,20 +7,20 @@
 #
 # This run is also the frozen model used by every anatomy.remove_* counterfactual and the
 # teacher for every anatomy.*_student_kd arm, so its experiment id must stay stable and its
-# architecture is shared through components/task/diagnosis_anatomy_reference.yaml.
+# architecture is shared through components/tasks.yaml#diagnosis_anatomy_reference.
 # Same contract as the pre-refactor DX18_ANATOMY_FULL arm (see legacy_id in the registry).
 # Output: outputs/diagnosis/DX_anatomy_concat/  (best.ckpt is the frozen model that every
 #   counterfactual scores and every distilled student imitates)
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml
-  - ../../../components/backbone/ct_fm.yaml
-  - ../../../components/encoder/from_c0.yaml
-  - ../../../components/task/diagnosis.yaml
-  - ../../../components/task/diagnosis_anatomy_reference.yaml
-  - ../../../components/training/diagnosis.yaml
-  - ../../../components/adapter/organ.yaml
-  - ../../../components/fusion/concat_mlp.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_c0
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/tasks.yaml#diagnosis_anatomy_reference
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/fusions.yaml#concat_mlp
 experiment:
   id: DX_anatomy_concat
   name: diag.anatomy.concat

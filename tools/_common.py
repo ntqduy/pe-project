@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib
+import json
 import os
 import uuid
 from collections.abc import Mapping, Sequence
@@ -222,6 +223,27 @@ def write_parquet_atomic(rows: Sequence[Mapping[str, Any]], destination: Path) -
         temporary.unlink(missing_ok=True)
 
 
+def write_jsonl_atomic(rows: Sequence[Mapping[str, Any]], destination: Path) -> None:
+    """Write JSON Lines atomically, one compact object per line.
+
+    An empty sequence still writes an empty file: a stage that produced no rows and a
+    stage that never ran must not look the same on disk.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = "".join(
+        json.dumps(dict(row), sort_keys=True, default=str) + "\n" for row in rows
+    ).encode("utf-8")
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def write_csv_atomic(rows: Sequence[Mapping[str, Any]], destination: Path) -> None:
     if not rows:
         return
@@ -229,7 +251,8 @@ def write_csv_atomic(rows: Sequence[Mapping[str, Any]], destination: Path) -> No
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            fieldnames = list(dict.fromkeys(key for row in rows for key in row))
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
             handle.flush()

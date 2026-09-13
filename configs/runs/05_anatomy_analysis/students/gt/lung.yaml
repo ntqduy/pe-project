@@ -8,14 +8,14 @@
 _base_:
   - ../../../../paths.yaml
   - ../../../../compute/default.yaml
-  - ../../../../components/backbone/ct_fm.yaml
-  - ../../../../components/encoder/from_c0.yaml
-  - ../../../../components/task/diagnosis.yaml
-  - ../../../../components/task/diagnosis_anatomy_reference.yaml
-  - ../../../../components/training/diagnosis.yaml
-  - ../../../../components/adapter/organ.yaml
-  - ../../../../components/fusion/concat_mlp.yaml
-  - ../../../../components/task/roi_student.yaml
+  - ../../../../components/backbones.yaml#ct_fm
+  - ../../../../components/encoders.yaml#from_c0
+  - ../../../../components/tasks.yaml#diagnosis
+  - ../../../../components/tasks.yaml#diagnosis_anatomy_reference
+  - ../../../../components/training.yaml#diagnosis
+  - ../../../../components/anatomy.yaml#organ_adapter
+  - ../../../../components/fusions.yaml#concat_mlp
+  - ../../../../components/tasks.yaml#roi_student
 experiment:
   id: RS_lung_only_gt
   name: anatomy.lung_student

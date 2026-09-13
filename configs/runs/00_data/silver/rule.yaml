@@ -1,0 +1,27 @@
+# data.silver.rule — rules only, no model.
+#
+# Question: how far does a deterministic regex extractor get on its own?
+# No LLM is loaded, so this is the CPU-only floor every model arm must beat.
+# An unresolved target abstains; nothing is guessed.
+# Support artifact: only rows with status=accepted may be used for training, and silver is
+# never used as a gold evaluation label.
+#
+# Output: outputs/silver_label/rule/
+#   silver_labels.csv            final normalized labels, one row per report/target
+#   silver_label_confidence.csv  confidence, thresholds, decision and evidence
+#   result.json           run summary: counts, timing, sources used, full QC aggregate
+#   logs/run.log          whole terminal stream: progress, provider errors, final summary
+#   resolved_config.yaml  the exact merged config, including real model paths
+#   .state/<report_hash>.json  internal per-report resume cache
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/cpu.yaml
+  - ../../../components/silver.yaml#rule
+experiment:
+  id: rule
+  name: data.silver.rule
+  stage: silver
+  family: silver
+data:
+  mode: full
+seed: 42

@@ -285,7 +285,6 @@ def build_dataset(
             cache_root=paths.cache_root,
             output_dir=clinical_dir,
             config=profile.get("ehr"),
-            code_root=paths.code_root,
         )
     except EhrBuildError as exc:
         raise DatasetBuildError(f"EHR readiness failed: {exc}") from exc

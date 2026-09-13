@@ -1,0 +1,34 @@
+# External RSPECT/RSNA-STR ROI derivation from the completed external segmentation run.
+_base_:
+  - ../../paths.yaml
+  - ../../compute/cpu.yaml
+experiment:
+  id: ROI_rspect_anatomy_and_controls
+  name: data.roi.rspect
+  stage: roi
+  family: roi
+data:
+  mode: full
+  root: /mnt/RSPECT_dataset
+  dataset: RSPECT
+  cohort: rspect_external
+  manifest: manifests/rsna_diagnosis.csv
+  file_column: image_path
+roi:
+  segmentation_run: segmentation/SEG_rspect_pseudo_anatomy
+  workers: 4
+  preview_cases: null
+  preview_slices_per_roi: 3
+  preview_rois: [ROI2, ROI4, ROI6, ROI8]
+  preview_window_width: 700
+  preview_window_level: 100
+  body_threshold_hu: -900
+  hilar_mask_names: []
+  control_roi:
+    seed: 42
+    max_attempts: 500
+    exclusion_margin_mm: 5
+    require_exact_voxel_match: true
+    preserve_z_range: true
+    excluded_anatomies: [heart, mediastinum, central_pa, lung_arteries, lung_veins, hilar_vessels]
+seed: 42

@@ -1,0 +1,28 @@
+# repr.silver.rule_falcon — adapt the RSPECT multitask encoder with accepted rule_falcon labels.
+#
+# Question: does the rule-first silver source produce a better adapted representation than
+# the LLM-only or adjudicated sources? Identical to the other two silver_adaptation arms
+# except for silver_training.silver_source.
+# Output: outputs/shared_encoder/silver_encoder/rule_falcon/weight_rspect_multitask/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_rspect_multitask
+  - ../../../components/tasks.yaml#silver_adaptation
+experiment:
+  id: SE_silver_rule_falcon_weight_rspect_multitask
+  name: repr.silver.rule_falcon
+  stage: silver_encoder_adaptation
+  family: shared_encoder
+  output_id: silver_encoder/rule_falcon/weight_rspect_multitask
+  variant_stamp: false
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+  label_columns: []
+silver_training:
+  silver_source: rule_falcon
+lineage:
+  supervision_type: silver_multitask

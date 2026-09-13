@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -10,7 +11,22 @@ from typing import Any, Literal, Mapping, Sequence
 TargetKind = Literal["binary", "categorical", "continuous"]
 Status = Literal["accepted", "abstained", "no_result"]
 SILVER_STATUSES: tuple[Status, ...] = ("accepted", "abstained", "no_result")
-SCHEMA_VERSION = 2
+# 4 writes the authoritative normalized table as silver_labels.csv. Mixed target values
+# remain canonical JSON scalars in the CSV value column and every row carries report_hash.
+SCHEMA_VERSION = 4
+REPORT_HASH_LENGTH = 20
+
+
+def report_hash(report_id: str) -> str:
+    """Stable short digest of a report_id.
+
+    The same token names the per-report state file, so a labels row and the state file it
+    was cached in can be matched without the rule being re-derived anywhere else.
+    """
+    text = str(report_id).strip()
+    if not text:
+        raise ValueError("report_id cannot be empty")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:REPORT_HASH_LENGTH]
 
 
 @dataclass(frozen=True)
@@ -179,17 +195,27 @@ class SilverLabel:
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"{name} must be a string or null")
 
+    @property
+    def report_hash(self) -> str:
+        """Derived, never stored on the instance, so it cannot drift from report_id."""
+        return report_hash(self.report_id)
+
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def as_storage_dict(self) -> dict[str, Any]:
-        """Arrow-compatible normalized row; mixed scalar values use JSON scalars."""
-        payload = asdict(self)
-        for field in ("value", "falcon_value", "verifier_value", "medgemma_value"):
-            value = payload[field]
-            payload[field] = json.dumps(value, separators=(",", ":")) if value is not None else None
-        payload["schema_version"] = SCHEMA_VERSION
-        return payload
+        """One normalized silver-label row.
+
+        Values stay native JSON scalars (true / "acute" / 1.4 / null). The previous Parquet
+        table had to encode them as JSON strings because one Arrow column cannot hold mixed
+        boolean, string and float targets; JSON Lines has no such constraint, and
+        ``decode_storage_value`` still reads both shapes so older tables remain loadable.
+        """
+        return {
+            "report_hash": self.report_hash,
+            **asdict(self),
+            "schema_version": SCHEMA_VERSION,
+        }
 
     @classmethod
     def from_storage_dict(cls, row: Mapping[str, Any]) -> "SilverLabel":
@@ -272,35 +298,3 @@ def validate_label_rows(
                     f"missing={len(expected_keys-seen)} extra={len(seen-expected_keys)}"
                 )
     return normalized
-
-
-def wide_training_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Convert validated normalized rows into one compact row per report/study."""
-
-    normalized = validate_label_rows(rows, require_complete=False)
-    grouped: dict[str, dict[str, Any]] = {}
-    present: dict[str, set[str]] = {}
-    for row in normalized:
-        report_id = str(row["report_id"])
-        base = grouped.setdefault(
-            report_id,
-            {
-                "schema_version": SCHEMA_VERSION,
-                "patient_id": str(row["patient_id"]),
-                "study_id": str(row["study_id"]),
-                "report_id": report_id,
-            },
-        )
-        target = str(row["target"])
-        present.setdefault(report_id, set()).add(target)
-        value = decode_storage_value(row.get("value"))
-        base[f"{target}__value"] = value
-        base[f"{target}__status"] = row.get("status")
-        base[f"{target}__confidence"] = row.get("confidence")
-        base[f"{target}__source"] = row.get("source")
-        base[f"{target}__provider"] = row.get("provider")
-    for report_id, observed in present.items():
-        missing = set(TARGETS) - observed
-        if missing:
-            raise ValueError(f"report {report_id} is missing targets: {sorted(missing)}")
-    return [grouped[key] for key in sorted(grouped)]
