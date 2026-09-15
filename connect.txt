@@ -1,0 +1,22 @@
+gcsfuse \
+  --implicit-dirs \
+  --only-dir paper1 \
+  pe-study \
+  /mnt/paper1
+
+
+gcsfuse \
+  --implicit-dirs \
+  --only-dir Stanford_INSPECT_dataset \
+  pe-study \
+  /mnt/Stanford_INSPECT_dataset
+
+
+
+gcloud storage rsync \
+  /mnt/pe-project \
+  gs://pe-study/pe-project \
+  --recursive \
+  --exclude='(^|/)\.git(/|$)|(^|/)\.venv(/|$)|(^|/)__pycache__(/|$)'
+
+lience: totalseg_set_license -l aca_61WZ8413RFWR0Y

@@ -61,6 +61,12 @@ def main() -> int:
         segmentation["repository"] = str(paths.code_asset(segmentation["repository"]))
     if segmentation.get("weights_directory"):
         segmentation["weights_directory"] = str(paths.code_asset(segmentation["weights_directory"]))
+    if paths.raw_inspect_root is not None:
+        # Segmentation consumes raw NIfTI files; dataset manifests may instead point
+        # at the preprocessed .npy cache used by downstream training stages.
+        segmentation["raw_image_root"] = str(
+            (paths.raw_inspect_root / "CT" / "full" / "CTPA").resolve()
+        )
     lungmask = dict(segmentation.get("lungmask") or {})
     if lungmask.get("checkpoint"):
         lungmask["checkpoint"] = str(paths.code_asset(lungmask["checkpoint"]))

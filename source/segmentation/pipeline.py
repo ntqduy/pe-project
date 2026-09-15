@@ -63,9 +63,24 @@ ANATOMY_TASK = {
 }
 
 
-def _source_image(row: Mapping[str, Any], data_root: Path, image_column: str) -> Path:
+def _source_image(
+    row: Mapping[str, Any],
+    data_root: Path,
+    image_column: str,
+    raw_image_root: Path | None = None,
+) -> Path:
     image = Path(str(row[image_column]))
-    return image if image.is_absolute() else (data_root / image).resolve()
+    resolved = image if image.is_absolute() else (data_root / image).resolve()
+    if resolved.suffix == ".npy" and raw_image_root is not None:
+        # Preprocessing manifests point at dense .npy caches, while the external
+        # segmentation tools require the original NIfTI geometry. Keep the cache
+        # path in the manifest and resolve the raw study only for this stage.
+        study_id = str(row.get("study_id") or "").strip()
+        if study_id:
+            raw = raw_image_root / f"{study_id}.nii.gz"
+            if raw.is_file():
+                return raw.resolve()
+    return resolved.resolve()
 
 
 def _device(gpu_id: int | None) -> str:
@@ -113,7 +128,9 @@ def _process_study(
         if progress:
             progress(f"segmentation study={study_id} patient={patient_id} status=cached")
         return cached
-    image_path = _source_image(row, data_root, image_column)
+    raw_image_root_value = segmentation_config.get("raw_image_root")
+    raw_image_root = Path(str(raw_image_root_value)).resolve() if raw_image_root_value else None
+    image_path = _source_image(row, data_root, image_column, raw_image_root)
     study_root = run_dir / "masks" / patient_id / study_id
     if progress:
         progress(

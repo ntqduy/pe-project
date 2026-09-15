@@ -35,3 +35,6 @@ tools/__pycache__/
 source/__pycache__/
 third_party/__pycache__/
 third_party/weights/*.pth
+
+RSPECT_download/
+RSPECT_unzipped/
