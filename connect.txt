@@ -11,6 +11,17 @@ gcsfuse \
   pe-study \
   /mnt/Stanford_INSPECT_dataset
 
+gcsfuse \
+  --implicit-dirs \
+  --only-dir RSPECT_dataset \
+  pe-study \
+  /mnt/RSPECT_dataset
+
+gcsfuse \
+  --implicit-dirs \
+  --only-dir pe-storage \
+  pe-study \
+  /mnt/pe-storage
 
 
 gcloud storage rsync \
