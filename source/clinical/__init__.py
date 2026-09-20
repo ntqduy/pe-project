@@ -1,21 +1,20 @@
-from .pesi import PESIResult, compute_pesi, compute_spesi
+from .spesi import SPESI_COMPONENTS, SPESI_FEATURE_COLUMNS, SpesiResult, compute_spesi
 
 __all__ = [
     "ClinicalEncoder",
     "ClinicalPreprocessor",
-    "PESIResult",
-    "compute_pesi",
+    "SPESI_COMPONENTS",
+    "SPESI_FEATURE_COLUMNS",
+    "SpesiResult",
     "compute_spesi",
 ]
 
 
 def __getattr__(name: str):
-    """Keep the pure-Python PESI calculator usable by the data-preprocessing stage.
+    """Load the heavy clinical modules only when a caller actually requests them.
 
-    Importing ``source.clinical.pesi`` first imports this package.  Eagerly importing
-    the neural encoder here would make a metadata/PESI audit require PyTorch even though
-    it neither trains nor loads a model.  Training imports retain the same public API,
-    while the heavy modules load only when a caller actually requests them.
+    A metadata-only stage-0 pass imports this package but neither trains nor loads a
+    model, so eagerly importing the neural encoder here would make it require PyTorch.
     """
     if name == "ClinicalEncoder":
         from .encoder import ClinicalEncoder

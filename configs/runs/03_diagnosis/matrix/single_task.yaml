@@ -1,5 +1,6 @@
-# Protocol diagnosis single-task base. LABEL selects one of pe_positive, pe_acute or
-# pe_subsegmental in scripts/_matrix_runner.sh; the model/training implementation is shared.
+# Protocol diagnosis single-task base. Select one of pe_positive, pe_acute or
+# pe_subsegmental with --set task.primary_target=<label>; the model/training implementation
+# is shared across all three.
 _base_:
   - ../../../paths.yaml
   - ../../../compute/default.yaml

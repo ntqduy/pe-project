@@ -42,4 +42,4 @@ task:
   matched_region: pa
 supervision:
   require_ehr: false
-  require_pesi: false
+  require_spesi: false

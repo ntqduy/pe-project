@@ -153,7 +153,7 @@ def main() -> int:
     if not dataset_root.is_dir():
         logger.log(f"eda status=failed reason=dataset_root_not_found path={dataset_root}")
         print(f"error: dataset root does not exist: {dataset_root}\n"
-              f"       build it first, e.g. bash scripts/0_data_preprocessing/build_{args.profile}.sh",
+              f"       build it first, e.g. python run.py run data.dataset.{args.profile} --allow-full",
               file=sys.stderr)
         return 3
 

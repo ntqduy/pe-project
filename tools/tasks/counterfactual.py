@@ -92,7 +92,8 @@ def _original_prediction_rows(model, loader, primary, label_index, context):
 
 
 @torch.no_grad()
-def _counterfactual_rows(model, loader, primary, label_index, context, task, seed, threshold):
+def _counterfactual_rows(model, loader, primary, label_index, context, task, seed, threshold,
+                         control_for):
     model.eval()
     specification = str(task["input_counterfactual"])
     region = specification.removeprefix("remove_")
@@ -105,14 +106,13 @@ def _counterfactual_rows(model, loader, primary, label_index, context, task, see
         original_logits = model(volume, masks)["logits"][primary].squeeze(-1)
         random_metadata: list[dict[str, Any] | None]
         if region == "random":
-            matched_region = str(task.get("matched_region", "pa"))
             if "random" in masks:
                 selected_mask = masks["random"]
                 random_metadata = [
                     {
                         "method": "precomputed_roi01_matched_random_control",
                         "roi_id": "ROI8",
-                        "control_for": str(task.get("random_control_for", "ROI4")),
+                        "control_for": control_for,
                         "source": "original_ctpa_roi_manifest",
                     }
                     for _ in range(volume.shape[0])
@@ -258,8 +258,13 @@ def main() -> int:
             patient_ids=args.patient_ids,
             maximum=args.max_cases,
         )
+        # Provenance must come from the key the loader actually filters the ROI manifest
+        # on (data.roi_control_for), not from a second copy under task. A separate copy can
+        # drift and would label the run with a control region it did not use.
+        control_for = str(dict(config.get("data", {}).get("roi_control_for") or {}).get("random") or "")
         local = _counterfactual_rows(
-            model, test_loader, primary, label_index, context, task, seed, float(threshold)
+            model, test_loader, primary, label_index, context, task, seed, float(threshold),
+            control_for,
         )
         rows = gather_prediction_rows(local, context, expected_ids=test_expected)
         if context.is_main:

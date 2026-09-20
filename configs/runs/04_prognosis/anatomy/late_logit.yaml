@@ -1,6 +1,6 @@
-# prog.anatomy.late — anatomy-aware image + EHR + PESI, late-logit fusion.
+# prog.anatomy.late — anatomy-aware image + EHR, late-logit fusion.
 #
-# Question: with six branches (global, heart, PA, lung, EHR, PESI), is averaging branch
+# Question: with five branches (global, heart, PA, lung, EHR), is averaging branch
 # decisions better than concatenating branch features?
 # Branch weights are masked and renormalized, so a missing organ mask or a missing clinical
 # record removes that branch instead of zeroing it.
@@ -23,7 +23,7 @@ experiment:
   stage: prognosis
   family: prognosis
 task:
-  modalities: [image, ehr, pesi]
+  modalities: [image, ehr, spesi]
   regions: [heart, pa, lung]
 lineage:
   transfer_modules: [image_encoder]
@@ -32,6 +32,6 @@ supervision:
   require_masks: true
   masks: segmentation/SEG_pseudo_anatomy
   require_ehr: true
+  require_spesi: true
+  spesi: clinical/spesi_features.csv
   ehr: clinical/ehr_features.csv
-  require_pesi: true
-  pesi: clinical/pesi_features.csv

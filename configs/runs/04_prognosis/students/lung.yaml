@@ -38,4 +38,4 @@ task:
   input_counterfactual: keep_only_lung
 supervision:
   require_ehr: false
-  require_pesi: false
+  require_spesi: false

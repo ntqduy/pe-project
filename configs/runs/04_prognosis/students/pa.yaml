@@ -37,4 +37,4 @@ task:
   input_counterfactual: keep_only_pa
 supervision:
   require_ehr: false
-  require_pesi: false
+  require_spesi: false

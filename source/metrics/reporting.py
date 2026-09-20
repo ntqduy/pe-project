@@ -58,7 +58,7 @@ def tripod_ai_checklist(config: Mapping[str, Any], result_evaluation: Mapping[st
             },
             "predictors": {
                 "status": "see resolved_config.yaml", "modalities": task.get("modalities"),
-                "ehr_columns": data.get("ehr_columns"), "pesi_columns": data.get("pesi_columns"),
+                "ehr_columns": data.get("ehr_columns"), "spesi_columns": data.get("spesi_columns"),
             },
             "sample_size": {"status": "see lineage.json train/validation/test_patient_ids counts"},
             "missing_data": {

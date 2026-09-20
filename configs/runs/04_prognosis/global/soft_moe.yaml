@@ -1,8 +1,8 @@
-# prog.global.moe — global image + EHR + PESI, Soft-MoE fusion.
+# prog.global.moe — global image + EHR, Soft-MoE fusion.
 #
 # Question: does a learned per-patient router over the modalities beat fixed concatenation
 # and fixed logit averaging?
-# Identical to prog.image_ehr_pesi (= prog.global.concat) except for the fusion component.
+# Identical to prog.global.concat except for the fusion component.
 # Output: outputs/prognosis/PR_global_soft_moe/
 _base_:
   - ../../../paths.yaml
@@ -19,7 +19,7 @@ experiment:
   stage: prognosis
   family: prognosis
 task:
-  modalities: [image, ehr, pesi]
+  modalities: [image, ehr, spesi]
   regions: []
 lineage:
   transfer_modules: [image_encoder]
@@ -28,6 +28,6 @@ supervision:
   require_masks: false
   masks: null
   require_ehr: true
+  require_spesi: true
+  spesi: clinical/spesi_features.csv
   ehr: clinical/ehr_features.csv
-  require_pesi: true
-  pesi: clinical/pesi_features.csv

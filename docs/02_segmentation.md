@@ -8,9 +8,9 @@ không train model segmentation. INSPECT dùng `data.segmentation`; RSPECT dùng
 
 ```bash
 # wrapper
-MAX_CASES=1 GPUS=0 bash scripts/1_segmentation/totalsegmentator.sh
-ALLOW_ALL=1 GPUS=0,1 bash scripts/1_segmentation/totalsegmentator.sh
-ALLOW_ALL=1 SET="segmentation.workers=8" bash scripts/1_segmentation/totalsegmentator.sh
+python run.py run data.segmentation --max-cases 1 --gpus 0
+python run.py run data.segmentation --allow-full --gpus 0,1
+python run.py run data.segmentation --allow-full
 
 # run.py trực tiếp
 python run.py preflight data.segmentation

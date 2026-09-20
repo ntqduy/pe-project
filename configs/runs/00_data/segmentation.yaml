@@ -37,7 +37,28 @@ segmentation:
   # deterministic slices before/after its center. Reduce to 1 or 2 for a smaller review set.
   preview_cases: null
   preview_slices_per_mask: 3
-  preview_anatomies: [lung, strict_heart, pa_tree]
+  # Generate QC overlays for every canonical mask, including the independent LungMask check.
+  # This creates up to 19 * 3 PNGs per study; use preview_cases or --max-cases for a smoke test.
+  preview_anatomies:
+    - lung
+    - heart
+    - strict_heart
+    - myocardium
+    - mediastinum
+    - central_pa
+    - lung_arteries
+    - lung_veins
+    - lung_vessels
+    - airways
+    - pa_tree
+    - hilar_vessels
+    - body
+    - body_wall
+    - rv
+    - lv
+    - ra
+    - la
+    - lung_lungmask
   preview_window_width: 700
   preview_window_level: 100
   devices: []

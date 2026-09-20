@@ -182,6 +182,7 @@ def _process_study(
                 {
                     "patient_id": patient_id,
                     "study_id": study_id,
+                    "split": row.get("split"),
                     "image_path": str(image_path),
                     "anatomy": anatomy,
                     "status": "UNAVAILABLE",
@@ -207,6 +208,7 @@ def _process_study(
             {
                 "patient_id": patient_id,
                 "study_id": study_id,
+                "split": row.get("split"),
                 "image_path": str(image_path),
                 "anatomy": anatomy,
                 "status": qc["status"],

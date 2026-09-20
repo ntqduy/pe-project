@@ -6,9 +6,9 @@ diagnosis result without the architecture being a confound. Prognosis then adds 
 branches *at the fusion stage only*:
 
     ehr    the leakage-checked pre-CTPA clinical feature vector (source/clinical/encoder.py)
-    pesi   the PESI / sPESI severity scores      (source/components/encoders/pesi.py)
+    spesi  the simplified PESI severity score        (source/components/encoders/spesi.py)
 
-Every branch -- global, heart, pa, lung, ehr, pesi -- is adapted to one common width and
+Every branch -- global, heart, pa, lung, ehr, spesi -- is adapted to one common width and
 then fused exactly once, at the end. `task.modalities` selects which branches exist, and
 `fusion.type` selects how they are combined:
 
@@ -16,7 +16,7 @@ then fused exactly once, at the end. `task.modalities` selects which branches ex
     late-logit fusion                       branches -> one head per branch -> masked,
                                             renormalized weighted logit average
 
-A branch whose input is missing for a patient (no mask, no clinical record, no PESI score)
+A branch whose input is missing for a patient (no mask, no clinical record, no sPESI score)
 is masked out and, under late-logit and Soft-MoE fusion, renormalized away rather than fed
 as zeros.
 """
@@ -31,15 +31,15 @@ from torch import Tensor, nn
 from source.components.adapters.organ import OrganAdapterBank, build_organ_adapter
 from source.components.anatomy import extract_anatomy_features
 from source.components.encoders.ehr import EHREncoder
+from source.components.encoders.spesi import SpesiEncoder
 from source.components.encoders.image.base import BaseImageEncoder
-from source.components.encoders.pesi import PESIEncoder
 from source.components.fusion.factory import LATE_LOGIT, build_fusion, is_late_logit
 from source.components.fusion.late_logit import LateLogitFusion
 from source.components.roi.feature_extractor import ROIFeatureExtractor
 
 from .heads import PrognosisHeads
 
-CLINICAL_BRANCHES = ("ehr", "pesi")
+CLINICAL_BRANCHES = ("ehr", "spesi")
 
 
 class PrognosisModel(nn.Module):
@@ -47,7 +47,7 @@ class PrognosisModel(nn.Module):
         self,
         image_encoder: BaseImageEncoder | None,
         ehr_encoder: EHREncoder | None = None,
-        pesi_encoder: PESIEncoder | None = None,
+        spesi_encoder: SpesiEncoder | None = None,
         regions: tuple[str, ...] = ("heart", "pa", "lung"),
         expert_dim: int = 128,
         hidden_dim: int = 256,
@@ -58,13 +58,13 @@ class PrognosisModel(nn.Module):
         primary_target: str = "mortality_30d",
     ):
         super().__init__()
-        if image_encoder is None and ehr_encoder is None and pesi_encoder is None:
+        if image_encoder is None and ehr_encoder is None and spesi_encoder is None:
             raise ValueError("prognosis requires at least one enabled modality")
         options = dict(fusion or {})
         adapter_options = dict(organ_adapter or {})
         self.image_encoder = image_encoder
         self.ehr_encoder = ehr_encoder
-        self.pesi_encoder = pesi_encoder
+        self.spesi_encoder = spesi_encoder
         self.regions = tuple(regions)
         self.targets = tuple(dict.fromkeys(str(name) for name in targets))
         self.primary_target = str(primary_target)
@@ -89,12 +89,12 @@ class PrognosisModel(nn.Module):
         # All fusion inputs must share one width. The clinical adapters below always emit
         # expert_dim; the image organ-adapter bank only diverges from it when
         # organ_adapter.enabled=False, in which case image_encoder.feature_dim must equal
-        # expert_dim for a multimodal (image + ehr/pesi) experiment to be shape-consistent.
+        # expert_dim for a multimodal (image + ehr/spesi) experiment to be shape-consistent.
         branch_dim = (
             self.organ_adapters.output_dim if self.organ_adapters is not None else expert_dim
         )
         self.clinical_adapters = nn.ModuleDict()
-        for name, encoder in (("ehr", ehr_encoder), ("pesi", pesi_encoder)):
+        for name, encoder in (("ehr", ehr_encoder), ("spesi", spesi_encoder)):
             if encoder is None:
                 continue
             self.clinical_adapters[name] = build_organ_adapter(
@@ -192,13 +192,13 @@ class PrognosisModel(nn.Module):
                 batch.get("ehr_missing"),
                 batch.get("ehr_available"),
             )
-        if self.pesi_encoder is not None:
-            features["pesi"], availability["pesi"] = self._clinical_branch(
-                "pesi",
-                batch["pesi"],
-                self.pesi_encoder,
-                batch.get("pesi_missing"),
-                batch.get("pesi_available"),
+        if self.spesi_encoder is not None:
+            features["spesi"], availability["spesi"] = self._clinical_branch(
+                "spesi",
+                batch["spesi"],
+                self.spesi_encoder,
+                batch.get("spesi_missing"),
+                batch.get("spesi_available"),
             )
         if not features:
             raise RuntimeError("no prognosis modality was evaluated")

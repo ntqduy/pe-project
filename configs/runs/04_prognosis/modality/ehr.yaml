@@ -1,7 +1,7 @@
 # prog.ehr — raw clinical values plus missingness indicators only.
 #
-# Question: does the full clinical record predict 30-day mortality better than the PESI
-# score that summarizes part of it?
+# Question: how much 30-day mortality signal does the full clinical record carry on its own,
+# before any imaging is added?
 # Imputation and normalization statistics are fit on the training split only.
 # Cleanup vs the pre-refactor PR27_CLINICAL_ONLY arm: it still inherited an image backbone
 # and mask columns it never used.
@@ -31,8 +31,8 @@ lineage:
 supervision:
   require_masks: false
   require_ehr: true
+  require_spesi: false
   ehr: clinical/ehr_features.csv
-  require_pesi: false
 peft:
   _replace_: true
   method: full

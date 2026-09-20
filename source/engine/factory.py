@@ -6,8 +6,8 @@ from typing import Any
 from torch import nn
 
 from source.components.encoders.ehr import EHREncoder
+from source.components.encoders.spesi import SpesiEncoder
 from source.components.encoders.image.registry import build_image_encoder
-from source.components.encoders.pesi import PESIEncoder
 from source.components.peft.freeze import apply_peft
 from source.tasks.contour.model import ContourModel
 from source.tasks.diagnosis.model import DEFAULT_TARGETS, DiagnosisModel
@@ -99,7 +99,7 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
                 hidden_dim=int(task.get("hidden_dim", 256)),
             )
             return model, peft_report
-        modalities = set(task.get("modalities") or ("image", "ehr", "pesi"))
+        modalities = set(task.get("modalities") or ("image", "ehr", "spesi"))
         image = build_image_encoder(model_config) if "image" in modalities else None
         if image is not None:
             peft_report = apply_peft(image, dict(config.get("peft") or {"method": "full"}))
@@ -110,15 +110,15 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
             include_missingness=bool(task.get("ehr_include_missingness", True)),
             preprocessing=dict(config.get("clinical_preprocessing") or {}),
         ) if "ehr" in modalities else None
-        pesi = PESIEncoder(
-            int(task.get("pesi_input_dim", 2)),
-            int(task.get("pesi_hidden_dim", 16)),
-            int(task.get("pesi_output_dim", 32)),
-        ) if "pesi" in modalities else None
+        spesi = SpesiEncoder(
+            int(task.get("spesi_input_dim", 1)),
+            int(task.get("spesi_hidden_dim", 16)),
+            int(task.get("spesi_output_dim", 32)),
+        ) if "spesi" in modalities else None
         model = PrognosisModel(
             image,
             ehr,
-            pesi,
+            spesi,
             regions=tuple(task.get("regions", ("heart", "pa", "lung"))),
             expert_dim=int(task.get("expert_dim", 128)),
             hidden_dim=int(task.get("hidden_dim", 256)),

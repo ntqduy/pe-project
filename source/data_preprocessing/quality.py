@@ -220,14 +220,14 @@ def build_data_quality(
     split_audit: Mapping[str, Any],
     sampling: Mapping[str, Any],
     ehr: Mapping[str, Any] | None = None,
-    pesi: Mapping[str, Any] | None = None,
+    spesi: Mapping[str, Any] | None = None,
     modality_availability: Mapping[str, Any] | None = None,
     cohort_funnel: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Return a compact, de-identified readiness report for one built profile."""
     cache_qc = dict(preprocessing.get("cache_qc") or {})
     ehr_build = dict(ehr or {})
-    pesi_build = dict(pesi or {})
+    spesi_build = dict(spesi or {})
     return {
         "profile": dict(profile),
         "cohort": {
@@ -261,8 +261,7 @@ def build_data_quality(
                 ehr_build.get("feature_end_operator")
                 or "not_run: no EHR event feature table is built, so no pre-CTPA temporal audit exists"
             ),
-            "pesi": pesi_build
-            or {"status": "not_built", "reason": "no approved PESI/sPESI mapping is configured"},
+            "spesi": spesi_build or {"status": "not_built", "reason": "sPESI was not requested"},
         },
         "ctpa_acquisition": _ctpa_acquisition_summary(records),
         "sampling": dict(sampling),
@@ -431,31 +430,21 @@ def render_data_quality_markdown(payload: Mapping[str, Any]) -> str:
                     f"EHR-missing cases={profile.get('ehr_missing_cases', 'unknown')}; "
                     f"columns={len(profile.get('manifest_feature_columns') or ())}."
                 )
-    pesi = dict(clinical.get("pesi") or {})
-    lines.append(
-        f"- PESI/sPESI: {pesi.get('status', 'not configured')}; "
-        f"{pesi.get('reason', 'no status reason')}"
-    )
-    candidate_coverage = dict(pesi.get("candidate_coverage") or {})
-    candidate_components = dict(candidate_coverage.get("components") or {})
-    if candidate_components:
-        candidate_summary = ", ".join(
-            f"{name}={dict(candidate_components.get(name) or {}).get('cases_with_eligible_candidate_event', 0)}"
-            for name in ("pulse", "respiratory_rate", "temperature_c", "oxygen_saturation")
-        )
+    spesi = dict(clinical.get("spesi") or {})
+    if spesi:
         lines.append(
-            "- PESI candidate pre-CTPA availability (cases; audit only): "
-            + candidate_summary
+            f"- sPESI: {spesi.get('status', 'not built')}; scored "
+            f"{spesi.get('scored_cases', 0)}/{spesi.get('studies', 0)} studies"
+            + (f"; by split {spesi.get('scored_cases_by_split')}" if spesi.get('scored_cases_by_split') else "")
             + "."
         )
-    candidate_table = dict(pesi.get("candidate_components") or {})
-    if candidate_table.get("component_table"):
-        lines.append(
-            "- Raw PESI-component candidates: "
-            f"any={candidate_table.get('cases_with_any_component', 0)}, "
-            f"all 11={candidate_table.get('cases_with_all_components', 0)}; "
-            "the table is unscored and retains per-feature missingness."
-        )
+        missing = dict(spesi.get("missing_component_cases") or {})
+        if missing:
+            lines.append(
+                "- sPESI components missing (cases): "
+                + ", ".join(f"{k}={v}" for k, v in sorted(missing.items()))
+                + "."
+            )
     modality = dict(clinical.get("modality_availability") or {})
     availability = dict(modality.get("coverage") or {})
     if availability:

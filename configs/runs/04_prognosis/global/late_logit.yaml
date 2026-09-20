@@ -1,9 +1,9 @@
-# prog.global.late — global image + EHR + PESI, late-logit fusion.
+# prog.global.late — global image + EHR, late-logit fusion.
 #
 # Question: is it better to average modality *decisions* than to concatenate modality
 # *features*? Late fusion also degrades gracefully: a patient missing the clinical record
 # drops that branch from the average instead of feeding it zeros.
-# Identical to prog.image_ehr_pesi (= prog.global.concat) except for the fusion component.
+# Identical to prog.global.concat except for the fusion component.
 # Output: outputs/prognosis/PR_global_late_logit/
 _base_:
   - ../../../paths.yaml
@@ -20,7 +20,7 @@ experiment:
   stage: prognosis
   family: prognosis
 task:
-  modalities: [image, ehr, pesi]
+  modalities: [image, ehr, spesi]
   regions: []
 lineage:
   transfer_modules: [image_encoder]
@@ -29,6 +29,6 @@ supervision:
   require_masks: false
   masks: null
   require_ehr: true
+  require_spesi: true
+  spesi: clinical/spesi_features.csv
   ehr: clinical/ehr_features.csv
-  require_pesi: true
-  pesi: clinical/pesi_features.csv

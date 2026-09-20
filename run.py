@@ -66,7 +66,7 @@ DATASET_RELATIVE_KEYS = (
     "data.manifest",
     "silver.reports",
     "supervision.ehr",
-    "supervision.pesi",
+    "supervision.spesi",
 )
 
 
@@ -325,11 +325,31 @@ def delegate(entry: dict[str, Any], name: str, args: argparse.Namespace, *, mode
 
     stage = experiment_stage(entry)
     data_stage = DATA_STAGE_TOOLS.get(stage)
+    # An entry may name its own runner when the stage's usual launcher is the wrong verb --
+    # a zero-shot arm loads released weights and scores, it never trains, so dispatching it
+    # to tools/launch.py would do the opposite of what the entry means.
+    runner = str(entry.get("runner") or "").strip()
     selected = bool(args.patient_id or args.allow_full
                     or args.max_cases is not None or args.max_reports is not None)
     if mode == "preflight":
         tool = ROOT / "tools" / "preflight.py"
         accepts = {"gpus": True, "set": True, "state": True, "selection": False}
+    elif runner:
+        if mode == "dry":
+            print(f"{name} runs through {runner}, which has no --dry-run.")
+            print(f"Check it instead with: python run.py preflight {name}")
+            print(f"Or score a sample with: python run.py run {name} --max-cases 20")
+            return 3
+        if not selected:
+            print(f"{name} scores a whole split; give it an explicit scope:")
+            print(f"  python run.py run {name} --allow-full")
+            print(f"  python run.py run {name} --max-cases 20")
+            return 3
+        tool = ROOT / runner
+        if not tool.is_file():
+            fail(f"{name} names runner {runner}, which does not exist")
+        accepts = {"gpus": True, "set": True, "state": True, "selection": True,
+                   "selection_flags": ("max-cases", "allow-full")}
     elif data_stage:
         if mode == "dry":
             gpus = " --gpus 0" if data_stage["gpus"] else ""
@@ -370,13 +390,22 @@ def delegate(entry: dict[str, Any], name: str, args: argparse.Namespace, *, mode
     if selected and not accepts["selection"]:
         print("note: preflight validates the whole configured input; ignoring scope flags.")
     elif accepts["selection"]:
+        # A runner accepts only the scope flags its own CLI defines; forwarding the rest
+        # would fail in argparse with no hint about which flag the stage cannot take.
+        allowed = accepts.get("selection_flags")
+        def forwarded(flag: str) -> bool:
+            return allowed is None or flag in allowed
         for patient in args.patient_id or []:
+            if not forwarded("patient-id"):
+                fail(f"'{name}' scores whole splits; --patient-id is not accepted (use --max-cases N)")
             command += ["--patient-id", patient]
-        if args.max_cases is not None:
+        if args.max_cases is not None and forwarded("max-cases"):
             command += ["--max-cases", str(args.max_cases)]
         if args.max_reports is not None:
+            if not forwarded("max-reports"):
+                fail(f"'{name}' scores whole splits; --max-reports is not accepted")
             command += ["--max-reports", str(args.max_reports)]
-        if args.allow_full:
+        if args.allow_full and forwarded("allow-full"):
             command.append("--allow-full")
     if mode == "dry":
         command.append("--dry-run")

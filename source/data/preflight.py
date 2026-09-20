@@ -343,12 +343,12 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                             ),
                         )
                     )
-                pesi_config = dict(profile.get("pesi") or {})
-                if bool(pesi_config.get("enabled", True)):
-                    mapping = Path(str(pesi_config.get("mapping_config") or ""))
+                spesi_config = dict(profile.get("spesi") or {})
+                if bool(spesi_config.get("enabled", True)):
+                    mapping = Path(str(spesi_config.get("mapping_config") or ""))
                     if not mapping.is_absolute():
                         mapping = paths.code_root / mapping
-                    _exists(checks, "DATA", "pesi_mapping_contract", mapping, True)
+                    _exists(checks, "DATA", "spesi_mapping_contract", mapping, True)
         except Exception as exc:  # noqa: BLE001 - report the contract failure, never crash
             checks.append(Check("DATA", "dataset_profile", "FAIL", f"{type(exc).__name__}: {exc}"))
     elif not manifest_path:
@@ -377,12 +377,12 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                             *(() if report_only_contract else (data_config.get("file_column", "image_path"),)),
                             *tuple(data_config.get("label_columns") or ()),
                             *tuple(data_config.get("ehr_columns") or ()),
-                            *tuple(data_config.get("pesi_columns") or ()),
+                            *tuple(data_config.get("spesi_columns") or ()),
                             *tuple(
                                 value
                                 for value in (
                                     data_config.get("ehr_availability_column"),
-                                    data_config.get("pesi_availability_column"),
+                                    data_config.get("spesi_availability_column"),
                                 )
                                 if value
                             ),
@@ -733,10 +733,10 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 )
     supervision = dict(config.get("supervision") or {})
     # masks / rois / silver_labels are produced by earlier stages under the output root;
-    # ehr / pesi are stage-0 artifacts inside the dataset profile. Relative values resolve
+    # ehr / spesi are stage-0 artifacts inside the dataset profile. Relative values resolve
     # against the right root so no supervision path has to be hard-coded.
     supervision_roots = {
-        "masks": True, "rois": True, "silver_labels": True, "ehr": False, "pesi": False,
+        "masks": True, "rois": True, "silver_labels": True, "ehr": False, "spesi": False,
     }
     for key, in_output in supervision_roots.items():
         requested = bool(supervision.get(f"require_{key}", False))
@@ -945,63 +945,35 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                         "reliable acquisition_date_column and readable manifest are required",
                     )
                 )
-        elif split_strategy == "patient_stratified_cv":
-            # Fold assignment lives in source/data/cv.py; the runner must be given a fold
-            # column, so a CV config without cross_validation.enabled is a contradiction.
-            cv = dict(evaluation.get("cross_validation") or {})
-            folds = int(cv.get("folds", 0))
-            checks.append(
-                Check(
-                    "DATA", "cross_validation",
-                    "PASS" if cv.get("enabled") and folds >= 2 else "FAIL",
-                    f"enabled={cv.get('enabled')} type={cv.get('type')} folds={folds}",
-                )
-            )
         elif split_strategy != "patient_holdout":
             checks.append(Check("DATA", "split_strategy", "FAIL", split_strategy))
-        if "pesi" in modalities:
-            count = len(data_config.get("pesi_columns") or ())
-            expected = int(task.get("pesi_input_dim") or 0)
+        if "spesi" in modalities:
+            count = len(data_config.get("spesi_columns") or ())
+            expected = int(task.get("spesi_input_dim") or 0)
             checks.append(
                 Check(
                     "DATA",
-                    "pesi_feature_contract",
+                    "spesi_feature_contract",
                     "PASS" if count == expected and count > 0 else "FAIL",
                     f"manifest_columns={count} encoder_input_dim={expected}",
                 )
             )
-            score_columns = tuple(data_config.get("pesi_columns") or ())
-            status_path = paths.dataset_root_for(config) / "clinical" / "pesi_status.json"
-            status: dict[str, Any] = {}
+            status_path = paths.dataset_root_for(config) / "clinical" / "spesi_status.json"
             try:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                checks.append(Check("DATA", "pesi_readiness", "FAIL", f"{status_path}: {exc}"))
+                checks.append(Check("DATA", "spesi_readiness", "FAIL", f"{status_path}: {exc}"))
             else:
-                valid_by_split: Counter[str] = Counter()
-                invalid_values = 0
-                for row in manifest_rows or []:
-                    try:
-                        values = [float(row.get(column) or "nan") for column in score_columns]
-                        valid = all(value == value and value not in {float("inf"), float("-inf")} for value in values)
-                    except (TypeError, ValueError):
-                        valid = False
-                    if valid:
-                        valid_by_split[str(row.get("split") or "")] += 1
-                    else:
-                        invalid_values += 1
-                required_splits = ("train", "validation", "test")
-                coverage_ok = all(valid_by_split[split] > 0 for split in required_splits)
-                status_ok = status.get("status") == "built"
+                scored = int(status.get("scored_cases") or 0)
+                by_split = dict(status.get("scored_cases_by_split") or {})
+                covered = all(int(by_split.get(split) or 0) > 0 for split in ("train", "validation", "test"))
                 checks.append(
                     Check(
                         "DATA",
-                        "pesi_readiness",
-                        "PASS" if status_ok and coverage_ok else "FAIL",
-                        f"status={status.get('status', 'missing')}; "
-                        f"valid_by_split={dict(sorted(valid_by_split.items()))}; "
-                        f"invalid_or_missing_rows={invalid_values}; "
-                        f"reason={status.get('reason', '')}",
+                        "spesi_readiness",
+                        "PASS" if status.get("status") == "built" and covered else "FAIL",
+                        f"status={status.get('status', 'missing')}; scored={scored}; "
+                        f"by_split={dict(sorted(by_split.items()))}; reason={status.get('reason', '')}",
                     )
                 )
         ehr_full = list(dict.fromkeys(data_config.get("ehr_columns_full") or ()))

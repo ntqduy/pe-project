@@ -63,7 +63,7 @@ adjudication:
 
 manifests:
   # INSPECT column -> project target. Only native labels appear here; every richer
-  # attribute is silver-derived (medgemma/rule_falcon/rule_falcon_medgemma) and is never invented at build time.
+  # attribute is silver-derived (medgemma) and is never invented at build time.
   label_map:
     pe_positive_nlp: pe_present
     pe_acute: pe_acute
@@ -169,23 +169,12 @@ ehr:
       - "\\bpulmonary angiogram\\b"
       - "\\bradiology report\\b"
 
-# Stage 0 audits PESI candidates against the INSPECT codebook. It only writes score
-# columns after every component has clinical approval *and* an approved study-level
-# component table is supplied. Until then it writes a blocked, reviewable status rather
-# than manufacturing a plausible score from pattern-matched events.
-pesi:
+# sPESI is computed in stage 0 from the same MEDS/OMOP events the EHR block reads, using
+# the component definitions and thresholds of the INSPECT release's own scorer. A study
+# missing any of the six components is left unscored rather than partially summed; the
+# per-study components, the resolved code set and the missingness counts are written to
+# clinical/spesi_*.{csv,json}.
+spesi:
   enabled: true
-  mapping_config: configs/clinical/pesi_spesi_mapping.yaml
-  # Aggregate (no patient IDs/values) audit of candidate code availability, units and
-  # pre-CTPA timing. This runs even while scoring remains blocked.
-  audit_candidate_coverage: true
-  audit_batch_size: 250000
-  # Write raw candidate component values, per-component missingness, source code, unit
-  # and timestamp to clinical/pesi_components_candidate.csv. This supports learned
-  # clinical models without treating candidate mappings as an approved PESI score.
-  materialize_candidate_components: true
-  # Fill with an approved, study-level table only after the mapping audit is approved.
-  # An absolute path under /mnt/pe-storage is appropriate; leaving it null keeps PESI
-  # safely blocked while the rest of stage 0 is fully runnable.
-  components_table: null
-  required_columns: [pesi, spesi]
+  mapping_config: configs/clinical/spesi_mapping.yaml
+  batch_size: 250000

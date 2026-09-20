@@ -29,6 +29,16 @@ def import_symbol(path: str) -> Any:
         raise ThirdPartyIntegrationError(f"missing symbol {path}") from exc
 
 
+def load_state_file(source: Path) -> Mapping[str, Any]:
+    if source.suffix == ".safetensors":
+        try:
+            from safetensors.torch import load_file
+        except ImportError as exc:
+            raise ThirdPartyIntegrationError(f"reading {source.name} requires the safetensors package") from exc
+        return load_file(str(source), device="cpu")
+    return torch.load(source, map_location="cpu", weights_only=False)
+
+
 class InspectedExternalEncoder(BaseImageEncoder):
     """Adapter configured only after the concrete third-party API has been inspected.
 
@@ -72,7 +82,7 @@ class InspectedExternalEncoder(BaseImageEncoder):
         source = Path(checkpoint)
         if not source.is_file():
             raise ThirdPartyIntegrationError(f"pretrained checkpoint not found: {source}")
-        payload = torch.load(source, map_location="cpu", weights_only=False)
+        payload = load_state_file(source)
         if isinstance(payload, Mapping):
             for key in ("model_state", "state_dict", "model"):
                 if key in payload and isinstance(payload[key], Mapping):

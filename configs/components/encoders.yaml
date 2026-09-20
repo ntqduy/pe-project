@@ -35,7 +35,7 @@ _presets_:
         c0: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
         rspect_multitask: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/rspect/multitask/weight_alignment/best.ckpt
         rspect_single: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/rspect/single_pe/weight_alignment/best.ckpt
-        silver: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/silver_encoder/rule_falcon_medgemma/weight_rspect_multitask/best.ckpt
+        silver: ${PE_CLOUD_ROOT}/pe-project/outputs/shared_encoder/silver_encoder/medgemma/weight_rspect_multitask/best.ckpt
         diagnosis: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
         custom: null
       source_experiments:
@@ -43,7 +43,7 @@ _presets_:
         c0: AL_image_report_c0
         rspect_multitask: DX_rspect_multitask_weight_alignment
         rspect_single: DX_rspect_single_weight_alignment
-        silver: SE_silver_rule_falcon_medgemma_weight_rspect_multitask
+        silver: SE_silver_medgemma_weight_rspect_multitask
         diagnosis: DX_anatomy_concat
         custom: null
 
@@ -112,7 +112,7 @@ _presets_:
     encoder:
       init_source: silver
       dapt_method: DINO
-      silver_source: rule_falcon_medgemma
+      silver_source: medgemma
     experiment:
       baseline_init: silver
 

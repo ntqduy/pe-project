@@ -47,8 +47,8 @@ nhánh có thể lệch nhau (Kornblith et al. 2019), và đó là kết quả �
 
 ```bash
 for SRC in pretrained dapt c0 silver; do
-  ENCODER_SOURCE=$SRC bash scripts/4_diagnosis/probe.sh             # single-task
-  ENCODER_SOURCE=$SRC bash scripts/4_diagnosis/probe_multitask.sh   # multitask
+  python run.py run probe.diag --set encoder.init_source=$SRC # single-task
+  python run.py run probe.diag.multitask --set encoder.init_source=$SRC # multitask
 done
 ```
 

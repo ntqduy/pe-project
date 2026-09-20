@@ -28,10 +28,10 @@ from .filters import apply_eligibility
 from .integrity import check_volumes, integrity_summary
 from .leakage import audit_split_integrity, load_excluded_patients, require_no_leakage
 from .manifests import build_manifests
-from .pesi import PesiBuildError, build_pesi_artifacts
 from .quality import build_data_quality, cohort_step, render_data_quality_markdown
 from .sampling import sample_patients
 from .sources import InspectSource, StudyRecord
+from .spesi import SpesiBuildError, build_spesi_artifacts
 from .volumes import PreprocessingSpec, preprocess_study, validate_cache_entry
 
 
@@ -298,19 +298,16 @@ def build_dataset(
     }
 
     try:
-        pesi = build_pesi_artifacts(
+        spesi = build_spesi_artifacts(
             cohort,
             output_dir=clinical_dir,
-            config=profile.get("pesi"),
+            config=profile.get("spesi"),
             ehr_metadata=ehr.metadata,
             code_root=paths.code_root,
         )
-    except PesiBuildError as exc:
-        raise DatasetBuildError(f"PESI readiness failed: {exc}") from exc
+    except SpesiBuildError as exc:
+        raise DatasetBuildError(f"sPESI build failed: {exc}") from exc
 
-    candidate_metadata = dict(pesi.metadata.get("candidate_components") or {})
-    candidate_source_columns = tuple(candidate_metadata.get("model_feature_columns") or ())
-    candidate_manifest_columns = tuple(f"pesi_candidate_{column}" for column in candidate_source_columns)
     ehr_profile_columns = {
         name: tuple(
             (dict(ehr_profiles.metadata.get("profiles") or {}).get(name) or {}).get(
@@ -348,9 +345,6 @@ def build_dataset(
         "has_ctpa",
         "has_note",
         *ehr_availability_columns.values(),
-        "has_pesi_component_candidate",
-        "has_all_pesi_component_candidates",
-        "has_pesi",
         "has_spesi",
     )
     modality_table_columns = (
@@ -358,26 +352,21 @@ def build_dataset(
         "has_note",
         "has_ehr_crosswalk",
         *ehr_availability_columns.values(),
-        "has_pesi_component_candidate",
-        "has_all_pesi_component_candidates",
-        "has_pesi",
         "has_spesi",
     )
     clinical_features: dict[str, dict[str, Any]] = {}
     clinical_columns = (
         *(column for columns in ehr_profile_columns.values() for column in columns),
-        *pesi.feature_columns,
-        *candidate_manifest_columns,
+        *spesi.feature_columns,
         *modality_feature_columns,
     )
     if len(set(clinical_columns)) != len(clinical_columns):
-        raise DatasetBuildError("EHR and PESI feature columns overlap")
+        raise DatasetBuildError("EHR and sPESI feature columns overlap")
     for record in cohort:
         ehr_rows = {
             name: dict(artifact.by_study.get(record.study_id) or {})
             for name, artifact in ehr_profiles.profiles.items()
         }
-        ehr_row = ehr_rows[ehr_profiles.default_profile]
         ehr_features = {
             manifest_column: ehr_rows[name].get(source_column, "")
             for name, artifact in ehr_profiles.profiles.items()
@@ -385,12 +374,7 @@ def build_dataset(
                 artifact.feature_columns, ehr_profile_columns[name]
             )
         }
-        pesi_row = dict(pesi.by_study.get(record.study_id) or {})
-        candidate_row = dict((pesi.candidate_by_study or {}).get(record.study_id) or {})
-        candidate_features = {
-            f"pesi_candidate_{column}": candidate_row.get(column, "")
-            for column in candidate_source_columns
-        }
+        spesi_row = dict(spesi.by_study.get(record.study_id) or {})
         modality = {
             "has_ctpa": 1,
             "has_note": int(bool(record.report_text)),
@@ -399,19 +383,11 @@ def build_dataset(
                 column: int(not bool(ehr_rows[name].get("ehr_missing", 1)))
                 for name, column in ehr_availability_columns.items()
             },
-            "has_pesi_component_candidate": int(
-                bool(candidate_row.get("has_pesi_component_candidate", 0))
-            ),
-            "has_all_pesi_component_candidates": int(
-                bool(candidate_row.get("has_all_pesi_component_candidates", 0))
-            ),
-            "has_pesi": int(bool(pesi_row.get("pesi_computable", 0))),
-            "has_spesi": int(bool(pesi_row.get("spesi_computable", 0))),
+            "has_spesi": int(bool(spesi_row.get("spesi_computable", 0))),
         }
         clinical_features[record.study_id] = {
             **ehr_features,
-            **pesi_row,
-            **candidate_features,
+            **spesi_row,
             **modality,
         }
 
@@ -500,8 +476,7 @@ def build_dataset(
         "preprocessing": preprocessing_report,
         "clinical": {
             "ehr": ehr_metadata,
-            "pesi": dict(pesi.metadata),
-            "candidate_component_columns": list(candidate_manifest_columns),
+            "spesi": dict(spesi.metadata),
             "modality_availability": modality_summary,
         },
         "manifests": manifest_summary,
@@ -522,7 +497,7 @@ def build_dataset(
         split_audit=audit.as_dict(),
         sampling=sampling_payload,
         ehr=ehr_metadata,
-        pesi=pesi.metadata,
+        spesi=spesi.metadata,
         modality_availability=modality_summary,
         cohort_funnel=[*funnel, cohort_step("final", "the cohort written to the manifests", cohort)],
     )

@@ -2,7 +2,7 @@
 #
 # Question: does accepted report-derived (silver) auxiliary supervision improve the primary
 # PE +/- head when no anatomy pooling is used?
-# Native supervision stays PE +/- only; the auxiliary heads are trained from accepted rule_falcon_medgemma
+# Native supervision stays PE +/- only; the auxiliary heads are trained from accepted medgemma
 # rows at task.silver_loss_weight. Silver rows are never used as evaluation labels, and
 # abstained / no_result rows are ignored.
 # Pairs with diag.global.native_multitask (same heads, different supervision source) and
@@ -35,10 +35,10 @@ task:
   silver_loss_weight: 0.2
 lineage:
   transfer_modules: [image_encoder]
-  silver_method: rule_falcon_medgemma
+  silver_method: medgemma
   supervision_type: native_pe_and_accepted_silver_multitask
 supervision:
   require_masks: false
   masks: null
   require_silver_labels: true
-  silver_labels: silver_label/rule_falcon_medgemma/silver_labels.csv
+  silver_labels: silver_label/medgemma/silver_labels.csv

@@ -1,4 +1,4 @@
 from .ehr import EHREncoder
-from .pesi import PESIEncoder
+from .spesi import SpesiEncoder
 
-__all__ = ["EHREncoder", "PESIEncoder"]
+__all__ = ["EHREncoder", "SpesiEncoder"]

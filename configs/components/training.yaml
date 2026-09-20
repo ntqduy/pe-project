@@ -130,21 +130,14 @@ _presets_:
       bootstrap_samples: 2000
       confidence: 0.95
       threshold_method: youden
-      # patient_holdout | temporal_holdout | patient_stratified_cv
+      # patient_holdout | temporal_holdout
       # Protocol: temporal hold-out khi có acquisition date tin cậy và đủ event; nếu không
-      # thì patient-level stratified CV. Fold assignment: source/data/cv.py.
+      # thì dùng official split hold-out của INSPECT.
       split_strategy: patient_holdout
       temporal_holdout:
         enabled: false
         acquisition_date_column: null
         minimum_events_per_split: 5
-      cross_validation:
-        enabled: false
-        # repeated_stratified_patient_kfold | repeated_patient_kfold | nested_patient_kfold
-        type: repeated_stratified_patient_kfold
-        folds: 3
-        repeats: 3
-        nested_inner_folds: 3
     clinical_preprocessing:
       # Imputation/normalization statistics are fit on the training split only.
       fit_split: train

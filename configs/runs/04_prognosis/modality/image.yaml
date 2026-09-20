@@ -28,4 +28,4 @@ supervision:
   require_masks: false
   masks: null
   require_ehr: false
-  require_pesi: false
+  require_spesi: false

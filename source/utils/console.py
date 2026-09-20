@@ -46,6 +46,10 @@ def experiment_header(config: Mapping[str, Any], output: Path, manifest: Mapping
 
 def final_evaluation_block(experiment_id: str, evaluation: Mapping[str, Any], output: Path) -> str:
     lines = [BAR, f"FINAL TEST | {experiment_id}", BAR]
+    if evaluation.get("primary_target") is not None:
+        lines.append(f"Target      : {evaluation['primary_target']}")
+    if evaluation.get("evaluated_patients") is not None:
+        lines.append(f"Patients    : {evaluation['evaluated_patients']}")
     for name, item in (evaluation.get("metrics") or {}).items():
         if isinstance(item, Mapping):
             lines.append(
@@ -57,6 +61,8 @@ def final_evaluation_block(experiment_id: str, evaluation: Mapping[str, Any], ou
         lines.append(f"\nCI          : patient bootstrap N={bootstrap.get('samples')}")
     if evaluation.get("threshold") is not None:
         lines.append(f"Threshold   : {float(evaluation['threshold']):.6f} (validation)")
+    if evaluation.get("bootstrap_unavailable_reason"):
+        lines.append(f"CI note     : {evaluation['bootstrap_unavailable_reason']}")
     lines.extend(("", "Saved:", str(output), BAR))
     return "\n".join(lines)
 

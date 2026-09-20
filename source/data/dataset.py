@@ -78,9 +78,9 @@ class CTPADataset(Dataset[dict[str, Any]]):
         image_column: str = "image_path",
         label_columns: Sequence[str] = (),
         ehr_columns: Sequence[str] = (),
-        pesi_columns: Sequence[str] = (),
+        spesi_columns: Sequence[str] = (),
         ehr_availability_column: str | None = None,
-        pesi_availability_column: str | None = None,
+        spesi_availability_column: str | None = None,
         mask_columns: Mapping[str, str] | None = None,
         roi_manifest: str | Path | None = None,
         roi_mask_ids: Mapping[str, str] | None = None,
@@ -97,9 +97,9 @@ class CTPADataset(Dataset[dict[str, Any]]):
         self.image_column = image_column
         self.label_columns = tuple(label_columns)
         self.ehr_columns = tuple(ehr_columns)
-        self.pesi_columns = tuple(pesi_columns)
+        self.spesi_columns = tuple(spesi_columns)
         self.ehr_availability_column = str(ehr_availability_column or "").strip() or None
-        self.pesi_availability_column = str(pesi_availability_column or "").strip() or None
+        self.spesi_availability_column = str(spesi_availability_column or "").strip() or None
         self.mask_columns = dict(mask_columns or {})
         self.roi_mask_ids = dict(roi_mask_ids or {})
         self.roi_control_for = dict(roi_control_for or {})
@@ -206,11 +206,11 @@ class CTPADataset(Dataset[dict[str, Any]]):
                 item["ehr_available"] = torch.tensor(
                     _available(row, self.ehr_availability_column), dtype=torch.bool
                 )
-        if self.pesi_columns:
-            item["pesi"] = torch.tensor([_float(row, name) for name in self.pesi_columns], dtype=torch.float32)
-            if self.pesi_availability_column:
-                item["pesi_available"] = torch.tensor(
-                    _available(row, self.pesi_availability_column), dtype=torch.bool
+        if self.spesi_columns:
+            item["spesi"] = torch.tensor([_float(row, name) for name in self.spesi_columns], dtype=torch.float32)
+            if self.spesi_availability_column:
+                item["spesi_available"] = torch.tensor(
+                    _available(row, self.spesi_availability_column), dtype=torch.bool
                 )
         if self.silver_targets:
             key = (str(row["patient_id"]), str(row["study_id"]))

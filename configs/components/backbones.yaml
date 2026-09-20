@@ -11,18 +11,28 @@ _presets_:
     # this registry from the resolved config, so one backbone's contract never changes another
     # experiment's config hash.
     #
-    # BLOCKER: factory / output_adapter / feature_dim are empty for all
-    # three encoders. They must come from the actually inspected checkpoint, never from a
-    # repository name and never copied between backbones. Preflight fails until they are filled.
+    # ct_fm is staged: its contract below was read off the actual checkpoint (strict load of
+    # all 161 tensors, forward pass verified), not off the repository name.
+    # BLOCKER: factory / output_adapter / feature_dim are still empty for ct_clip and totalfm,
+    # whose weights are not staged. They must come from the actually inspected checkpoint and
+    # never be copied from ct_fm. Preflight fails until they are filled.
     backbones:
       ct_fm:
+        # Upstream ships no Lighter .ckpt: the only public CT-FM weight is the HuggingFace
+        # SegResEncoder below, kept as a pinned clone of project-lighter/ct_fm_feature_extractor.
+        # feature_dim 512 = channels of the deepest pyramid level after adaptive_avg_pool3d.
         display_name: CT-FM
         repo: third_party/repos/CT-FM
-        checkpoint: third_party/weights/foundation/ct_fm/model.ckpt
-        factory: ""
-        output_adapter: ""
-        feature_dim: 0
+        checkpoint: third_party/weights/ct_fm_feature_extractor/model.safetensors
+        factory: source.components.encoders.image.ct_fm:build_ct_fm_backbone
+        output_adapter: source.components.encoders.image.ct_fm:ct_fm_output_adapter
+        feature_dim: 512
         strict_load: true
+        factory_kwargs:
+          spatial_dims: 3
+          init_filters: 32
+          in_channels: 1
+          blocks_down: [1, 2, 2, 4, 4]
       ct_clip:
         display_name: CT-CLIP
         repo: third_party/repos/CT-CLIP/CT_CLIP

@@ -1,0 +1,38 @@
+# CT-FM frozen + trainable organ adapters + concatenation fusion for diagnosis.
+# The CT-FM encoder is the public pretrained encoder and remains frozen. Only the organ
+# adapters, concat MLP and prediction heads are optimized.
+_base_:
+  - ct_fm_frozen_diagnosis.yaml
+  - ../../components/anatomy.yaml#organ_adapter
+  - ../../components/anatomy.yaml#anatomy_masks
+  - ../../components/fusions.yaml#concat_mlp
+
+experiment:
+  id: DX_ctfm_anatomy_concat
+  name: foundation.ct_fm_frozen.anatomy_concat.diagnosis
+  stage: diagnosis
+  family: diagnosis
+
+data:
+  manifest: ct_fm_frozen/manifests/diagnosis.csv
+  file_column: image_path
+
+task:
+  _replace_: true
+  primary_target: pe_present
+  targets:
+    pe_present: 1
+  regions: [heart, pa, lung]
+  architecture: concat_mlp
+  silver_targets: []
+  silver_loss_weight: 0.0
+
+peft:
+  method: frozen
+
+supervision:
+  require_masks: true
+  masks: segmentation/SEG_pseudo_anatomy
+  require_rois: true
+  rois: roi/ROI_anatomy_and_controls
+

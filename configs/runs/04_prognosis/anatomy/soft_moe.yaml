@@ -1,4 +1,4 @@
-# prog.anatomy.moe — anatomy-aware image + EHR + PESI, Soft-MoE fusion.
+# prog.anatomy.moe — anatomy-aware image + EHR, Soft-MoE fusion.
 #
 # Question: does a learned router over anatomy branches and clinical branches beat fixed
 # concatenation and fixed logit averaging?
@@ -21,7 +21,7 @@ experiment:
   stage: prognosis
   family: prognosis
 task:
-  modalities: [image, ehr, pesi]
+  modalities: [image, ehr, spesi]
   regions: [heart, pa, lung]
 lineage:
   transfer_modules: [image_encoder]
@@ -30,6 +30,6 @@ supervision:
   require_masks: true
   masks: segmentation/SEG_pseudo_anatomy
   require_ehr: true
+  require_spesi: true
+  spesi: clinical/spesi_features.csv
   ehr: clinical/ehr_features.csv
-  require_pesi: true
-  pesi: clinical/pesi_features.csv

@@ -179,6 +179,10 @@ class Trainer:
         validation_loader: Any,
         epochs: int,
         metric_fn: Callable[[nn.Module, Any, DistributedContext], float] | None = None,
+        epoch_metrics_fn: Callable[
+            [nn.Module, Any, Any, DistributedContext], Mapping[str, float]
+        ]
+        | None = None,
     ) -> dict[str, Any]:
         best = float("-inf") if self.maximize_metric else float("inf")
         history: list[dict[str, Any]] = []
@@ -192,6 +196,11 @@ class Trainer:
             train_loss, train_metrics = self.train_epoch(train_loader, epoch)
             val_loss, validation_metrics = self.validation_loss(validation_loader)
             primary = metric_fn(self.model, validation_loader, self.context) if metric_fn else -val_loss
+            epoch_metrics = (
+                dict(epoch_metrics_fn(self.model, train_loader, validation_loader, self.context))
+                if epoch_metrics_fn
+                else {}
+            )
             if self.scheduler is not None:
                 try:
                     self.scheduler.step(primary)
@@ -210,6 +219,7 @@ class Trainer:
                 "peak_vram_gb": peak,
                 **{f"train_{name}": value for name, value in train_metrics.items()},
                 **{f"val_{name}": value for name, value in validation_metrics.items()},
+                **epoch_metrics,
             }
             history.append(row)
             if self.context.is_main:
@@ -217,6 +227,16 @@ class Trainer:
                 self.logger.log(
                     f"epoch={epoch} train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
                     f"primary={primary:.6f} lr={row['lr']:.6g} time_sec={row['epoch_time_sec']:.2f}"
+                    + (
+                        " auc="
+                        + " ".join(
+                            f"{name}={float(value):.4f}"
+                            for name, value in epoch_metrics.items()
+                            if name.endswith("auroc")
+                        )
+                        if any(name.endswith("auroc") for name in epoch_metrics)
+                        else ""
+                    )
                 )
                 if improved:
                     lineage = {**self.lineage, "epoch": epoch, "validation_metric": primary}
@@ -247,6 +267,21 @@ class Trainer:
                         f"epochs_without_improvement={stalled_epochs} best={best:.6f}"
                     )
                 break
+        if self.context.is_main and history:
+            # Keep the final state separately from the validation-selected state.  Writing it
+            # once avoids a large checkpoint I/O cost on every epoch.
+            final_row = history[-1]
+            save_checkpoint_atomic(
+                self.run_dir / "last.ckpt",
+                self.model,
+                lineage={
+                    **self.lineage,
+                    "epoch": int(final_row["epoch"]),
+                    "validation_metric": float(final_row["primary_val_metric"]),
+                },
+                optimizer=self.optimizer,
+                scheduler=self.scheduler,
+            )
         return {
             "best_validation_metric": best,
             # `epochs` stays the configured budget; `epochs_run` is what was actually spent.

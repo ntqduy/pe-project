@@ -24,7 +24,7 @@ chứng minh giả thuyết khoa học**. “Có code” không đồng nghĩa �
 | Một shared encoder, global + masked heart/PA/lung pooling | Implemented | `source/components/anatomy.py`, `source/components/roi/pooling.py` |
 | Organ experts + concat/late-logit/Soft-MoE | Implemented | `source/components/adapters/organ.py`, `source/components/fusion/` |
 | Diagnosis native/silver multitask | Implemented, blocked | `source/tasks/diagnosis/`, `diagnosis_organ_silver` |
-| Prognosis image + EHR + PESI, PEFT | Implemented, blocked | `source/tasks/prognosis/`, `source/components/peft/` |
+| Prognosis image + EHR, PEFT | Implemented, blocked | `source/tasks/prognosis/`, `source/components/peft/` |
 | Multitask prognosis heads trong Figure 3.2 | Implemented, blocked | `prog.anatomy.multitask_moe`, `PrognosisHeads` |
 | ROI1–ROI8 + matched-random control | Implemented, segmentation-blocked | `source/roi/registry.py`, `source/roi/random_controls.py` |
 | Necessity counterfactual, không retrain | Implemented, checkpoint-blocked | `tools/tasks/counterfactual.py`, `anatomy.remove_*` |
@@ -32,7 +32,7 @@ chứng minh giả thuyết khoa học**. “Có code” không đồng nghĩa �
 | Prognosis organ-only (strict-heart / artery / lung) | Implemented, blocked | `configs/runs/04_prognosis/students/`, `prog.*_student` |
 | Sáu architecture ablation | Implemented, blocked | `configs/runs/05_anatomy_analysis/architecture/` |
 | Bốn EHR ablation | Implemented, EHR-blocked | `configs/runs/04_prognosis/ehr_ablation/` |
-| Patient CV, bootstrap, calibration, paired test | Implemented, data-blocked | `tools/tasks/train_cv.py`, `source/metrics/` |
+| Bootstrap, calibration, paired test | Implemented, data-blocked | `source/metrics/` |
 | PENet-style non-FM baseline | Implemented, data-blocked | `diag.baseline.penet_style`, `source/components/encoders/image/penet.py` |
 | Turkey external test-only | Implemented as contract, data-blocked | `diag.external.turkey_test`, `data.{segmentation,roi}.turkey` |
 | CTPA-specific nnU-Net fine-tune + expert validation | Missing | Chưa có annotation manifest/model/trainer thật |
@@ -61,7 +61,7 @@ full 3D CTPA
 mask. Vì feature map được sinh từ toàn volume, `z_heart/z_pa/z_lung` là **region-pooled
 features**, không được diễn giải quá mức là thông tin chỉ đến từ ROI.
 
-Diagnosis không nhận EHR/PESI. Prognosis mới thêm EHR và PESI vào fusion, đúng email. Nhánh
+Diagnosis không nhận EHR. Prognosis mới thêm EHR vào fusion, đúng email. Nhánh
 prognosis hỗ trợ một primary head và nhiều auxiliary native-outcome heads với masked loss;
 config chuẩn là `prog.anatomy.multitask_moe`.
 
@@ -73,7 +73,7 @@ config chuẩn là `prog.anatomy.multitask_moe`.
 | Self-supervised CTPA pretraining | none/MAE/DINO/SimCLR/anatomy DAPT | Code có; chưa chạy vì thiếu backbone/data |
 | Image-report alignment tạo C0 | symmetric InfoNCE | Code có; report embedding columns chưa được xác nhận |
 | Diagnosis từ C0 | single/native multitask/silver/anatomy | Code có; chưa có C0/mask/silver artifacts |
-| Prognosis từ C0 hoặc C_diag, dùng PEFT | named initialization + LoRA/frozen/full | Code có; EHR/PESI và event cohort còn blocked |
+| Prognosis từ C0 hoặc C_diag, dùng PEFT | named initialization + LoRA/frozen/full | Code có; EHR và event cohort còn blocked |
 
 Checkpoint có lineage, SHA-256, load report và shape-mismatch checks. Không được đổi tên một
 checkpoint C0 thành C_diag: source experiment và initialization được lưu riêng.
@@ -123,12 +123,11 @@ Primary protocol là 1-month/30-day mortality trong confirmed acute-PE cohort. A
 30-day mortality là secondary analysis; 6/12-month mortality, readmission và 12-month PH là
 auxiliary/exploratory. Repo giữ censor/missing là invalid-mask, không biến thành negative.
 
-Các modality baseline có PESI, EHR, image, image+EHR, image+PESI và image+EHR+PESI. Bốn EHR
-arms tách all/common variables × with/without missingness indicators. Tất cả prognosis runs
-dùng được full/frozen/LoRA transfer, nhưng chạy thật còn chờ:
+Các modality baseline có EHR, image và image+EHR. Bốn EHR arms tách all/common variables ×
+with/without missingness indicators. Tất cả prognosis runs dùng được full/frozen/LoRA
+transfer, nhưng chạy thật còn chờ:
 
 - danh sách EHR columns và common-variable subset;
-- mapping PESI/sPESI được clinical steward duyệt;
 - xác nhận cohort/event counts và temporal availability.
 
 ## 7. Evaluation protocol
@@ -141,10 +140,8 @@ External test đã được sửa để **không chọn threshold trên external
 test-only lấy threshold đã khóa trong `result.json` của internal INSPECT validation rồi chỉ đọc
 external `test` rows. `train_task.py` từ chối external config.
 
-`train_cv.py` hiện là outer K-fold với một inner validation fold cho mỗi outer test fold và có
-ghi fallback reason nếu stratification không khả thi. Nó chưa phải một hyperparameter-search
-nested-CV engine hoàn chỉnh; nếu paper tuyên bố “nested CV”, cần thêm search space và inner-fold
-selection rõ ràng. Gọi hiện tại là patient-level stratified K-fold CV là chính xác nhất.
+Evaluation dùng official INSPECT hold-out split (`patient_holdout`), không cross-validation.
+Split do release gán và được stage 0 kiểm tra không bị đổi hay rò rỉ bệnh nhân giữa các split.
 
 ## 8. INSPECT, RSPECT và Turkey
 
@@ -166,7 +163,7 @@ chưa đủ thông tin để tạo một config trung thực.
    adapter contracts chưa được điền.
 2. Chưa có output training/evaluation thật; vì vậy chưa có AUROC/AUPRC/CI để chứng minh proposal.
 3. CTPA-specific nnU-Net fine-tuning/freeze chưa implement và thiếu expert-reviewed annotation.
-4. EHR/PESI contract chưa được clinical approval; prognosis multimodal chưa chạy được.
+4. EHR contract chưa chốt; prognosis multimodal chưa chạy được.
 5. Turkey chưa có manifest/data/schema xác nhận; external claim chưa thể báo.
 6. Report embedding columns và local Falcon/MedGemma weights chưa sẵn sàng.
 7. Optional concept-bottleneck có code/config deferred nhưng chưa được xem là primary model.
@@ -178,7 +175,7 @@ chưa đủ thông tin để tạo một config trung thực.
 3. Stage TotalSegmentator/LungMask weights; tạo mask/ROI và expert-review subset.
 4. Chạy PENet-style baseline, public-FM probe, DAPT, alignment C0 và diagnosis baselines bằng cùng CV.
 5. Sinh/adjudicate silver labels; chạy native-vs-silver và anatomy architecture ablations.
-6. Chốt EHR columns/PESI; chạy prognosis primary cohort và modality/architecture comparisons.
+6. Chốt EHR columns; chạy prognosis primary cohort và modality/architecture comparisons.
 7. Chạy frozen counterfactual + ROI students (diagnosis và prognosis) trên cùng folds/patients.
 8. Nhận Turkey data, normalize test-only, tạo masks/ROIs và evaluate checkpoint đã khóa.
 9. Chỉ sau đó mới điền các bảng `docs/EXPERIMENTS.md` và viết claim cho MedIA/TMI.

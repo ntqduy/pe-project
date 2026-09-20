@@ -2,7 +2,7 @@
 #
 # Question: which representation checkpoint carries the most outcome-relevant information?
 # Frozen encoder -> global average pool -> fixed small prognosis head -> 30-day mortality.
-# Image only: no EHR and no PESI, so the score reflects the representation alone.
+# Image only: no EHR, so the score reflects the representation alone.
 # Probe hyperparameters are fixed by components/training.yaml#probe and must not be tuned
 # per checkpoint. Checkpoint selection uses validation, never test.
 #
@@ -40,4 +40,4 @@ supervision:
   require_masks: false
   masks: null
   require_ehr: false
-  require_pesi: false
+  require_spesi: false

@@ -37,7 +37,7 @@ task:
     6_month_readmission: 1
     12_month_readmission: 1
     12_month_PH: 1
-  modalities: [image, ehr, pesi]
+  modalities: [image, ehr, spesi]
   regions: [heart, pa, lung]
   # Primary target has full weight; auxiliary endpoints regularize the shared model.
   # These weights are protocol values and should be frozen before the test run.
@@ -56,6 +56,6 @@ supervision:
   require_masks: true
   masks: segmentation/SEG_pseudo_anatomy
   require_ehr: true
+  require_spesi: true
+  spesi: clinical/spesi_features.csv
   ehr: clinical/ehr_features.csv
-  require_pesi: true
-  pesi: clinical/pesi_features.csv

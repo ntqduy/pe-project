@@ -26,13 +26,17 @@ checkpoint; `python run.py plan <experiment>` names the missing artifact for any
 ## Quick start
 
 ```bash
-source scripts/use_gcs_storage.sh  # this workspace: bucket-backed derived data and outputs
+# this workspace: bucket-backed derived data and outputs (mount gs://pe-study/pe-storage first)
+export PE_CLOUD_ROOT=/mnt/pe-storage
+export PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
+export PE_DERIVED_ROOT=/mnt/pe-storage/derived
+export PE_LOCAL_CACHE_ROOT=/mnt/pe-project/cache
 
 python3 -m pip install -r requirements.txt && python3 -m pip install -e .
 
 python3 run.py preflight data.dataset.smoke_30                         # 1. check paths
-bash scripts/0_data_preprocessing/build_smoke_30.sh                    # 2. technical smoke
-ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh # 3. rehearsal
+python run.py run data.dataset.smoke_30 # 2. technical smoke
+python run.py run data.dataset.test_500_sample --allow-full # 3. rehearsal
 python3 run.py plan diag.anatomy.concat                                 # 4. what is left
 PROFILE=smoke_30 bash scripts/ana.sh                                    # 5. describe the cohort
 ```
@@ -60,7 +64,7 @@ scientific logic: it resolves a semantic name from
 and `tools/launch.py`. Those tools remain available directly when you want them.
 
 Experiments are named for what they are — `repr.dapt.dino`, `probe.diag`,
-`diag.anatomy.silver.moe`, `prog.image_ehr_pesi`, `anatomy.remove_pa`,
+`diag.anatomy.silver.moe`, `prog.image_ehr`, `anatomy.remove_pa`,
 `anatomy.pa_student_kd`. The internal `experiment.id` in each config is the output-directory
 key and is now readable too — `SEG_pseudo_anatomy`, `DX_anatomy_concat`, `CF_remove_pa` — so a
 path under `outputs/` says what produced it. The pre-refactor ids (`SEG01`, `DX18`, `CF02`, …)
@@ -74,7 +78,7 @@ contain no scientific logic — they just turn environment variables into `run.p
 overrides:
 
 ```bash
-DATASET=test_500_sample ENCODER_SOURCE=dapt GPUS=0 bash scripts/4_diagnosis/anatomy_full.sh
+python run.py run diag.anatomy.concat --set data.profile=test_500_sample --set encoder.init_source=dapt --gpus 0
 ```
 
 ## The four independent axes
@@ -122,7 +126,7 @@ Everything derived lives under `/mnt/pe-storage` in this workspace: cohorts unde
 | **2 silver label** | `scripts/2_silver_label/<method>.sh` | `manifests/reports.csv` | `outputs/silver_label/<method>/silver_labels.csv` + `silver_label_confidence.csv` + `logs/run.log` |
 | **3 shared encoder** | `scripts/3_shared_encoder/<n>_<stage>/*.sh` | `manifests/ctpa.csv`, `manifests/paired_reports.csv`, silver labels | `outputs/pretraining/{dapt,alignment,silver}/<id>/best.ckpt` with full lineage |
 | **4 diagnosis** | `scripts/4_diagnosis/*.sh` | `manifests/diagnosis.csv`, ROI masks, silver labels, an encoder checkpoint | `outputs/diagnosis/DX_*/` (`best.ckpt`, `result.json`, predictions) |
-| **5 prognosis** | `scripts/5_prognosis/*.sh` | `manifests/prognosis.csv`, `clinical/ehr_features.csv`, `clinical/pesi_features.csv`, ROI masks, an encoder checkpoint | `outputs/prognosis/PR_*/` |
+| **5 prognosis** | `scripts/5_prognosis/*.sh` | `manifests/prognosis.csv`, `clinical/ehr_features.csv`, ROI masks, an encoder checkpoint | `outputs/prognosis/PR_*/` |
 | **6 counterfactual** | `scripts/6_counterfactual/*.sh` | the frozen `DX_anatomy_concat` checkpoint + ROI masks | `outputs/counterfactual/CF_*/` (paired deltas, no retraining) |
 
 `run.py plan <experiment>` prints this chain for one arm and marks each link
@@ -137,8 +141,7 @@ READY / MISSING / BLOCKED. It never runs a prerequisite for you.
 - **DATA** — support artifacts built on top of a profile: pseudo-anatomy masks
   (`data.segmentation`, TotalSegmentator with a LungMask lung-Dice cross-check), ROI masks and
   volume-matched random controls (`data.roi`), and report-derived silver labels
-  (`data.silver.*`: seven arms named after their cascade, from `rule` to
-  `rule_falcon_medgemma`). Support
+  (`data.silver.medgemma`). Support
   artifacts are inputs, never results, and only `accepted` silver rows are ever trained on.
   There is no `SEG02`, no segmentation fine-tuning: without expert masks, the masks stay
   pseudo-labels and are labelled as such.
@@ -151,7 +154,7 @@ READY / MISSING / BLOCKED. It never runs a prerequisite for you.
   unavailable contract, not an implemented arm.
 - **DIAGNOSIS** — image only, PE +/-; single-task vs multitask, native vs accepted-silver
   organ supervision, global vs anatomy-aware, concat vs late-logit vs Soft-MoE. Diagnosis
-  never uses EHR or PESI. The same diagnosis model is also the instrument for the
+  never uses EHR or sPESI. The same diagnosis model is also the instrument for the
   representation comparison below.
 - **PROGNOSIS** — confirmed-acute-PE cohort, 30-day mortality; seven-arm modality ablation,
   then global vs anatomy-aware image and the three fusion types.
@@ -185,7 +188,7 @@ module and one config key; swapping one never touches the others.
        |             |         |             |           one adapter per branch -> expert_dim
        |             |         |             |
        |             |         |             |     (prognosis only, added at the end)
-       |             |         |             |            ehr        pesi
+       |             |         |             |            ehr       spesi
        |             |         |             |             |          |
        +-------------+----+----+-------------+-------------+----------+
                           |
@@ -227,65 +230,98 @@ feature-fusion MLP and a `concat_mlp` model has no unused per-branch heads.
 ### Diagnosis — imaging only
 
 `source/tasks/diagnosis/model.py`. Primary target `pe_present`. Diagnosis **never** sees EHR
-or PESI, by design: its number has to be attributable to the scan. Optional auxiliary heads
+by design: its number has to be attributable to the scan. Optional auxiliary heads
 attach accepted-silver findings to the branch whose anatomy they describe (RV findings and
 septal bowing → heart, clot location and acuity → PA, effusion / fibrosis / emphysema →
 lung), which is what `configs/components/tasks.yaml#diagnosis_organ_silver` encodes. Silver
 labels are supervision only; they are never evaluation labels.
 
 ```bash
-DATASET=test_500_sample bash scripts/4_diagnosis/global_single.sh              # global only
-DATASET=test_500_sample bash scripts/4_diagnosis/anatomy_full.sh              # + organ branches, concat
-DATASET=test_500_sample bash scripts/4_diagnosis/anatomy_silver_late_logit.sh # late-logit fusion
-DATASET=test_500_sample bash scripts/4_diagnosis/anatomy_silver_soft_moe.sh   # MoE fusion
+python run.py run diag.global.single --set data.profile=test_500_sample # global only
+python run.py run diag.anatomy.concat --set data.profile=test_500_sample # + organ branches, concat
+python run.py run diag.anatomy.silver.late --set data.profile=test_500_sample # late-logit fusion
+python run.py run diag.anatomy.silver.moe --set data.profile=test_500_sample # MoE fusion
 ```
 
 ### Prognosis — imaging plus clinical, fused at the end
 
 `source/tasks/prognosis/model.py`. Primary target `mortality_30d` on the confirmed-acute-PE
-cohort. The imaging half is byte-for-byte the diagnosis stack; `ehr` and `pesi` enter as two
-more branches **at the fusion stage only**, each through its own encoder and its own adapter
-to the same width. `task.modalities` selects which branches exist, which is exactly the
-seven-arm modality ablation:
+cohort. The imaging half is byte-for-byte the diagnosis stack; `ehr` and `spesi` enter as
+two more branches **at the fusion stage only**, each through its own encoder and its own
+adapter to the same width. `task.modalities` selects which branches exist, which is exactly
+the modality ablation:
 
 ```bash
-DATASET=test_500_sample bash scripts/5_prognosis/pesi_only.sh          # pesi
-DATASET=test_500_sample bash scripts/5_prognosis/clinical_only.sh      # ehr
-DATASET=test_500_sample bash scripts/5_prognosis/clinical_pesi.sh      # ehr + pesi
-DATASET=test_500_sample bash scripts/5_prognosis/image_only.sh         # image
-DATASET=test_500_sample bash scripts/5_prognosis/image_pesi.sh         # image + pesi
-DATASET=test_500_sample bash scripts/5_prognosis/image_clinical.sh     # image + ehr
-DATASET=test_500_sample bash scripts/5_prognosis/image_clinical_pesi.sh   # all three
-DATASET=test_500_sample bash scripts/5_prognosis/anatomy_soft_moe.sh      # + organ branches, MoE
+python run.py run prog.spesi --set data.profile=test_500_sample # sPESI only
+python run.py run prog.ehr --set data.profile=test_500_sample # ehr
+python run.py run prog.image --set data.profile=test_500_sample # image
+python run.py run prog.image_ehr --set data.profile=test_500_sample # image + ehr
+python run.py run prog.anatomy.moe --set data.profile=test_500_sample # + organ branches, MoE
 ```
 
 A tabular-only arm builds no image encoder at all, so it needs no backbone and no masks.
 
-### PESI / sPESI
+### sPESI
 
-PESI and sPESI are a **clinical gate, not a join**. INSPECT ships raw MEDS/OMOP events, not a
-validated score, so stage 0 always writes an audit and only *sometimes* writes a score:
+Stage 0 computes the simplified PESI from the same MEDS/OMOP events the EHR block reads.
+Components, thresholds and vital codes follow the INSPECT release's own scorer
+(`third_party/repos/INSPECT_public/ehr/4_compute_pesi_score.py`), so `prog.spesi` is the
+clinical baseline that release reports against. `source/clinical/spesi.py` is verified
+against that function directly.
 
 ```text
-clinical/pesi_mapping_audit.json   per-component code / source / unit / timing review
-clinical/pesi_status.json          blocked | built | built_no_complete_cases | disabled
-clinical/pesi_features.csv         ONLY when approved: pesi, spesi, pesi_class, computability flags
-clinical/pesi_components_candidate.csv  raw candidate component values + per-feature missingness; never a score
-clinical/modality_availability.csv      CTPA/note/EHR/PESI availability flags per study
+clinical/spesi_features.csv        spesi, spesi_high_risk, spesi_computable, per study
+clinical/spesi_components.csv      the six resolved components with code and event-time provenance
+clinical/spesi_status.json         scored cases by split, score distribution, missing components
+clinical/spesi_mapping_audit.json  the effective code set each component resolved to
 ```
 
-`source/clinical/pesi.py` implements the eleven-component original PESI, its five risk
-classes and sPESI, and returns `None` — never a guess — when any component is missing.
-`configs/clinical/pesi_spesi_mapping.yaml` is the contract; today it is `pending`, so a build
-ends normally with `pesi_status.json: blocked` and no score is fabricated. Every prognosis arm
-with `pesi` in `task.modalities` fails preflight until a clinical steward approves all eleven
-components **and** supplies an approved study-level `pesi.components_table`. See
-`python run.py show prog.image_ehr_pesi`.
+Six criteria, one point each: age > 80, active cancer, chronic cardiopulmonary disease,
+pulse >= 110, systolic BP < 100, SpO2 < 90. **A study missing any component is left
+unscored** rather than partially summed, so an all-missing case can never look low-risk.
 
-The candidate component table is deliberately separate from the approved score. It contains
-raw configured values (where a candidate event can be found), a missingness indicator for
-every component, and code/time/unit provenance. It can support a learned clinical model,
-but cannot be presented as original PESI/sPESI until the mapping contract is approved.
+Two contract points live in `configs/clinical/spesi_mapping.yaml`:
+
+- INSPECT expands its two comorbidity SNOMED concepts through FEMR's ontology. This project
+  has no ontology object, so each comorbidity also lists ICD-10-CM prefixes, expanded against
+  the release's own `metadata/codes.parquet` at build time. The resulting code list is written
+  into the audit, so the effective code set is reviewable rather than hidden.
+- INSPECT reads events up to **two days after** the scan. The default here is strict
+  pre-index (`event_window_after_index_hours: 0`), consistent with the rest of stage 0. Set it
+  to `48` to reproduce INSPECT's number exactly, and expect a higher completion rate.
+
+#### Beating the INSPECT baseline, not a different question
+
+The point of `prog.spesi` is to be the thing a CT-FM arm has to beat, so the comparison
+has to be like-for-like in three ways that are easy to get wrong:
+
+```bash
+D=$PE_DERIVED_ROOT/datasets/full_inspect
+
+# 1. the baseline is a fixed score, not a trained model
+python tools/tasks/score_baseline.py --config configs/runs/04_prognosis/modality/spesi.yaml \
+  --score-column spesi --allow-full --restrict-to $D/clinical/spesi_evaluable.csv
+
+# 2. every other arm is scored on the identical case list
+python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image.yaml \
+  --restrict-to $D/clinical/spesi_evaluable.csv --allow-full
+```
+
+- **Fixed score, not a learned arm.** `score_baseline.py` maps the raw score onto `[0,1]`
+  with a monotone transform and scores it directly. Training an encoder on one scalar can
+  reorder cases, which would quietly make the reference another model. `--transform`
+  picks `platt` (default; calibrated on validation only, so Brier is interpretable),
+  `minmax`, or `raw_sigmoid` (what INSPECT uses).
+- **One shared case list.** sPESI is not computable for every study, so without
+  `--restrict-to` the baseline and the imaging arm would be scored on different patients
+  and the difference between them would be uninterpretable. Stage 0 writes
+  `clinical/spesi_evaluable.csv` for this; it is the same thing INSPECT does inline with
+  `--compare_vs_pesi`.
+- **Reproducing their number.** Set `spesi.index_overrides` in the dataset profile to
+  `{age_precision: fractional, age_days_per_year: 365, event_window_after_index_hours: 48}`
+  and read the PE-positive cohort. Without the age override, roughly 1.8% of patients
+  score differently, because INSPECT compares a fractional age against 80 and the default
+  here uses completed years.
 
 ### Where the anatomy masks come from
 
@@ -309,10 +345,10 @@ model, not four. Same architecture, same dataset, same split, same hyperparamete
 encoder initialization changes:
 
 ```bash
-DATASET=test_500_sample ENCODER_SOURCE=pretrained bash scripts/4_diagnosis/anatomy_full.sh
-DATASET=test_500_sample ENCODER_SOURCE=dapt       bash scripts/4_diagnosis/anatomy_full.sh
-DATASET=test_500_sample ENCODER_SOURCE=c0         bash scripts/4_diagnosis/anatomy_full.sh
-DATASET=test_500_sample ENCODER_SOURCE=silver     bash scripts/4_diagnosis/anatomy_full.sh
+python run.py run diag.anatomy.concat --set data.profile=test_500_sample --set encoder.init_source=pretrained
+python run.py run diag.anatomy.concat --set data.profile=test_500_sample --set encoder.init_source=dapt
+python run.py run diag.anatomy.concat --set data.profile=test_500_sample --set encoder.init_source=c0
+python run.py run diag.anatomy.concat --set data.profile=test_500_sample --set encoder.init_source=silver
 ```
 
 There is deliberately no `diagnosis_pretrained_model.py` / `diagnosis_dapt_model.py` /
@@ -337,7 +373,7 @@ comparable across checkpoints:
 
 ```bash
 python run.py run probe.diag --gpus 0 --set encoder.init_source=dapt
-ENCODER_SOURCE=silver bash scripts/4_diagnosis/probe_multitask.sh
+python run.py run probe.diag.multitask --set encoder.init_source=silver
 ```
 
 The diagnosis probe head is a single `nn.Linear` (or one per label in multitask); the
@@ -352,43 +388,19 @@ never on the test split.
 Three additions that make the study protocol runnable. All of them wrap the existing
 trainer — none of them replaces it.
 
-### Patient-level K-fold cross-validation
-
-The protocol prefers a temporal hold-out and falls back to patient-level stratified
-three-fold CV. `tools/tasks/train_cv.py` materialises one manifest per fold with the `split`
-column rewritten, then runs the unchanged `train_task.py` and `evaluate.py` once per fold:
-
-```bash
-bash scripts/run_cv.sh configs/runs/03_diagnosis/matrix/single_task.yaml
-FOLDS=3 GPUS=0 bash scripts/run_cv.sh configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
-DRY_RUN=1 bash scripts/run_cv.sh configs/runs/03_diagnosis/baseline/global_single.yaml
-```
-
-Folds are assigned at **patient** level and stratified on the primary target, so a patient
-is never in two roles of the same fold. When a class is too small to stratify, the runner
-falls back to unstratified patient K-fold and records that in `cv_summary.json` instead of
-silently changing the design.
-
-Enable it in a config with:
-
-```yaml
-evaluation:
-  split_strategy: patient_stratified_cv
-  cross_validation: {enabled: true, folds: 3, nested_inner_folds: 3}
-```
-
-Output: `outputs/cross_validation/<family>/<experiment_id>/` — `folds/fold_<k>/manifest.csv`,
-`fold_plan.json`, `cv_summary.json`, `CV_SUMMARY.md` (mean ± std per metric), `logs/run.log`.
-
 ### Architecture ablation
 
 Six variants, each retrained from C0, changing only `task.regions` and the fusion component:
 
 ```bash
-GPUS=0 DATASET=full_inspect bash scripts/run_ablation_arch.sh
-ACTION=preflight bash scripts/run_ablation_arch.sh          # check all six, train none
-VARIANTS="global_only full_moe" bash scripts/run_ablation_arch.sh
-CV=1 bash scripts/run_ablation_arch.sh                      # K-fold per variant
+for V in global_only global_heart global_pa global_lung full_moe full_no_router; do
+  python run.py run ablation.arch.$V --set data.profile=full_inspect --gpus 0
+done
+
+# check all six without training any
+for V in global_only global_heart global_pa global_lung full_moe full_no_router; do
+  python run.py preflight ablation.arch.$V --set data.profile=full_inspect
+done
 ```
 
 | Variant | `task.regions` | Fusion |
@@ -408,8 +420,12 @@ expert. Output: `outputs/ablation/architecture/AB_arch_<variant>/`.
 Two axes: variable set (all / common subset) × missingness indicators (on / off).
 
 ```bash
-ACTION=preflight bash scripts/run_ablation_ehr.sh
-EHR_COLUMNS="[age,sex,hr,sbp]" EHR_COLUMNS_COMMON="[age,sex]" bash scripts/run_ablation_ehr.sh
+for V in all_with_missingness all_no_missingness common_with_missingness common_no_missingness; do
+  python run.py preflight ablation.ehr.$V
+done
+
+python run.py run ablation.ehr.all_with_missingness \
+  --set data.ehr_columns="[age,sex,hr,sbp]" --set data.ehr_columns_common="[age,sex]"
 ```
 
 | Variant | Variables | `task.ehr_include_missingness` |
@@ -440,7 +456,6 @@ pe-project/
 │   ├── experiments.yaml    the experiment registry: names, questions, requirements, status
 │   ├── components/         eight preset catalogs: backbones, encoders, objectives,
 │   │                       tasks, training, fusion, anatomy, and silver labels
-│   ├── clinical/           PESI/sPESI mapping contract
 │   ├── runs/               one file per runnable experiment, grouped by pipeline stage
 │   │   ├── 00_data/{dataset,silver}/  01_foundation/  02_representation/
 │   │   ├── 03_diagnosis/  04_prognosis/  05_anatomy_analysis/
@@ -450,7 +465,7 @@ pe-project/
 ├── source/
 │   ├── data_preprocessing/ raw INSPECT -> eligible cohort -> manifests (one implementation)
 │   ├── dataset/            the three active dataset profiles, as data not code
-│   ├── clinical/           PESI/sPESI scoring, clinical preprocessing, the EHR encoder
+│   ├── clinical/           sPESI scoring, clinical preprocessing and the EHR encoder
 │   ├── components/         encoders, organ adapters, ROI pooling, fusion, PEFT
 │   ├── tasks/              diagnosis / prognosis / contour models and heads
 │   └── ...                 data, training engine, metrics, QC, silver, ROI, segmentation
@@ -521,7 +536,7 @@ ${PE_CLOUD_ROOT}/pe-project/outputs              all experiment outputs
 ```
 
 In this workspace, first mount `gs://pe-study/pe-storage` yourself at
-`/mnt/pe-storage`, then use `source scripts/use_gcs_storage.sh`. The helper never mounts
+`/mnt/pe-storage`, then export `PE_CLOUD_ROOT=/mnt/pe-storage`. Nothing in the repo mounts
 anything; it keeps code local while resolving derived data to `/mnt/pe-storage/derived`
 and outputs to `/mnt/pe-storage/pe-project/outputs`.
 
@@ -532,13 +547,13 @@ never writes to it, and requires an explicit scope like every other generation s
 
 ```bash
 # smoke: thirty patients, ten from each official split
-bash scripts/0_data_preprocessing/build_smoke_30.sh
+python run.py run data.dataset.smoke_30
 
 # the 500-patient rehearsal cohort
-ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh
+python run.py run data.dataset.test_500_sample --allow-full
 
 # the full cohort
-ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh
+python run.py run data.dataset.full_inspect --allow-full
 ```
 
 Each profile writes, under `${PE_DERIVED_ROOT}/datasets/<profile>/`:
@@ -551,13 +566,13 @@ dataset.json        full provenance, including the preprocessing fingerprint
 manifests/          ctpa.csv, diagnosis.csv, prognosis.csv, paired_reports.csv, reports.csv
 volumes/            the preprocessed volume cache; each NPY has a physical-geometry
                     sidecar and, when configured, a world-coordinate patch manifest
-clinical/           leakage-safe EHR artifacts, PESI mapping audit/status, and approved scores
+clinical/           leakage-safe EHR artifacts and the sPESI score, components and audit
 audit/              detailed exclusions, integrity, split and cache-QC findings
 ```
 
 Manifests carry at least `patient_id, study_id, split, image_path`; `split` is one of
 `train | validation | test | external`, and the build fails if a patient appears in two.
-EHR readiness columns and, once approved, the PESI/sPESI score columns are merged into
+EHR readiness columns and the sPESI score column are merged into
 `ctpa.csv`, `diagnosis.csv` and `prognosis.csv`, so a training arm reads clinical values from
 the manifest and never from a second table.
 
@@ -584,20 +599,23 @@ DATASET=full_inspect    ALLOW_ALL=1  ...    # the whole cohort
 ### The 500-sample test, end to end
 
 ```bash
-source scripts/use_gcs_storage.sh
+export PE_CLOUD_ROOT=/mnt/pe-storage
+export PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
+export PE_DERIVED_ROOT=/mnt/pe-storage/derived
+export PE_LOCAL_CACHE_ROOT=/mnt/pe-project/cache
 export DATASET=test_500_sample
 
-ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh   # cohort + manifests + clinical
-ALLOW_ALL=1 GPUS=0 bash scripts/1_segmentation/totalsegmentator.sh       # 19 pseudo-anatomy masks/study
-ALLOW_ALL=1        bash scripts/1_segmentation/roi.sh                    # ROI1..ROI8 + random controls
-ALLOW_ALL=1 GPUS=0 bash scripts/2_silver_label/rule_falcon_medgemma.sh            # accepted silver labels
+python run.py run data.dataset.test_500_sample --allow-full # cohort + manifests + clinical
+python run.py run data.segmentation --allow-full --gpus 0 # 19 pseudo-anatomy masks/study
+python run.py run data.roi --allow-full # ROI1..ROI8 + random controls
+python run.py run data.silver.medgemma --allow-full --gpus 0 # accepted silver labels
 
-GPUS=0 bash scripts/3_shared_encoder/1_dapt/dino.sh                      # adapt the shared encoder
-GPUS=0 bash scripts/3_shared_encoder/2_alignment/image_report.sh         # -> C0
+python run.py run repr.dapt.dino --gpus 0 # adapt the shared encoder
+python run.py run repr.align --gpus 0 # -> C0
 
-GPUS=0 bash scripts/4_diagnosis/anatomy_full.sh                          # diagnosis
-GPUS=0 bash scripts/5_prognosis/image_clinical_pesi.sh                   # prognosis
-GPUS=0 bash scripts/6_counterfactual/remove_pa.sh                        # necessity analysis
+python run.py run diag.anatomy.concat --gpus 0 # diagnosis
+python run.py run prog.image_ehr --gpus 0 # prognosis
+python run.py run anatomy.remove_pa --gpus 0 # necessity analysis
 ```
 
 Read `derived/datasets/test_500_sample/data_quality.md` before anything else: its **cohort
@@ -607,13 +625,13 @@ split and the exclusion counts by rule.
 
 ### The full run
 
-Identical commands with `DATASET=full_inspect` and
-`ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh` for stage 0. Check a
+Identical commands with `--set data.profile=full_inspect`, and
+`python run.py run data.dataset.full_inspect --allow-full` for stage 0. Check a
 training arm first without starting it:
 
 ```bash
-DATASET=full_inspect ACTION=preflight GPUS=0 bash scripts/4_diagnosis/anatomy_full.sh
-DATASET=full_inspect ACTION=dry SMOKE=1 GPUS=0 bash scripts/4_diagnosis/anatomy_full.sh
+python run.py preflight diag.anatomy.concat --set data.profile=full_inspect --gpus 0
+python run.py dry diag.anatomy.concat --set data.profile=full_inspect --set training.epochs=1 --gpus 0
 ```
 
 `--patient-id` / `--max-cases` / `--max-reports` / `--allow-full` apply to the **generation**
@@ -623,9 +641,9 @@ stages — dataset build, segmentation, ROI, silver labels, counterfactual infer
 ```bash
 python run.py run data.segmentation  --gpus 0 --patient-id PATIENT_001
 python run.py run data.roi                    --max-cases 5
-python run.py run data.silver.rule_falcon_medgemma --gpus 0 --max-reports 10
+python run.py run data.silver.medgemma --gpus 0 --max-reports 10
 python run.py run anatomy.remove_pa  --gpus 0 --patient-id PATIENT_001   # smoke, isolated output
-python run.py run data.silver.rule_falcon_medgemma --gpus 0,1 --allow-full
+python run.py run data.silver.medgemma --gpus 0,1 --allow-full
 ```
 
 A **training** stage has no per-case limit, and none was invented: its scope *is* the dataset
@@ -639,7 +657,7 @@ overwrite a full evaluation.
 ## GPUs
 
 - Training uses PyTorch DDP, one process per GPU (`--gpus 0,1,2,3`).
-- Silver generation shards reports across ranks; rule_falcon_medgemma loads both LLMs on every rank, so check
+- Silver generation shards reports across ranks; medgemma loads both LLMs on every rank, so check
   VRAM before a full run.
 - Segmentation shards studies across `--gpus` without DDP; ROI construction is CPU-parallel
   via `roi.workers`.

@@ -32,6 +32,18 @@ def main() -> int:
         "Launch one training or silver-generation experiment on CPU, one GPU, or PyTorch DDP"
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="launch tools/tasks/evaluate.py instead of the training entrypoint",
+    )
+    parser.add_argument("--checkpoint", type=Path, help="checkpoint override for evaluation")
+    parser.add_argument("--restrict-to", type=Path, help="evaluation restriction CSV/parquet")
+    parser.add_argument(
+        "--reference-predictions",
+        type=Path,
+        help="reference predictions for paired evaluation metrics",
+    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--patient-id", dest="patient_ids", action="append", metavar="ID")
     selection.add_argument("--max-reports", type=int)
@@ -48,23 +60,29 @@ def main() -> int:
         args.patient_ids or args.max_reports is not None or args.max_cases is not None or args.allow_full
     )
     silver_selection = bool(args.patient_ids or args.max_reports is not None or args.allow_full)
-    if stage == "silver" and not silver_selection:
-        raise SystemExit("silver generation requires --patient-id, --max-reports, or --allow-full")
-    if stage == "counterfactual" and not selected_scope:
-        raise SystemExit("counterfactual inference requires --patient-id, --max-cases, or --allow-full")
-    if stage not in {"silver", "counterfactual"} and selected_scope:
-        raise SystemExit("patient/item selection is only valid for silver or counterfactual inference")
-    if stage == "silver" and args.max_cases is not None:
-        raise SystemExit("silver generation uses --max-reports, not --max-cases")
-    if stage == "counterfactual" and args.max_reports is not None:
-        raise SystemExit("counterfactual inference uses --max-cases, not --max-reports")
+    if args.evaluate:
+        if stage not in {"diagnosis", "prognosis", "contour"}:
+            raise SystemExit(f"evaluation is not supported for stage={stage!r}")
+        if args.max_reports is not None:
+            raise SystemExit("task evaluation uses --max-cases, not --max-reports")
+    else:
+        if stage == "silver" and not silver_selection:
+            raise SystemExit("silver generation requires --patient-id, --max-reports, or --allow-full")
+        if stage == "counterfactual" and not selected_scope:
+            raise SystemExit("counterfactual inference requires --patient-id, --max-cases, or --allow-full")
+        if stage not in {"silver", "counterfactual"} and selected_scope:
+            raise SystemExit("patient/item selection is only valid for silver or counterfactual inference")
+        if stage == "silver" and args.max_cases is not None:
+            raise SystemExit("silver generation uses --max-reports, not --max-cases")
+        if stage == "counterfactual" and args.max_reports is not None:
+            raise SystemExit("counterfactual inference uses --max-cases, not --max-reports")
     if args.max_reports is not None and args.max_reports < 1:
         raise SystemExit("--max-reports must be positive")
     if args.max_cases is not None and args.max_cases < 1:
         raise SystemExit("--max-cases must be positive")
-    if stage == "counterfactual" and not args.allow_full:
+    if stage == "counterfactual" and not args.allow_full and not args.evaluate:
         config["resume"] = True
-    if stage == "silver" and not args.overwrite:
+    if stage == "silver" and not args.overwrite and not args.evaluate:
         config["resume"] = True
     if str(config["experiment"].get("family") or "") == "remove_roi":
         raise SystemExit(
@@ -89,7 +107,21 @@ def main() -> int:
         child_arguments.append("--resume")
     if args.overwrite:
         child_arguments.append("--overwrite")
-    if stage == "silver":
+    if args.evaluate:
+        if args.checkpoint is not None:
+            child_arguments += ["--checkpoint", str(args.checkpoint)]
+        if args.restrict_to is not None:
+            child_arguments += ["--restrict-to", str(args.restrict_to)]
+        if args.reference_predictions is not None:
+            child_arguments += ["--reference-predictions", str(args.reference_predictions)]
+        if args.patient_ids:
+            for patient_id in args.patient_ids:
+                child_arguments += ["--patient-id", patient_id]
+        elif args.max_cases is not None:
+            child_arguments += ["--max-cases", str(args.max_cases)]
+        elif args.allow_full:
+            child_arguments.append("--allow-full")
+    elif stage == "silver":
         if args.patient_ids:
             for patient_id in args.patient_ids:
                 child_arguments += ["--patient-id", patient_id]
@@ -105,9 +137,15 @@ def main() -> int:
             child_arguments += ["--max-cases", str(args.max_cases)]
         else:
             child_arguments.append("--allow-full")
-    entrypoint = paths.code_root / ENTRYPOINTS[stage]
+    entrypoint = paths.code_root / (
+        "tools/tasks/evaluate.py" if args.evaluate else ENTRYPOINTS[stage]
+    )
     spec = build_launch_spec(entrypoint, child_arguments, physical)
-    distributed_mode = "distributed report sharding" if stage == "silver" else "DDP (one experiment)"
+    distributed_mode = (
+        "distributed evaluation" if args.evaluate
+        else "distributed report sharding" if stage == "silver"
+        else "DDP (one experiment)"
+    )
     mode = "CPU" if not physical else "single GPU" if len(physical) == 1 else distributed_mode
     print("Launch:", shlex.join(spec.command))
     print("Mode:", mode)

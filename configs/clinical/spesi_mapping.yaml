@@ -1,0 +1,99 @@
+# sPESI source contract for the Stanford INSPECT MEDS/OMOP release.
+#
+# Components, thresholds and vital codes follow the INSPECT release's own scorer,
+# third_party/repos/INSPECT_public/ehr/4_compute_pesi_score.py, so a score produced here is
+# comparable with the clinical baseline reported for that cohort. The arithmetic in
+# source/clinical/spesi.py is verified against that function directly.
+#
+# One deliberate deviation. INSPECT resolves the two comorbidity criteria by expanding
+# SNOMED concepts through FEMR's ontology. This project has no ontology object, so each
+# comorbidity also lists ICD-10-CM prefixes. Prefixes are expanded against the release's
+# own metadata/codes.parquet at build time and the resulting code list is written into
+# spesi_mapping_audit.json, so the effective code set is explicit and reviewable rather
+# than hidden behind a library call.
+schema_version: 2
+score_specification: sPESI
+reference_implementation: third_party/repos/INSPECT_public/ehr/4_compute_pesi_score.py
+
+index:
+  anchor_column: procedure_datetime
+  # Strict pre-index by default: a component event must precede the CTPA. INSPECT instead
+  # accepts events up to two days after the scan. Set 48 to reproduce their number exactly
+  # and expect a higher completion rate; leave 0 to keep this project's pre-index rule.
+  event_window_after_index_hours: 0
+  # INSPECT reads vitals from the ten days before the label time.
+  vital_lookback_hours: 240
+  vital_selection: latest_value_before_index
+  # Comorbidities are history: every eligible event up to the index counts.
+  comorbidity_lookback_hours: null
+  # completed_years is the clinical convention ("80 years old" until the 81st birthday).
+  # INSPECT instead compares a fractional age against 80, which scores the point for
+  # anyone past their 80th birthday. Set fractional + 365 to reproduce their number.
+  age_precision: completed_years
+  age_days_per_year: 365.2425
+
+components:
+  age:
+    input_column: age
+    type: age_years
+    source_codes: [MEDS_BIRTH]
+    expected_unit: years
+    note: age at index, derived from the MEDS birth event
+
+  cancer:
+    input_column: cancer
+    type: boolean
+    # Absence of a matching code is a negative, not a missing value -- the same
+    # convention INSPECT uses (pmh_cancer initialises to False).
+    absent_means_false: true
+    source_codes: [SNOMED/55342001]
+    source_code_prefixes:
+      - ICD10CM/C     # C00-C97 malignant neoplasms
+      - ICD10CM/D45   # polycythaemia vera
+      - ICD10CM/D46   # myelodysplastic syndromes
+      - ICD10CM/D47   # other neoplasms of lymphoid/haematopoietic tissue
+    note: INSPECT expands SNOMED/55342001 (malignant neoplastic disease) through FEMR
+
+  cardiopulmonary_disease:
+    input_column: cardiopulmonary_disease
+    type: boolean
+    absent_means_false: true
+    source_codes: [SNOMED/39785005]
+    source_code_prefixes:
+      - ICD10CM/I27   # other pulmonary heart disease
+      - ICD10CM/I50   # heart failure
+      - ICD10CM/J41   # simple and mucopurulent chronic bronchitis
+      - ICD10CM/J42   # unspecified chronic bronchitis
+      - ICD10CM/J43   # emphysema
+      - ICD10CM/J44   # chronic obstructive pulmonary disease
+      - ICD10CM/J47   # bronchiectasis
+      - ICD10CM/J84   # other interstitial pulmonary diseases
+    note: INSPECT expands SNOMED/39785005 (chronic cardiopulmonary disease) through FEMR
+
+  pulse:
+    input_column: pulse
+    type: numeric
+    source_codes: [LOINC/8867-4]
+    expected_unit: /min
+    note: heart rate; the exact LOINC code INSPECT reads
+
+  systolic_bp:
+    input_column: systolic_bp
+    type: numeric
+    source_codes: [LOINC/8480-6]
+    expected_unit: mmHg
+    note: systolic blood pressure; the exact LOINC code INSPECT reads
+
+  oxygen_saturation:
+    input_column: oxygen_saturation
+    type: numeric
+    source_codes:
+      - LOINC/20564-1   # oxygen saturation in blood       (INSPECT)
+      - LOINC/2713-6    # oxygen saturation in arterial blood (INSPECT)
+      - SNOMED/104847001
+      - LOINC/2708-6    # oxygen saturation in arterial blood
+      - LOINC/59408-5   # oxygen saturation by pulse oximetry
+    expected_unit: '%'
+    note: >-
+      the first three are INSPECT's set; the last two are the other standard SpO2 LOINC
+      codes, added because none of INSPECT's three appears in this extract's vocabulary

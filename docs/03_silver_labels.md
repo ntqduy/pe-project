@@ -1,8 +1,8 @@
 # 03. Silver labels
 
 Stage này đọc report và tạo nhãn phụ; không dùng silver label làm ground truth đánh giá.
-Bảy method dùng chung một implementation: `rule`, `falcon`, `medgemma`, `rule_falcon`,
-`rule_medgemma`, `falcon_medgemma`, `rule_falcon_medgemma`.
+Chỉ còn một method sinh nhãn: `medgemma`. Cascade machinery trong
+`source/silver/generator.py` giữ nguyên nên thêm lại một stage chỉ là sửa một dòng.
 
 ## Cơ chế quyết định và abstention
 
@@ -18,10 +18,10 @@ Bảy method dùng chung một implementation: `rule`, `falcon`, `medgemma`, `ru
 ## Output chính
 
 Ví dụ:
-`E:\PE_NU\source\pe-project\outputs\silver_label\rule_falcon_medgemma\`.
+`E:\PE_NU\source\pe-project\outputs\silver_label\medgemma\`.
 
 ```text
-rule_falcon_medgemma/
+medgemma/
   silver_labels.csv
   silver_label_confidence.csv
   logs/run.log
@@ -79,17 +79,17 @@ lung disease, fibrosis và emphysema. Chi tiết kiểu/range nằm ở
 
 ```bash
 # wrapper: một script cho mỗi cascade
-MAX_REPORTS=10 bash scripts/2_silver_label/rule.sh
-ALLOW_ALL=1 GPUS=0,1 bash scripts/2_silver_label/rule_falcon_medgemma.sh
+python run.py run data.silver.rule --max-reports 10
+python run.py run data.silver.medgemma --allow-full --gpus 0,1
 
 # run.py trực tiếp
 python run.py run data.silver.rule --max-reports 10
-python run.py run data.silver.rule_falcon_medgemma --gpus 0 --allow-full
+python run.py run data.silver.medgemma --gpus 0 --allow-full
 ```
 
 Bảy script trong `scripts/2_silver_label/` tương ứng bảy method: `rule.sh`, `falcon.sh`,
-`medgemma.sh`, `rule_falcon.sh`, `rule_medgemma.sh`, `falcon_medgemma.sh`,
-`rule_falcon_medgemma.sh`.
+`medgemma.sh`, `medgemma.sh`, `medgemma.sh`, `medgemma.sh`,
+`medgemma.sh`.
 
 Sau chạy, kiểm tra tỷ lệ abstention theo target/source, lọc `abstain_reason`, đọc evidence
 và so report gốc. `result.json` chỉ dùng để xem thống kê nhanh; audit ở mức case phải đọc

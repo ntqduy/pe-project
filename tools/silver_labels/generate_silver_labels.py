@@ -86,12 +86,12 @@ def _output_rows(
     }
     label_rows: list[dict[str, Any]] = []
     confidence_rows: list[dict[str, Any]] = []
-    falcon_threshold = float(silver_config.get("confidence_threshold", 0.8))
+    # medgemma is the only provider, so its threshold is the only one a row can be gated on.
     medgemma_threshold = float(
-        silver_config.get("medgemma_confidence_threshold", falcon_threshold)
-    )
-    agreement_threshold = float(
-        silver_config.get("agreement_confidence_threshold", falcon_threshold)
+        silver_config.get(
+            "medgemma_confidence_threshold",
+            silver_config.get("confidence_threshold", 0.8),
+        )
     )
     for row in labels:
         key = (str(row["report_id"]), str(row["target"]))
@@ -139,13 +139,7 @@ def _output_rows(
                 "positive_threshold": "",
                 "negative_threshold": "",
                 "minimum_confidence_threshold": (
-                    agreement_threshold
-                    if row.get("provider") == "falcon_medgemma_agree"
-                    else medgemma_threshold
-                    if row.get("provider") == "medgemma"
-                    else falcon_threshold
-                    if row.get("provider") == "falcon"
-                    else ""
+                    medgemma_threshold if row.get("provider") == "medgemma" else ""
                 ),
                 "decision": decision,
                 "abstain_reason": row.get("reason") if decision == "abstained" else "",
@@ -260,7 +254,7 @@ def main() -> int:
 
         run_dir = rank_zero_call(context, prepare)
         silver_config = dict(config.get("silver") or {})
-        # The experiment id IS the method name (rule_falcon_medgemma, medgemma, ...), so
+        # The experiment id IS the method name (medgemma), so
         # there is no prefix to parse and no second naming scheme to keep aligned.
         method = str(silver_config.get("method") or experiment_id)
         if context.is_main:
@@ -407,7 +401,7 @@ def main() -> int:
         return 0
     except Exception as exc:
         if logger is not None:
-            logger.exception("silver status=failed", exc)
+            logger.exception("silver status=failed", exc)  # noqa: PLE1205, TRY401 - RunLogger.exception(message, error)
         raise
     finally:
         context.close()

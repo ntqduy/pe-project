@@ -1,0 +1,59 @@
+# CT-FM frozen diagnosis: CT-FM backbone -> trainable MLP classifier.
+#
+# The image cache is created by tools/data/build_ctfm_cache.py. It is derived from the
+# already-filtered official train/validation/test manifests; this config never creates a
+# split. Only the classifier and the small feature adapter are trainable.
+_base_:
+  - ../../paths.yaml
+  - ../../compute/default.yaml
+  - ../../components/backbones.yaml#ct_fm
+  - ../../components/encoders.yaml#from_pretrained
+  - ../../components/tasks.yaml#diagnosis
+  - ../../components/training.yaml#diagnosis
+  - ../../components/fusions.yaml#concat_mlp
+
+experiment:
+  id: DX_ctfm_frozen
+  name: foundation.ct_fm_frozen.diagnosis
+  stage: diagnosis
+  family: diagnosis
+  baseline_backbone: ct_fm
+  baseline_init: pretrained
+
+data:
+  mode: full
+  profile: full_inspect
+  manifest: ct_fm_frozen/manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns: {}
+
+task:
+  _replace_: true
+  primary_target: pe_present
+  targets:
+    pe_present: 1
+  regions: []
+  architecture: concat_mlp
+  silver_targets: []
+  silver_loss_weight: 0.0
+
+# This is the frozen-encoder + trainable classification head contract.
+peft:
+  method: frozen
+
+lineage:
+  transfer_modules: []
+  supervision_type: native_labels
+
+supervision:
+  require_masks: false
+  masks: null
+  require_silver_labels: false
+  silver_labels: null
+
+# Default full experiment budget. The task scripts can override both values for a smoke run.
+training:
+  epochs: 50
+  early_stopping_patience: 10
+  record_epoch_auc: true

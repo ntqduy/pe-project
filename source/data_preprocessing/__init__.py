@@ -17,7 +17,7 @@ Stage order (``pipeline.build_dataset``):
     -> sampling     sampling.sample_patients         patient-level, inside official split
     -> leakage      leakage.audit_split_integrity    official split + leakage guards
     -> EHR          ehr.build_ehr_readiness          strict pre-CTPA clinical readiness
-    -> PESI         pesi.build_pesi_artifacts        approved-score gate + mapping audit
+    -> sPESI        spesi.build_spesi_artifacts      simplified PESI from MEDS events
     -> manifests    manifests.build_manifests        ctpa / diagnosis / prognosis / reports
 """
 
@@ -39,10 +39,10 @@ from .filters import EligibilityReport, ExclusionLedger, apply_eligibility
 from .integrity import VolumeCheck, check_volumes
 from .leakage import SplitAudit, audit_split_integrity, load_excluded_patients
 from .manifests import build_manifests
-from .pesi import PESI_FEATURE_COLUMNS, PesiArtifacts, PesiBuildError, build_pesi_artifacts
 from .pipeline import DatasetBuildError, build_dataset, dataset_output_root
 from .sampling import SamplingPlan, sample_patients
 from .sources import InspectSource, StudyRecord
+from .spesi import SpesiArtifacts, SpesiBuildError, build_spesi_artifacts
 from .volumes import (
     PREPROCESSING_IMPLEMENTATION,
     PatchCoordinate,
@@ -60,9 +60,6 @@ __all__ = [
     "EhrArtifacts",
     "EhrBuildError",
     "EhrProfilesArtifacts",
-    "PESI_FEATURE_COLUMNS",
-    "PesiArtifacts",
-    "PesiBuildError",
     "PREPROCESSING_IMPLEMENTATION",
     "PatchCoordinate",
     "EligibilityReport",
@@ -71,6 +68,8 @@ __all__ = [
     "PatientLabel",
     "PreprocessingSpec",
     "SamplingPlan",
+    "SpesiArtifacts",
+    "SpesiBuildError",
     "SplitAudit",
     "StudyRecord",
     "VolumeCheck",
@@ -81,7 +80,7 @@ __all__ = [
     "build_ehr_readiness",
     "build_ehr_profiles",
     "build_manifests",
-    "build_pesi_artifacts",
+    "build_spesi_artifacts",
     "check_volumes",
     "dataset_output_root",
     "load_excluded_patients",

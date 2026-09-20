@@ -7,8 +7,10 @@ third_party/weights/
   segmentation/
     totalsegmentator/  # toàn bộ offline TotalSegmentator task weights   [MISSING]
     lungmask/R231.pth  # exact LungMask QC checkpoint                    [MISSING]
+  ct_fm_feature_extractor/  # pinned clone of the HF weight repo             [STAGED]
+    config.json
+    model.safetensors
   foundation/
-    ct_fm/model.ckpt                                                     [MISSING]
     ct_clip/model.pt                                                     [MISSING]
     totalfm/totalfm_en_checkpoint_best_loss.pt                           [MISSING]
   falcon-7b/         # tiiuae/falcon-7b, complete HF directory           [STAGED]
@@ -21,8 +23,15 @@ Trạng thái hiện tại (kiểm tra trực tiếp từ file trên đĩa, khô
 |---|---|---|
 | Falcon | `third_party/weights/falcon-7b` | staged — `FalconForCausalLM`, `tiiuae/falcon-7b` |
 | MedGemma | `third_party/weights/medgemma` | staged — `Gemma3ForConditionalGeneration`, `google/medgemma-1.5-4b-it` |
-| CT-FM / CT-CLIP / TotalFM | `foundation/*` | thiếu weight, thiếu adapter contract |
+| CT-FM | `third_party/weights/ct_fm_feature_extractor` | staged — SegResEncoder, `project-lighter/ct_fm_feature_extractor` |
+| CT-CLIP / TotalFM | `foundation/*` | thiếu weight, thiếu adapter contract |
 | TotalSegmentator / LungMask | `segmentation/*` | thiếu weight, chưa cài package |
+
+CT-FM không có bản `.ckpt` nào của Lighter trên upstream: weight công khai duy nhất là HuggingFace
+`project-lighter/ct_fm_feature_extractor` (safetensors). Repo đó dùng git-lfs, nên clone bằng `git clone`
+thuần chỉ cho ra pointer 134 byte; phải cài git-lfs hoặc tải thẳng file từ endpoint `resolve/main` rồi
+đối chiếu SHA-256 với `oid` trong pointer. Loader đọc được `.safetensors` qua
+`source/components/encoders/image/external.py:load_state_file`.
 
 MedGemma 1.5 là image-text-to-text checkpoint, nên `auto_model_class` phải là
 `AutoModelForImageTextToText`; `AutoModelForCausalLM` không resolve được

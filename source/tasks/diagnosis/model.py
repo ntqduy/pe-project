@@ -18,7 +18,7 @@ exist and exactly one is built:
     late-logit fusion                       branches -> one head bank per branch ->
                                             masked, renormalized weighted logit average
 
-Diagnosis is image-only by design: no EHR and no PESI ever enter this model.
+Diagnosis is image-only by design: no EHR ever enters this model.
 """
 from __future__ import annotations
 

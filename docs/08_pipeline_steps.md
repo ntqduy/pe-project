@@ -46,6 +46,6 @@ test. Hiện normalized data chưa có nên registry đánh dấu các stage nà
 
 - backbone factory/output adapter và real checkpoint cần được điền sau khi inspect weight;
 - RSPECT và Turkey normalized manifests chưa sẵn sàng;
-- EHR columns và PESI clinical approval còn thiếu cho một số prognosis arms;
+- EHR columns còn thiếu cho một số prognosis arms; sPESI được stage 0 tự tính;
 - contour cần expert-reviewed embolus masks.
 

@@ -21,8 +21,8 @@ configs/
     training.yaml        optimizer, PEFT, evaluation
     fusions.yaml         concat, late-logit, Soft-MoE
     anatomy.yaml         organ adapter và ROI source
-    silver.yaml          bảy silver methods
-  clinical/              PESI/sPESI contract
+    silver.yaml          medgemma silver method
+  clinical/              sPESI source contract
   compute/               CPU/GPU presets
   experiments.yaml       semantic registry cho run.py
   paths.yaml             data/output roots

@@ -27,5 +27,5 @@ supervision:
   require_masks: false
   masks: null
   require_ehr: true
+  require_spesi: false
   ehr: clinical/ehr_features.csv
-  require_pesi: false

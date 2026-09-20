@@ -29,7 +29,7 @@ Họ thứ hai tự đặt `experiment.id` / `output_id`, nên evaluate phải l
 ```bash
 # Probe — encoder đóng băng
 for SRC in pretrained dapt c0 silver; do
-  ENCODER_SOURCE=$SRC bash scripts/4_diagnosis/probe.sh
+  python run.py run probe.diag --set encoder.init_source=$SRC
   python tools/tasks/evaluate.py --config configs/runs/02_representation/probe/diagnosis.yaml --set encoder.init_source=$SRC --allow-full
 done
 ```
@@ -37,7 +37,7 @@ done
 ```bash
 # Fine-tune LoRA — cùng 4 stage
 for SRC in pretrained dapt c0 silver; do
-  DATASET=full_inspect ENCODER_SOURCE=$SRC GPUS=0 bash scripts/4_diagnosis/global_single.sh
+  python run.py run diag.global.single --set data.profile=full_inspect --set encoder.init_source=$SRC --gpus 0
   python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/baseline/global_single.yaml --set encoder.init_source=$SRC --set data.profile=full_inspect --allow-full
 done
 ```
@@ -56,25 +56,25 @@ dùng `WEIGHT_SOURCE`.
 
 ```bash
 # hàng 1 — single-task, C0
-DATASET=full_inspect WEIGHT_SOURCE=alignment GPUS=0 bash scripts/4_diagnosis/single-task/pe_positive/global.sh
+python tools/tasks/train_task.py --config configs/runs/03_diagnosis/matrix/single_task.yaml --set data.profile=full_inspect --set encoder.init_source=c0 --set experiment.id=DX_matrix_single_pe_positive_ds_full_inspect_weight_alignment_global --set experiment.output_id=single_task/pe_positive/weight_alignment/global --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/matrix/single_task.yaml --set data.profile=full_inspect --set encoder.init_source=c0 --set experiment.id=DX_matrix_single_pe_positive_ds_full_inspect_weight_alignment_global --set experiment.output_id=single_task/pe_positive/weight_alignment/global --allow-full
 ```
 
 ```bash
 # hàng 2 — multitask, C0
-DATASET=full_inspect WEIGHT_SOURCE=alignment GPUS=0 bash scripts/4_diagnosis/multi-task/global.sh
+python tools/tasks/train_task.py --config configs/runs/03_diagnosis/matrix/multitask.yaml --set data.profile=full_inspect --set encoder.init_source=c0 --set experiment.id=DX_matrix_multi_ds_full_inspect_weight_alignment_global --set experiment.output_id=multi_task/multi/weight_alignment/global --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/matrix/multitask.yaml --set data.profile=full_inspect --set encoder.init_source=c0 --set experiment.id=DX_matrix_multi_ds_full_inspect_weight_alignment_global --set experiment.output_id=multi_task/multi/weight_alignment/global --allow-full
 ```
 
 ```bash
 # hàng 3 — single-task, C_silver
-DATASET=full_inspect WEIGHT_SOURCE=silver_encoder GPUS=0 bash scripts/4_diagnosis/single-task/pe_positive/global.sh
+python tools/tasks/train_task.py --config configs/runs/03_diagnosis/matrix/single_task.yaml --set data.profile=full_inspect --set encoder.init_source=silver --set experiment.id=DX_matrix_single_pe_positive_ds_full_inspect_weight_silver_encoder_global --set experiment.output_id=single_task/pe_positive/weight_silver_encoder/global --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/matrix/single_task.yaml --set data.profile=full_inspect --set encoder.init_source=silver --set experiment.id=DX_matrix_single_pe_positive_ds_full_inspect_weight_silver_encoder_global --set experiment.output_id=single_task/pe_positive/weight_silver_encoder/global --allow-full
 ```
 
 ```bash
 # hàng 4 — multitask, C_silver
-DATASET=full_inspect WEIGHT_SOURCE=silver_encoder GPUS=0 bash scripts/4_diagnosis/multi-task/global.sh
+python tools/tasks/train_task.py --config configs/runs/03_diagnosis/matrix/multitask.yaml --set data.profile=full_inspect --set encoder.init_source=silver --set experiment.id=DX_matrix_multi_ds_full_inspect_weight_silver_encoder_global --set experiment.output_id=multi_task/multi/weight_silver_encoder/global --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/matrix/multitask.yaml --set data.profile=full_inspect --set encoder.init_source=silver --set experiment.id=DX_matrix_multi_ds_full_inspect_weight_silver_encoder_global --set experiment.output_id=multi_task/multi/weight_silver_encoder/global --allow-full
 ```
 
@@ -91,31 +91,31 @@ Launcher in ra `experiment.id` và `output_id` đã resolve — đối chiếu t
 
 ```bash
 # hàng 1 — report-only
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/report_only.sh
+python run.py run diag.report_only --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/baseline/report_only.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # hàng 2 — global image
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/global_single.sh
+python run.py run diag.global.single --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/baseline/global_single.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # hàng 3 — global + silver head
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/global_silver_multitask.sh
+python run.py run diag.global.silver_multitask --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/baseline/global_silver_multitask.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # hàng 4 — anatomy-aware
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/anatomy_full.sh
+python run.py run diag.anatomy.concat --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/single_concat.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # hàng 5 — anatomy + silver
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/anatomy_silver_concat.sh
+python run.py run diag.anatomy.silver.concat --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/silver_concat.yaml --set data.profile=full_inspect --allow-full
 ```
 
@@ -127,86 +127,59 @@ python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/silver
 | Anatomy-aware | `diag.anatomy.concat` | ✓ | ✓ | ✗ | | | |
 | **Anatomy + silver** | `diag.anatomy.silver.concat` | ✓ | ✓ | ✓ | | | |
 
-## T4. Prognosis — ảnh thêm gì so với clinical/PESI
+## T4. Prognosis — ảnh thêm gì so với clinical
 
 Symlink dưới `scripts/5_prognosis/` bị checkout thành file text trên Windows → dùng dạng gọi
 trực tiếp.
 
 ```bash
-# hàng 1 — PESI
-COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=pesi_only bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
-python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/pesi.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/pesi_only --allow-full
-```
-
-```bash
-# hàng 2 — clinical
-COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=clinical_only bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
+# hàng 1 — clinical
+python tools/tasks/train_task.py --config configs/runs/04_prognosis/modality/ehr.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/clinical_only
 python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/ehr.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/clinical_only --allow-full
 ```
 
 ```bash
-# hàng 3 — clinical + PESI
-COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=clinical_pesi bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
-python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/ehr_pesi.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/clinical_pesi --allow-full
-```
-
-```bash
-# hàng 4 — ảnh
-COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=image_only bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
+# hàng 2 — ảnh
+python tools/tasks/train_task.py --config configs/runs/04_prognosis/modality/image.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/image_only
 python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/image_only --allow-full
 ```
 
 ```bash
-# hàng 5 — ảnh + clinical
-COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=image_clinical bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
+# hàng 3 — ảnh + clinical
+python tools/tasks/train_task.py --config configs/runs/04_prognosis/modality/image_ehr.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/image_clinical
 python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image_ehr.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/image_clinical --allow-full
-```
-
-```bash
-# hàng 6 — ảnh + PESI
-COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=image_pesi bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
-python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image_pesi.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/image_pesi --allow-full
-```
-
-```bash
-# hàng 7 — cả ba
-COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=image_clinical_pesi bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
-python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image_ehr_pesi.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_alignment/image_clinical_pesi --allow-full
 ```
 
 | Modality | Experiment | auroc | auprc | brier | calibration_slope |
 |---|---|---|---|---|---|
-| PESI/sPESI | `prog.pesi` | | | | |
+| sPESI | `prog.spesi` | | | | |
 | Clinical (EHR) | `prog.ehr` | | | | |
-| Clinical + PESI | `prog.ehr_pesi` | | | | |
 | Ảnh | `prog.image` | | | | |
-| Ảnh + clinical | `prog.image_ehr` | | | | |
-| Ảnh + PESI | `prog.image_pesi` | | | | |
-| **Cả ba** | `prog.image_ehr_pesi` | | | | |
+| **Ảnh + clinical** | `prog.image_ehr` | | | | |
 
-Câu trả lời: so `prog.ehr_pesi` với `prog.image_ehr_pesi`.
+Câu trả lời: so `prog.ehr` với `prog.image_ehr`.
 
 ## T5. Vùng giải phẫu nào tác động tới PE
 
 ```bash
 # bước 0 — model tham chiếu, bắt buộc trước
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/anatomy_full.sh
+python run.py run diag.anatomy.concat --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/single_concat.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # cột necessity — không cần evaluate riêng
-bash scripts/6_counterfactual/remove_pa.sh
-bash scripts/6_counterfactual/remove_heart.sh
-bash scripts/6_counterfactual/remove_lung.sh
-bash scripts/6_counterfactual/remove_random.sh
+python run.py run anatomy.remove_pa
+python run.py run anatomy.remove_heart
+python run.py run anatomy.remove_lung
+python run.py run anatomy.remove_random
 ```
 
 ```bash
 # cột sufficiency — paired bootstrap so với full model
 REF="$PE_CLOUD_ROOT/pe-project/outputs/diagnosis/DX_anatomy_concat/predictions.parquet"
 for R in pa heart lung random; do
-  DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/${R}_student.sh
+  python run.py run anatomy.${R}_student --set data.profile=full_inspect --gpus 0
   python tools/tasks/evaluate.py --config configs/runs/05_anatomy_analysis/students/gt/$R.yaml --set data.profile=full_inspect --reference-predictions "$REF" --allow-full
 done
 ```
@@ -234,13 +207,15 @@ Bản prognosis của T5. Email liệt kê ba arm này riêng: strict-heart, art
 
 ```bash
 # bước 0 — hàng trần, bắt buộc trước
-DATASET=full_inspect GPUS=0 bash scripts/5_prognosis/image_only.sh
+python run.py run prog.image --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # bốn arm organ-only, train + evaluate
-DATASET=full_inspect GPUS=0 bash scripts/run_prognosis_organ.sh
+for R in heart pa lung random; do
+  python run.py run prog.${R}_student --set data.profile=full_inspect --gpus 0
+done
 ```
 
 ```bash
@@ -300,9 +275,7 @@ strict-load như classifier hoàn chỉnh.
 ## S1. Chất lượng silver label
 
 ```bash
-for M in rule falcon medgemma rule_falcon rule_medgemma falcon_medgemma rule_falcon_medgemma; do
-  ALLOW_ALL=1 GPUS=0 bash scripts/2_silver_label/$M.sh
-done
+python run.py run data.silver.medgemma --allow-full --gpus 0
 ```
 
 Số có sẵn trong `outputs/silver_label/<method>/result.json → evaluation`. Đếm số, không CI.
@@ -312,20 +285,15 @@ Số có sẵn trong `outputs/silver_label/<method>/result.json → evaluation`.
 | `rule` | | | | | — |
 | `falcon` | | | | | — |
 | `medgemma` | | | | | — |
-| `rule_falcon` | | | | | — |
-| `rule_medgemma` | | | | | — |
-| `falcon_medgemma` | | | | | |
-| `rule_falcon_medgemma` | | | | | |
 
 Báo coverage cạnh mọi metric dùng silver — precision cao do abstain nhiều không phải cải thiện.
 
 ## S2. Cascade nào tạo ra encoder tốt hơn
 
 ```bash
-for M in medgemma rule_falcon rule_falcon_medgemma; do
-  GPUS=0 bash scripts/3_shared_encoder/4_silver_encoder/$M.sh
-  CKPT="$PE_CLOUD_ROOT/pe-project/outputs/shared_encoder/silver_encoder/$M/weight_rspect_multitask/best.ckpt"
-  ENCODER_SOURCE=custom ENCODER_CHECKPOINT="$CKPT" ENCODER_EXPERIMENT="SE_silver_${M}" SET="experiment.id=DX_probe_diagnosis_silver_${M}" bash scripts/4_diagnosis/probe.sh
+for M in medgemma; do
+  python tools/tasks/train_task.py --config configs/runs/02_representation/silver_adaptation/$M.yaml --gpus 0
+  python run.py run probe.diag --set encoder.init_source=custom --set encoder.checkpoint="$CKPT" --set encoder.source_experiment="SE_silver_${M}"
   python tools/tasks/evaluate.py --config configs/runs/02_representation/probe/diagnosis.yaml --set encoder.init_source=custom --set encoder.checkpoint="$CKPT" --set experiment.id=DX_probe_diagnosis_silver_${M} --allow-full
 done
 ```
@@ -333,27 +301,27 @@ done
 | Silver source | Probe auroc | Probe auprc | coverage của silver |
 |---|---|---|---|
 | `medgemma` | | | |
-| `rule_falcon` | | | |
-| `rule_falcon_medgemma` | | | |
+| `medgemma` | | | |
+| `medgemma` | | | |
 | C0 (không silver) | | | — |
 
 ## S3. Fusion
 
 ```bash
 # concat + MLP
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/anatomy_silver_concat.sh
+python run.py run diag.anatomy.silver.concat --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/silver_concat.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # late-logit
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/anatomy_silver_late_logit.sh
+python run.py run diag.anatomy.silver.late --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/silver_late_logit.yaml --set data.profile=full_inspect --allow-full
 ```
 
 ```bash
 # soft-MoE
-DATASET=full_inspect GPUS=0 bash scripts/4_diagnosis/anatomy_silver_soft_moe.sh
+python run.py run diag.anatomy.silver.moe --set data.profile=full_inspect --gpus 0
 python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/silver_soft_moe.yaml --set data.profile=full_inspect --allow-full
 ```
 
@@ -367,8 +335,8 @@ python tools/tasks/evaluate.py --config configs/runs/03_diagnosis/anatomy/silver
 
 ```bash
 for WS in pretrained dapt alignment silver_encoder; do
-  COHORT=PE_positive EHR_PROFILE=EHR_0_h TASK=1_month_mortality STRATEGY=image_clinical_pesi WEIGHT_SOURCE=$WS bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
-  python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image_ehr_pesi.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_$WS/image_clinical_pesi --allow-full
+  python tools/tasks/train_task.py --config configs/runs/04_prognosis/modality/image_ehr.yaml --set encoder.init_source=$WS --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_$WS/image_clinical
+  python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image_ehr.yaml --set experiment.output_id=pe_positive_only/EHR_0_h/1_month_mortality/weight_$WS/image_clinical --allow-full
 done
 ```
 
@@ -384,7 +352,7 @@ done
 ```bash
 for CH in PE_positive all_patient; do
   for T in 1_month_mortality 12_month_mortality 12_month_PH; do
-    COHORT=$CH EHR_PROFILE=EHR_0_h TASK=$T STRATEGY=image_clinical_pesi bash -c 'source scripts/_matrix_runner.sh && matrix_run_prognosis'
+    python tools/tasks/train_task.py --config configs/runs/04_prognosis/modality/image_ehr.yaml --set data.cohort=$CH --set data.ehr_profile=EHR_0_h --set task.primary_target=$T --set experiment.output_id=$CH/EHR_0_h/$T/image_clinical
   done
 done
 ```
@@ -402,8 +370,8 @@ Censored/missing không phải negative. `n` và `positive rate` ở `result.jso
 ## S6. QC artifact hỗ trợ
 
 ```bash
-ALLOW_ALL=1 GPUS=0,1 bash scripts/1_segmentation/totalsegmentator.sh
-ALLOW_ALL=1 SET="roi.workers=8" bash scripts/1_segmentation/roi.sh
+python run.py run data.segmentation --allow-full --gpus 0,1
+python run.py run data.roi --allow-full
 ```
 
 Đếm số, không CI.

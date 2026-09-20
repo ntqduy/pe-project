@@ -50,7 +50,7 @@ dễ lọt vào paper nhất.
 
 **2. Event count quyết định protocol đánh giá.** `outcomes.csv` có cột
 `recommended_protocol`: endpoint nào quá ít event thì hold-out đơn không đáng tin, phải dùng
-repeated/nested CV (`source/data/cv.py`). Đây là quy tắc proposal đặt ra, không phải tuỳ chọn.
+official INSPECT hold-out split. Đây là quy tắc proposal đặt ra, không phải tuỳ chọn.
 
 **3. Rule coverage là sàn của silver label.** `rule_coverage.csv` chạy đúng `apply_rule` thật
 của `source/silver/rules.py` trên report thật. Target nào regex không giải quyết được thì hoặc

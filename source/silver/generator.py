@@ -14,14 +14,10 @@ from .schema import TARGETS, SilverLabel
 
 # A method name IS its source list, in cascade order. Reading the name tells you exactly
 # which extractors ran and in which order, so no separate SL00/SL01/SL02 legend is needed.
+# MedGemma is the only generation method this project offers. The cascade machinery below
+# is unchanged and still stage-ordered, so adding a stage back is a one-line change here.
 SILVER_METHODS: dict[str, tuple[str, ...]] = {
-    "rule": ("rule",),
-    "falcon": ("falcon",),
     "medgemma": ("medgemma",),
-    "rule_falcon": ("rule", "falcon"),
-    "rule_medgemma": ("rule", "medgemma"),
-    "falcon_medgemma": ("falcon", "medgemma"),
-    "rule_falcon_medgemma": ("rule", "falcon", "medgemma"),
 }
 
 

@@ -43,8 +43,8 @@ lineage:
 supervision:
   require_masks: false
   require_ehr: true
+  require_spesi: false
   ehr: clinical/ehr_features.csv
-  require_pesi: false
 peft:
   _replace_: true
   method: full

@@ -29,9 +29,9 @@ Hai cách gọi tương đương. Wrapper nhận biến môi trường, `run.py`
 
 ```bash
 # wrapper
-bash scripts/0_data_preprocessing/build_smoke_30.sh
-ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_test_500_sample.sh
-ALLOW_ALL=1 bash scripts/0_data_preprocessing/build_full_inspect.sh
+python run.py run data.dataset.smoke_30
+python run.py run data.dataset.test_500_sample --allow-full
+python run.py run data.dataset.full_inspect --allow-full
 
 # run.py trực tiếp
 python run.py preflight data.dataset.smoke_30

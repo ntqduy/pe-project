@@ -110,14 +110,15 @@ _presets_:
   prognosis:
     task:
       primary_target: mortality_30d
-      modalities: [image, ehr, pesi]
+      modalities: [image, ehr, spesi]
       regions: [heart, pa, lung]
       ehr_input_dim: 32
       ehr_hidden_dim: 64
       ehr_output_dim: 64
-      pesi_input_dim: 2
-      pesi_hidden_dim: 16
-      pesi_output_dim: 32
+      # sPESI is one ordinal 0-6 score; its missingness is carried beside it.
+      spesi_input_dim: 1
+      spesi_hidden_dim: 16
+      spesi_output_dim: 32
       expert_dim: 128
       hidden_dim: 256
       ehr_include_missingness: true
@@ -139,7 +140,7 @@ _presets_:
     #   ehr_columns_full   every configured EHR variable
     #   ehr_columns_common the dataset-defined high-availability subset of ehr_columns_full
     #                      (preflight fails if it is not a subset)
-    #   pesi_columns       [pesi, spesi] is the historical contract; confirm both exist
+    # spesi_columns is NOT a blocker: stage 0 writes the column itself.
     data:
       mode: full
       cohort: confirmed_acute_pe
@@ -152,7 +153,8 @@ _presets_:
       ehr_columns: []
       ehr_columns_full: []
       ehr_columns_common: []
-      pesi_columns: [pesi, spesi]
+      spesi_columns: [spesi]
+      spesi_availability_column: has_spesi
 
   roi_student:
     # ROI-only student contract (SUFFICIENCY arm).
@@ -209,13 +211,7 @@ _presets_:
       # Keys are silver method names that silver_source selects from; values are the run
       # directories those methods write. Each key must exist in source/silver/generator.py.
       sources:
-        rule: silver_label/rule/silver_labels.csv
-        falcon: silver_label/falcon/silver_labels.csv
         medgemma: silver_label/medgemma/silver_labels.csv
-        rule_falcon: silver_label/rule_falcon/silver_labels.csv
-        rule_medgemma: silver_label/rule_medgemma/silver_labels.csv
-        falcon_medgemma: silver_label/falcon_medgemma/silver_labels.csv
-        rule_falcon_medgemma: silver_label/rule_falcon_medgemma/silver_labels.csv
       targets:
         pe_present: 1
         acuity: 4

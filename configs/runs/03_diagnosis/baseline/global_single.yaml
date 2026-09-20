@@ -2,7 +2,7 @@
 #
 # Question: how well does whole-volume image evidence alone predict native PE labels?
 # This is the reference every anatomy-aware and multitask diagnosis arm is compared against.
-# No anatomy pooling (task.regions is empty), no auxiliary targets, no EHR, no PESI:
+# No anatomy pooling (task.regions is empty), no auxiliary targets, no EHR:
 # diagnosis is image-only by design.
 # Output: outputs/diagnosis/DX_global_single/
 _base_:

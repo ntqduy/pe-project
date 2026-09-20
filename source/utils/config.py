@@ -542,15 +542,7 @@ def validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
     experiment = result["experiment"]
     data = result["data"]
     experiment_id = str(experiment.get("id") or "").strip()
-    semantic_silver_ids = {
-        "rule",
-        "falcon",
-        "medgemma",
-        "rule_falcon",
-        "rule_medgemma",
-        "falcon_medgemma",
-        "rule_falcon_medgemma",
-    }
+    semantic_silver_ids = {"medgemma"}
     valid_experiment_id = any(
         experiment_id.startswith(prefix) for prefix in _STAGE_PREFIXES[stage]
     ) or (stage == "silver" and experiment_id in semantic_silver_ids)

@@ -203,8 +203,15 @@ def _figures(summary: Mapping[str, Any]) -> list[str]:
     figures = summary.get("figures") or {}
     if not figures:
         return []
+    # `--no-figures` records one flat {"status", "reason"} payload for the whole run;
+    # a rendering run records one mapping per figure.
+    entries = (
+        figures
+        if any(isinstance(value, Mapping) for value in figures.values())
+        else {"all figures": figures}
+    )
     lines = ["## Hình", "", "| Hình | Trạng thái | Đường dẫn / lý do |", "|---|---|---|"]
-    for name, values in figures.items():
+    for name, values in entries.items():
         detail = values.get("path") or values.get("reason") or "—"
         lines.append(f"| `{name}` | {values['status']} | `{detail}` |")
     return [*lines, ""]

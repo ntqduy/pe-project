@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from source.components.roi.masks import apply_counterfactual
+from source.data.manifests import read_rows
 from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
 from source.distributed.gather import gather_prediction_rows
@@ -23,6 +24,7 @@ from source.distributed.setup import initialize_distributed, rank_zero_call, wra
 from source.engine.checkpoint import checkpoint_sha256, load_checkpoint
 from source.engine.experiment import OutputManager, atomic_write_json
 from source.engine.factory import build_task_model
+from source.engine.task_artifacts import append_evaluation_result_csv, refresh_epoch_log
 from source.engine.trainer import move_to_device
 from source.metrics.bootstrap import (
     bootstrap_binary_predictions,
@@ -72,9 +74,66 @@ def _locked_external_threshold(config, paths, checkpoint: Path) -> tuple[float, 
     return float(evaluation["threshold"]), artifact.resolve()
 
 
-def _loader(config, paths, split, context, *, patient_ids=None, maximum=None):
+def _read_restriction(path: Path) -> set[tuple[str, str]]:
+    """(patient_id, study_id) pairs every arm of a comparison must be scored on.
+
+    Restricting each arm to one shared, pre-declared case list is what makes a baseline
+    comparison valid when the baseline itself is not computable for every case -- the
+    same thing INSPECT does inline with --compare_vs_pesi. A study_id column is optional;
+    without it the whole patient is kept.
+    """
+    rows = read_rows(path)
+    if not rows:
+        raise ValueError(f"restriction file has no rows: {path}")
+    if "patient_id" not in rows[0]:
+        raise ValueError(f"restriction file needs a patient_id column: {path}")
+    has_study = "study_id" in rows[0]
+    return {(str(row["patient_id"]), str(row["study_id"]) if has_study else "") for row in rows}
+
+
+def _valid_label(row: dict[str, Any], column: str | None) -> bool:
+    """Return whether an outcome is observable for evaluation.
+
+    Prognosis manifests retain censored rows so the official split and cohort audit stay
+    intact.  Such rows must not be converted from NaN to an integer and scored as an event.
+    """
+    if not column:
+        return True
+    raw = row.get(column)
+    if raw is None or str(raw).strip() == "":
+        return False
+    try:
+        return bool(np.isfinite(float(raw)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _loader(
+    config,
+    paths,
+    split,
+    context,
+    *,
+    patient_ids=None,
+    maximum=None,
+    restrict=None,
+    evaluation_target=None,
+):
     dataset = build_dataset(config, paths, split)
     rows = dataset.rows
+    if restrict is not None:
+        keep_pairs = {pair for pair in restrict if pair[1]}
+        keep_patients = {pair[0] for pair in restrict if not pair[1]}
+        selected = [
+            row
+            for row in rows
+            if (str(row["patient_id"]), str(row["study_id"])) in keep_pairs
+            or str(row["patient_id"]) in keep_patients
+        ]
+        if not selected:
+            raise ValueError(f"restriction removed every {split} row; nothing to evaluate")
+        dataset.rows = selected
+        rows = selected
     if patient_ids:
         requested = {str(value) for value in patient_ids}
         available = {str(row["patient_id"]) for row in rows}
@@ -86,6 +145,14 @@ def _loader(config, paths, split, context, *, patient_ids=None, maximum=None):
         rows = selected
     if maximum is not None:
         selected = rows[: int(maximum)]
+        dataset.rows = selected
+        rows = selected
+    if evaluation_target is not None:
+        selected = [row for row in rows if _valid_label(row, evaluation_target)]
+        if not selected:
+            raise ValueError(
+                f"no evaluable rows remain in {split} for target={evaluation_target!r}"
+            )
         dataset.rows = selected
         rows = selected
     sampler = DistributedSampler(dataset, shuffle=False) if context.distributed else None
@@ -126,7 +193,9 @@ def _classification_rows(model, loader, stage, primary, label_index, context, ta
             output = model(moved)
             logits = output.get("target_logits", {}).get(primary, output["logits"])
         probability = torch.sigmoid(logits).detach().cpu().tolist()
-        truth = batch["labels"][:, label_index].int().tolist()
+        raw_truth = batch["labels"][:, label_index].tolist()
+        valid = batch["label_valid"][:, label_index].bool().tolist()
+        truth = [int(value) if is_valid else 0 for value, is_valid in zip(raw_truth, valid)]
         local.extend(
             {
                 "patient_id": str(patient),
@@ -134,9 +203,122 @@ def _classification_rows(model, loader, stage, primary, label_index, context, ta
                 "y_true": int(label),
                 "y_prob": float(score),
             }
-            for (patient, study), label, score in zip(identifiers, truth, probability)
+            for (patient, study), label, score, is_valid in zip(
+                identifiers, truth, probability, valid
+            )
+            if is_valid
         )
     return local
+
+
+@torch.no_grad()
+def _classification_rows_all_targets(model, loader, stage, targets, context, task, seed):
+    """Run one inference pass and emit one prediction row per observable target."""
+    model.eval()
+    target_names = tuple(str(target) for target in targets)
+    local: list[dict[str, Any]] = []
+    for batch in loader:
+        identifiers = list(zip(batch["patient_id"], batch["study_id"]))
+        moved = move_to_device(batch, context.device)
+        if "volume" in moved:
+            moved = dict(moved)
+            moved["volume"] = apply_counterfactual(
+                moved["volume"],
+                moved["masks"],
+                str(task.get("input_counterfactual") or ""),
+                matched_region=str(task.get("matched_region", "pa")),
+                masking_policy=task.get("masking_policy", "local_mean"),
+                seed=seed,
+                patient_ids=batch.get("patient_id"),
+                study_ids=batch.get("study_id"),
+            )
+        if stage == "diagnosis" and str(task.get("architecture")) == "report_only":
+            output = model(moved["report_embedding"])
+        elif stage == "diagnosis":
+            output = model(moved["volume"], moved["masks"])
+        else:
+            output = model(moved)
+        logits_by_target = output.get("target_logits")
+        if not logits_by_target:
+            logits_by_target = output.get("logits")
+        if not isinstance(logits_by_target, dict):
+            logits_by_target = {}
+        for target in target_names:
+            if target not in logits_by_target:
+                continue
+            probabilities = torch.sigmoid(logits_by_target[target].reshape(-1)).detach().cpu().tolist()
+            label_index = int((loader.dataset.label_columns).index(target))
+            truth_values = batch["labels"][:, label_index].tolist()
+            valid_values = batch["label_valid"][:, label_index].bool().tolist()
+            local.extend(
+                {
+                    "patient_id": str(patient),
+                    "study_id": str(study),
+                    "target": target,
+                    "y_true": int(value),
+                    "y_prob": float(probability),
+                }
+                for (patient, study), value, probability, valid in zip(
+                    identifiers, truth_values, probabilities, valid_values
+                )
+                if valid
+            )
+    return local
+
+
+def _valid_prediction_ids(rows, target: str) -> set[tuple[str, str]]:
+    return {
+        (str(row["patient_id"]), str(row["study_id"]))
+        for row in rows
+        if _valid_label(row, target)
+    }
+
+
+def _gather_target_rows(local_rows, target, dataset_rows, context):
+    local = [dict(row) for row in local_rows if str(row.get("target")) == target]
+    expected = _valid_prediction_ids(dataset_rows, target)
+    return gather_prediction_rows(local, context, expected_ids=expected)
+
+
+def _metric_bundle(rows, stage: str, threshold: float, *, samples: int, confidence: float, seed: int):
+    """Point metrics plus patient-bootstrap CI, with an explicit fallback reason."""
+    if not rows:
+        return {}, "no_evaluable_test_rows"
+    from source.metrics.classification import binary_classification_metrics
+    from source.metrics.prognosis import prognosis_metrics
+
+    point_fn = prognosis_metrics if stage == "prognosis" else binary_classification_metrics
+
+    def point_with_empty_ci():
+        point = point_fn(
+            [int(row["y_true"]) for row in rows],
+            [float(row["y_prob"]) for row in rows],
+            threshold,
+        )
+        return {
+            name: {
+                "value": value,
+                "ci_low": float("nan"),
+                "ci_high": float("nan"),
+                "valid_replicates": 0,
+            }
+            for name, value in point.items()
+            if name != "threshold"
+        }
+
+    patient_count = len({str(row["patient_id"]) for row in rows})
+    if patient_count < 2:
+        return point_with_empty_ci(), "fewer_than_two_patients"
+    bootstrap = bootstrap_prognosis_predictions if stage == "prognosis" else bootstrap_binary_predictions
+    try:
+        return (
+            bootstrap(rows, threshold, n_bootstrap=samples, confidence=confidence, seed=seed),
+            None,
+        )
+    except (RuntimeError, ValueError) as exc:
+        # Preserve the point estimate when a small/single-class target cannot produce a
+        # stable bootstrap distribution. The reason is recorded per target in result.csv.
+        return point_with_empty_ci(), f"bootstrap_failed:{type(exc).__name__}:{exc}"
 
 
 @torch.no_grad()
@@ -176,6 +358,16 @@ def main() -> int:
     selection.add_argument("--patient-id", dest="patient_ids", action="append", metavar="ID")
     selection.add_argument("--max-cases", type=int)
     selection.add_argument("--allow-full", action="store_true")
+    parser.add_argument(
+        "--restrict-to",
+        type=Path,
+        default=None,
+        help=(
+            "CSV/parquet of patient_id[,study_id] limiting evaluation to one shared case "
+            "list, so every arm of a comparison is scored on identical cases. Stage 0 "
+            "writes clinical/spesi_evaluable.csv for exactly this purpose."
+        ),
+    )
     parser.add_argument(
         "--reference-predictions",
         type=Path,
@@ -225,6 +417,7 @@ def main() -> int:
 
             run_dir = rank_zero_call(context, prepare)
         checkpoint = args.checkpoint or run_dir / "best.ckpt"
+        restriction = None if args.restrict_to is None else _read_restriction(args.restrict_to)
         smoke_scope = bool(args.patient_ids or args.max_cases is not None)
         if smoke_scope:
             scope = {"patient_ids": list(args.patient_ids or ()), "max_cases": args.max_cases}
@@ -257,137 +450,170 @@ def main() -> int:
             labels = list((config.get("data") or {}).get("label_columns") or ())
             if primary not in labels:
                 raise ValueError(f"primary target {primary!r} is absent from data.label_columns")
-            label_index = labels.index(primary)
+            configured_targets = list((task_config.get("targets") or {}).keys())
+            if stage == "diagnosis":
+                target_names = [primary]
+            elif configured_targets:
+                target_names = [target for target in configured_targets if target in labels]
+            else:
+                target_names = list(labels)
+            if external_evaluation.get("test_only"):
+                target_names = [primary]
+            if not target_names:
+                target_names = [primary]
+
             threshold_artifact = None
+            thresholds: dict[str, float] = {}
+            threshold_sources: dict[str, str] = {}
+            validation_rows_by_target: dict[str, list[dict[str, Any]] | None] = {}
             if external_evaluation.get("test_only"):
                 if context.is_main:
                     threshold, threshold_artifact = _locked_external_threshold(
                         config, paths, Path(checkpoint)
                     )
-                else:
-                    threshold = None
+                    thresholds[primary] = float(threshold)
+                    threshold_sources[primary] = "internal_validation_artifact"
             else:
-                validation_loader, validation_expected = _loader(
-                    config, paths, "validation", context
+                validation_loader, _ = _loader(
+                    config, paths, "validation", context, restrict=restriction
                 )
-                validation_local = _classification_rows(
-                    model,
-                    validation_loader,
-                    stage,
-                    primary,
-                    label_index,
-                    context,
-                    task_config,
-                    seed,
+                validation_local = _classification_rows_all_targets(
+                    model, validation_loader, stage, target_names, context, task_config, seed
                 )
-                validation_rows = gather_prediction_rows(
-                    validation_local,
-                    context,
-                    expected_ids=validation_expected,
-                )
+                for target in target_names:
+                    validation_rows_by_target[target] = _gather_target_rows(
+                        validation_local, target, validation_loader.dataset.rows, context
+                    )
                 if context.is_main:
-                    threshold = select_threshold_on_validation(
-                        [row["y_true"] for row in validation_rows],
-                        [row["y_prob"] for row in validation_rows],
-                        method=str(evaluation_config.get("threshold_method", "youden")),
-                    )
-                else:
-                    threshold = None
+                    threshold_method = str(evaluation_config.get("threshold_method", "youden"))
+                    for target in target_names:
+                        target_rows = validation_rows_by_target[target] or []
+                        if len({int(row["y_true"]) for row in target_rows}) == 2:
+                            thresholds[target] = select_threshold_on_validation(
+                                [row["y_true"] for row in target_rows],
+                                [row["y_prob"] for row in target_rows],
+                                method=threshold_method,
+                            )
+                            threshold_sources[target] = "validation"
+                        else:
+                            thresholds[target] = 0.5
+                            threshold_sources[target] = "fallback_0.5_validation_single_class"
             if context.distributed:
-                value = [threshold]
-                dist.broadcast_object_list(value, src=0)
-                threshold = float(value[0])
-            test_loader, test_expected = _loader(
-                config, paths, "test", context,
-                patient_ids=args.patient_ids, maximum=args.max_cases,
-            )
-            test_local = _classification_rows(
-                model,
-                test_loader,
-                stage,
-                primary,
-                label_index,
-                context,
-                task_config,
-                seed,
-            )
-            rows = gather_prediction_rows(test_local, context, expected_ids=test_expected)
-            if context.is_main:
-                for row in rows:
-                    row["y_pred"] = int(row["y_prob"] >= threshold)
-                bootstrap = (
-                    bootstrap_prognosis_predictions
-                    if stage == "prognosis"
-                    else bootstrap_binary_predictions
-                )
-                patient_count = len({row["patient_id"] for row in rows})
-                if patient_count >= 2:
-                    metrics = bootstrap(
-                        rows, threshold, n_bootstrap=samples, confidence=confidence, seed=seed
-                    )
-                else:
-                    from source.metrics.classification import binary_classification_metrics
-                    from source.metrics.prognosis import prognosis_metrics
+                payload = [thresholds, threshold_sources]
+                dist.broadcast_object_list(payload, src=0)
+                thresholds = dict(payload[0])
+                threshold_sources = dict(payload[1])
 
-                    point_fn = prognosis_metrics if stage == "prognosis" else binary_classification_metrics
-                    point = point_fn(
-                        [row["y_true"] for row in rows],
-                        [row["y_prob"] for row in rows],
+            test_loader, _ = _loader(
+                config,
+                paths,
+                "test",
+                context,
+                patient_ids=args.patient_ids,
+                maximum=args.max_cases,
+                restrict=restriction,
+            )
+            test_local = _classification_rows_all_targets(
+                model, test_loader, stage, target_names, context, task_config, seed
+            )
+            rows_by_target: dict[str, list[dict[str, Any]] | None] = {}
+            for target in target_names:
+                rows_by_target[target] = _gather_target_rows(
+                    test_local, target, test_loader.dataset.rows, context
+                )
+            rows: list[dict[str, Any]] | None = [] if context.is_main else None
+            target_results: dict[str, dict[str, Any]] = {}
+            if context.is_main:
+                for target in target_names:
+                    target_rows = [dict(row) for row in (rows_by_target[target] or [])]
+                    threshold = float(thresholds[target])
+                    for row in target_rows:
+                        row["y_pred"] = int(row["y_prob"] >= threshold)
+                    rows.extend(target_rows)
+                    metrics, bootstrap_reason = _metric_bundle(
+                        target_rows,
+                        stage,
                         threshold,
+                        samples=samples,
+                        confidence=confidence,
+                        seed=seed,
                     )
-                    metrics = {
-                        name: {
-                            "value": value, "ci_low": float("nan"),
-                            "ci_high": float("nan"), "valid_replicates": 0,
-                        }
-                        for name, value in point.items() if name != "threshold"
+                    validation_rows = validation_rows_by_target.get(target) or []
+                    target_result: dict[str, Any] = {
+                        "target": target,
+                        "threshold": threshold,
+                        "threshold_source": threshold_sources[target],
+                        "metrics": metrics,
+                        "validation_patients": len({row["patient_id"] for row in validation_rows}),
+                        "evaluated_patients": len({row["patient_id"] for row in target_rows}),
+                        "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
+                        "status": "ok" if target_rows else "unavailable",
+                        "unavailable_reason": bootstrap_reason,
                     }
+                    if stage == "prognosis" and target_rows:
+                        from source.metrics.calibration import calibration_curve_points
+
+                        curve = calibration_curve_points(
+                            [row["y_true"] for row in target_rows],
+                            [row["y_prob"] for row in target_rows],
+                            bins=int(evaluation_config.get("calibration_bins", 10)),
+                            strategy=str(evaluation_config.get("calibration_strategy", "quantile")),
+                        )
+                        target_result["calibration_curve"] = curve
+                        safe_target = "".join(
+                            character if character.isalnum() or character in "._-" else "_"
+                            for character in target
+                        )
+                        write_parquet_atomic(
+                            curve, evaluation_dir / f"calibration_curve_{safe_target}.parquet"
+                        )
+                        if target == primary:
+                            write_parquet_atomic(curve, evaluation_dir / "calibration_curve.parquet")
+                    target_results[target] = target_result
+                primary_result = target_results[primary]
+                primary_rows = [row for row in rows if str(row.get("target")) == primary]
                 result_evaluation: dict[str, Any] = {
                     "primary_target": primary,
-                    "threshold": threshold,
-                    "threshold_source": (
-                        "internal_validation_artifact"
-                        if external_evaluation.get("test_only") else "validation"
-                    ),
+                    "target_order": target_names,
+                    "cohort": (config.get("data") or {}).get("cohort") or stage,
+                    "threshold": primary_result["threshold"],
+                    "threshold_source": primary_result["threshold_source"],
                     "threshold_artifact": (
                         str(threshold_artifact) if threshold_artifact is not None else None
                     ),
                     "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
-                    "metrics": metrics,
-                    "evaluated_patients": patient_count,
-                    "bootstrap_unavailable_reason": (
-                        "smoke selection has fewer than two patients" if patient_count < 2 else None
-                    ),
+                    "metrics": primary_result["metrics"],
+                    "evaluated_patients": primary_result["evaluated_patients"],
+                    "bootstrap_unavailable_reason": primary_result["unavailable_reason"],
+                    "targets": target_results,
                 }
-                if stage == "prognosis":
-                    from source.metrics.calibration import calibration_curve_points
-
-                    curve = calibration_curve_points(
-                        [row["y_true"] for row in rows],
-                        [row["y_prob"] for row in rows],
-                        bins=int(evaluation_config.get("calibration_bins", 10)),
-                        strategy=str(evaluation_config.get("calibration_strategy", "quantile")),
-                    )
-                    result_evaluation["calibration_curve"] = curve
-                    write_parquet_atomic(curve, evaluation_dir / "calibration_curve.parquet")
                 if args.reference_predictions is not None:
                     from source.metrics.classification import binary_classification_metrics
                     from source.metrics.paired import paired_patient_bootstrap
 
                     reference_rows = _read_prediction_rows(args.reference_predictions)
+                    if any("target" in item for item in reference_rows):
+                        reference_rows = [
+                            item for item in reference_rows if str(item.get("target")) == primary
+                        ]
+                    paired_threshold = float(primary_result["threshold"])
 
                     def _paired_metric(items: list[dict[str, Any]]) -> dict[str, float]:
                         computed = binary_classification_metrics(
                             [int(item["y_true"]) for item in items],
                             [float(item["y_prob"]) for item in items],
-                            threshold,
+                            paired_threshold,
                         )
                         computed.pop("threshold")
                         return computed
 
                     paired = paired_patient_bootstrap(
-                        reference_rows, rows, _paired_metric,
-                        n_bootstrap=samples, confidence=confidence, seed=seed,
+                        reference_rows,
+                        primary_rows,
+                        _paired_metric,
+                        n_bootstrap=samples,
+                        confidence=confidence,
+                        seed=seed,
                     )
                     write_parquet_atomic(
                         [{"metric": name, **values} for name, values in paired.items()],
@@ -400,7 +626,7 @@ def main() -> int:
         elif stage == "contour":
             test_loader, test_expected = _loader(
                 config, paths, "test", context,
-                patient_ids=args.patient_ids, maximum=args.max_cases,
+                patient_ids=args.patient_ids, maximum=args.max_cases, restrict=restriction,
             )
             tolerance = float(evaluation_config.get("nsd_tolerance_mm", 1.0))
             local = _contour_rows(model, test_loader, context, tolerance)
@@ -481,6 +707,8 @@ def main() -> int:
                 "load_report": checkpoint_payload.get("load_report"),
             }
             atomic_write_json(result_path, result)
+            append_evaluation_result_csv(run_dir, result_evaluation)
+            refresh_epoch_log(run_dir)
             if stage in {"diagnosis", "prognosis"}:
                 from source.metrics.reporting import stard_ai_checklist, tripod_ai_checklist
 

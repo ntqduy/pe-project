@@ -247,12 +247,12 @@ Thiết kế factorial:
 | cohort | all_comers, pe_positive_only |
 | EHR window | EHR_0_h, EHR_24_h |
 | endpoint | bảy endpoint trên |
-| modality | clinical-only, PESI, image, image+clinical, image+PESI, cả ba |
+| modality | sPESI, clinical-only, image, image+clinical |
 | image structure | global, anatomy-aware |
 | fusion | concat, late-logit, Soft-MoE |
 | initialization | published, C0, C_silver, C_diagnosis; DAPT khi protocol chọn |
 
-PESI/sPESI chỉ được dùng sau clinical approval mapping. Mọi modality comparison phải dùng
+Mọi modality comparison phải dùng
 cùng patient, split và endpoint. Evaluation dùng classification/discrimination,
 calibration khi đủ dữ liệu và bootstrap CI; time-to-event fields được giữ để mở rộng survival
 analysis mà không bịa censoring.
@@ -404,7 +404,7 @@ Chi tiết từng stage nằm trong `docs/01`–`docs/08`.
 - TotalSegmentator/LungMask và model weights phải được cài/stage để chạy segmentation thật.
 - RSPECT normalized data chưa sẵn sàng cho supervised-transfer side branch.
 - Turkey path/count/manifest/label schema chưa được giao, nên external test chính còn blocked.
-- EHR feature columns và PESI clinical approval còn chặn một số prognosis arms.
+- EHR feature columns còn chặn một số prognosis arms.
 - Không có expert embolus contours nên contour stage vẫn deferred.
 ### Trạng thái gap so với proposal
 
@@ -412,15 +412,9 @@ Chi tiết từng stage nằm trong `docs/01`–`docs/08`.
 |---|---|---|---|
 | G1 | PENet-style baseline | ✅ code/config; ⛔ chặn bởi INSPECT data | `diag.baseline.penet_style` |
 | G2 | Turkey external test | ✅ contract; ⛔ chặn bởi Turkey data | `diag.external.turkey_test` |
-| G3 | 3-fold patient-level stratified CV | ✅ **đã nối** | `bash scripts/run_cv.sh <config>` |
-| G4 | Architecture ablation (6 biến thể) | ✅ **đã thêm** | `bash scripts/run_ablation_arch.sh` |
-| G5 | EHR ablation (4 biến thể) | ✅ **đã thêm** | `bash scripts/run_ablation_ehr.sh` |
+| G4 | Architecture ablation (6 biến thể) | ✅ **đã thêm** | `python run.py run ablation.arch.<variant>` |
+| G5 | EHR ablation (4 biến thể) | ✅ **đã thêm** | `python run.py run ablation.ehr.<variant>` |
 | G6 | nnU-Net CTPA finetune | ❌ chưa implement; ⛔ thiếu expert masks | — |
-
-**G3** dùng `tools/tasks/train_cv.py`: sinh manifest cho từng fold rồi gọi `train_task.py` và
-`evaluate.py` không đổi. Fold chia ở mức **patient**, stratify theo primary target; không
-stratify được thì fallback patient K-fold và **ghi lý do** vào `cv_summary.json` chứ không
-âm thầm đổi thiết kế.
 
 **G4** giữ nguyên C0 initialization/split/optimizer, chỉ đổi `task.regions` và fusion
 component — nên chênh lệch giữa các hàng chỉ đến từ kiến trúc. `full_moe` vs

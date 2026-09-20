@@ -6,9 +6,9 @@
 # architecture is prog.image's exactly and ONLY the input differs:
 #
 #   task.regions: []      global encoder, no organ branches — identical to prog.image
-#   task.modalities:      image only — no EHR, no PESI, so the score is attributable to
+#   task.modalities:      image only — no EHR, so the score is attributable to
 #                         this one region and the arm inherits neither the ehr_columns
-#                         blocker nor the PESI clinical-approval blocker
+#                         blocker
 #   input_counterfactual: keep_only_heart — everything outside ROI2 is replaced by the
 #                         shared local_mean policy, so the model never sees the rest of
 #                         the chest
@@ -50,4 +50,4 @@ task:
   input_counterfactual: keep_only_heart
 supervision:
   require_ehr: false
-  require_pesi: false
+  require_spesi: false

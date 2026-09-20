@@ -1,9 +1,8 @@
-# prog.anatomy.concat — anatomy-aware image + EHR + PESI, concatenation fusion.
+# prog.anatomy.concat — anatomy-aware image + EHR, concatenation fusion.
 #
 # Question: does splitting the image evidence into heart / PA / lung branches predict
 # mortality better than one global image vector, with the clinical inputs held fixed?
-# Compare against prog.image_ehr_pesi (same modalities, global image, same fusion).
-# Same contract as the pre-refactor PR22_ANATOMY_CLINICAL_PESI arm.
+# Compare against prog.image_ehr (same modalities, global image, same fusion).
 # BLOCKER: data.ehr_columns is empty; its length must match task.ehr_input_dim (32).
 # Output: outputs/prognosis/PR_anatomy_concat/
 _base_:
@@ -23,7 +22,7 @@ experiment:
   stage: prognosis
   family: prognosis
 task:
-  modalities: [image, ehr, pesi]
+  modalities: [image, ehr, spesi]
   regions: [heart, pa, lung]
 lineage:
   transfer_modules: [image_encoder]
@@ -32,6 +31,6 @@ supervision:
   require_masks: true
   masks: segmentation/SEG_pseudo_anatomy
   require_ehr: true
+  require_spesi: true
+  spesi: clinical/spesi_features.csv
   ehr: clinical/ehr_features.csv
-  require_pesi: true
-  pesi: clinical/pesi_features.csv

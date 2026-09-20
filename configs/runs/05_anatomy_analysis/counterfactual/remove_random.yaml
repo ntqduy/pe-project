@@ -27,7 +27,6 @@ task:
   base_stage: diagnosis
   input_counterfactual: remove_random
   matched_region: pa
-  random_control_for: ROI4
   masking_policy: {type: local_mean, local_radius_voxels: 3}
 lineage:
   backbone: CT-FM

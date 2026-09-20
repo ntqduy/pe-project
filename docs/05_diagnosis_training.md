@@ -72,15 +72,15 @@ và được stamp vào run ID (`__enc_dapt`, `__enc_silver`) nên các lần ch
 ```bash
 for SRC in pretrained dapt c0 silver; do
   # fine-tune, single-task
-  DATASET=full_inspect ENCODER_SOURCE=$SRC GPUS=0 bash scripts/4_diagnosis/single-task/pe_positive/global.sh
+  python tools/tasks/train_task.py --config configs/runs/03_diagnosis/matrix/single_task.yaml --set data.profile=full_inspect --set encoder.init_source=$SRC --gpus 0
   # probe, single-task và 3 nhãn
-  ENCODER_SOURCE=$SRC bash scripts/4_diagnosis/probe.sh
-  ENCODER_SOURCE=$SRC bash scripts/4_diagnosis/probe_multitask.sh
+  python run.py run probe.diag --set encoder.init_source=$SRC
+  python run.py run probe.diag.multitask --set encoder.init_source=$SRC
 done
 
 # fine-tune, 3 nhãn
 for SRC in c0 silver; do
-  DATASET=full_inspect ENCODER_SOURCE=$SRC GPUS=0 bash scripts/4_diagnosis/multi-task/global.sh
+  python tools/tasks/train_task.py --config configs/runs/03_diagnosis/matrix/multitask.yaml --set data.profile=full_inspect --set encoder.init_source=$SRC --gpus 0
 done
 ```
 

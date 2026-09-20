@@ -86,7 +86,7 @@ def main() -> int:
     logger = RunLogger(run_dir / "logs" / "run.log")
     previous_excepthook = sys.excepthook
     sys.excepthook = lambda exc_type, exc, tb: (
-        logger.exception("roi status=failed", exc),
+        logger.exception("roi status=failed", exc),  # noqa: PLE1205 - RunLogger.exception(message, error)
         previous_excepthook(exc_type, exc, tb),
     )[-1]
     logger.log(

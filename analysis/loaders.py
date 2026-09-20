@@ -19,7 +19,7 @@ KNOWN_MANIFESTS = (
     "prognosis_pe_positive.csv",
     "prognosis_cohort_membership.csv",
 )
-CLINICAL_TABLES = ("ehr_features.csv", "pesi_features.csv")
+CLINICAL_TABLES = ("ehr_features.csv", "spesi_features.csv")
 
 
 @dataclass

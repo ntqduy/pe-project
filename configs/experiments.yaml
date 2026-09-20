@@ -33,14 +33,6 @@ project_blockers:
       manifests/paired_reports.csv must exist under the derived data root for the
       selected dataset profile. They are produced by data.dataset.<profile>, which
       preserves the official INSPECT split; no split is ever created implicitly.
-  - id: pesi_clinical_approval
-    what: >-
-      configs/clinical/pesi_spesi_mapping.yaml still has a pending clinical_approval
-      status, so stage 0 writes a blocked clinical/pesi_status.json and no PESI/sPESI
-      score exists.
-      Every prognosis arm with `pesi` in task.modalities stays blocked until a clinical
-      steward approves all eleven components and supplies pesi.components_table. No score
-      is ever pattern-matched out of raw events.
 
 experiments:
 
@@ -227,47 +219,6 @@ experiments:
   # Seven silver arms, one implementation. The name IS the cascade, in order: the cheapest
   # deterministic source that can settle a target wins, and two LLMs are adjudicated so that
   # disagreement abstains rather than guessing. Logic: source/silver/generator.py.
-  # data.silver.rule needs no weights and is the only arm that is not blocked.
-
-  data.silver.rule:
-    config: configs/runs/00_data/silver/rule.yaml
-    group: DATA
-    description: Deterministic regex extraction only, no model
-    question: How far does a rule-only extractor get before any LLM is involved?
-    representation: none
-    task: silver
-    modalities: [reports]
-    anatomy: false
-    supervision: none
-    fusion: none
-    requires:
-      - what: Report table with report_id and report_text
-        experiment: data.dataset.full_inspect
-        path_key: silver.reports
-    produces: [accepted/abstained labels from regex only, audit trail, QC review queue]
-    status: ready
-
-  data.silver.falcon:
-    config: configs/runs/00_data/silver/falcon.yaml
-    group: DATA
-    description: Falcon extraction only, no rule prior
-    question: What does a general-purpose LLM extract from the reports without rules?
-    representation: none
-    task: silver
-    modalities: [reports]
-    anatomy: false
-    supervision: none
-    fusion: none
-    requires:
-      - what: Report table with report_id and report_text
-        experiment: data.dataset.full_inspect
-        path_key: silver.reports
-      - what: Local Falcon weights
-        blocker: silver_model_weights
-    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
-    status: blocked
-    blockers:
-      - Local Falcon model directory is not staged and its exact model id/revision is unrecorded.
 
   data.silver.medgemma:
     config: configs/runs/00_data/silver/medgemma.yaml
@@ -291,93 +242,6 @@ experiments:
     blockers:
       - Local MedGemma model directory is not staged and its exact model id/revision is unrecorded.
 
-  data.silver.rule_falcon:
-    config: configs/runs/00_data/silver/rule_falcon.yaml
-    group: DATA
-    description: Deterministic rules, then Falcon for whatever the rules leave unresolved
-    question: Does a rule-first cascade extract report supervision more reliably than an LLM alone?
-    representation: none
-    task: silver
-    modalities: [reports]
-    anatomy: false
-    supervision: none
-    fusion: none
-    requires:
-      - what: Report table with report_id and report_text
-        experiment: data.dataset.full_inspect
-        path_key: silver.reports
-      - what: Local Falcon weights
-        blocker: silver_model_weights
-    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
-    status: blocked
-    blockers:
-      - Local Falcon model directory is not staged and its exact model id/revision is unrecorded.
-
-  data.silver.rule_medgemma:
-    config: configs/runs/00_data/silver/rule_medgemma.yaml
-    group: DATA
-    description: Deterministic rules, then MedGemma for whatever the rules leave unresolved
-    question: Does the medical LLM add more on top of rules than the general-purpose one?
-    representation: none
-    task: silver
-    modalities: [reports]
-    anatomy: false
-    supervision: none
-    fusion: none
-    requires:
-      - what: Report table with report_id and report_text
-        experiment: data.dataset.full_inspect
-        path_key: silver.reports
-      - what: Local MedGemma weights
-        blocker: silver_model_weights
-    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
-    status: blocked
-    blockers:
-      - Local MedGemma model directory is not staged and its exact model id/revision is unrecorded.
-
-  data.silver.falcon_medgemma:
-    config: configs/runs/00_data/silver/falcon_medgemma.yaml
-    group: DATA
-    description: Falcon plus MedGemma with agreement adjudication, no rule prior
-    question: How much of the accepted yield comes from the rules rather than from the models?
-    representation: none
-    task: silver
-    modalities: [reports]
-    anatomy: false
-    supervision: none
-    fusion: none
-    requires:
-      - what: Report table with report_id and report_text
-        experiment: data.dataset.full_inspect
-        path_key: silver.reports
-      - what: Local Falcon and MedGemma (both loaded per GPU rank) weights
-        blocker: silver_model_weights
-    produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
-    status: blocked
-    blockers:
-      - Local Falcon and MedGemma (both loaded per GPU rank) model directory is not staged and its exact model id/revision is unrecorded.
-
-  data.silver.rule_falcon_medgemma:
-    config: configs/runs/00_data/silver/rule_falcon_medgemma.yaml
-    group: DATA
-    description: Rules plus Falcon plus MedGemma with agreement adjudication
-    question: Does two-model adjudication produce more trustworthy accepted labels?
-    representation: none
-    task: silver
-    modalities: [reports]
-    anatomy: false
-    supervision: none
-    fusion: none
-    requires:
-      - what: Report table with report_id and report_text
-        experiment: data.dataset.full_inspect
-        path_key: silver.reports
-      - what: Local Falcon and MedGemma (both loaded per GPU rank) weights
-        blocker: silver_model_weights
-    produces: [accepted silver labels used by the multitask arms, audit trail, QC review queue]
-    status: blocked
-    blockers:
-      - Local Falcon and MedGemma (both loaded per GPU rank) model directory is not staged and its exact model id/revision is unrecorded.
 
   # ----------------------------------------------------------- FOUNDATION
   repr.foundation.ct_fm:
@@ -781,31 +645,6 @@ experiments:
     blockers:
       - Turkey data, exact count and normalized native-label schema have not been delivered.
 
-  repr.silver.rule_falcon_medgemma:
-    config: configs/runs/02_representation/silver_adaptation/rule_falcon_medgemma.yaml
-    group: REPRESENTATION
-    legacy_id: SE01
-    description: Adapt the canonical RSPECT multitask encoder with accepted rule_falcon_medgemma labels
-    question: Does accepted report-derived supervision improve the RSPECT representation?
-    representation: C_silver
-    task: silver encoder adaptation
-    modalities: [image]
-    anatomy: false
-    supervision: accepted silver multitask
-    fusion: none
-    requires:
-      - what: Canonical RSPECT multitask checkpoint
-        experiment: repr.rspect.multitask
-        path_key: init.checkpoint
-      - what: Accepted rule_falcon_medgemma silver labels
-        experiment: data.silver.rule_falcon_medgemma
-      - what: CTPA manifest
-        experiment: data.dataset.full_inspect
-        path_key: data.manifest
-    produces: [C_silver checkpoint - an optional side branch, never a prerequisite]
-    status: blocked
-    blockers: ["Depends on RSPECT multitask and on accepted silver labels."]
-
   repr.silver.medgemma:
     config: configs/runs/02_representation/silver_adaptation/medgemma.yaml
     group: REPRESENTATION
@@ -830,29 +669,6 @@ experiments:
     status: blocked
     blockers: ["Depends on RSPECT multitask and on accepted medgemma silver labels."]
 
-  repr.silver.rule_falcon:
-    config: configs/runs/02_representation/silver_adaptation/rule_falcon.yaml
-    group: REPRESENTATION
-    description: Adapt the canonical RSPECT multitask encoder with accepted rule_falcon labels
-    question: Does the rule-first silver source produce a better adapted representation?
-    representation: C_silver (rule_falcon)
-    task: silver encoder adaptation
-    modalities: [image]
-    anatomy: false
-    supervision: accepted silver multitask
-    fusion: none
-    requires:
-      - what: Canonical RSPECT multitask checkpoint
-        experiment: repr.rspect.multitask
-        path_key: init.checkpoint
-      - what: Accepted rule_falcon silver labels
-        experiment: data.silver.rule_falcon
-      - what: CTPA manifest
-        experiment: data.dataset.full_inspect
-        path_key: data.manifest
-    produces: [C_silver (rule_falcon) checkpoint]
-    status: blocked
-    blockers: ["Depends on RSPECT multitask and on accepted rule_falcon silver labels."]
 
   # ----------------------------------------------------------- DIAGNOSIS
   diag.report_only:
@@ -876,6 +692,28 @@ experiments:
     status: blocked
     blockers:
       - alignment.report_embedding_columns is empty; the real manifest columns must be named.
+
+  diag.zeroshot.penet:
+    config: configs/runs/01_foundation/penet_zero_shot.yaml
+    group: FOUNDATION
+    description: Released PENet applied unchanged, no training
+    question: How far does an off-the-shelf CTPA PE model get before any adaptation?
+    representation: none (external pretrained)
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: none
+    fusion: none
+    runner: tools/tasks/zeroshot_penet.py
+    requires:
+      - what: Diagnosis manifest with pe_present
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: Raw release NIfTI under <PE_RAW_INSPECT_ROOT>/CT/full/CTPA
+        path_key: penet.release_root
+    produces: [the external zero-shot reference every in-house imaging arm must beat]
+    status: blocked
+    blockers: ["Needs a built dataset profile; PENet weights and repository are staged."]
 
   diag.baseline.penet_style:
     config: configs/runs/03_diagnosis/baseline/penet_style.yaml
@@ -961,8 +799,8 @@ experiments:
       - what: C0 checkpoint
         experiment: repr.align
         path_key: lineage.source_checkpoint
-      - what: Accepted rule_falcon_medgemma silver labels
-        experiment: data.silver.rule_falcon_medgemma
+      - what: Accepted medgemma silver labels
+        experiment: data.silver.medgemma
         path_key: supervision.silver_labels
     produces: [silver-multitask diagnosis metrics]
     status: blocked
@@ -1023,8 +861,8 @@ experiments:
       - what: ROI manifest supplying the heart/PA/lung branch masks
         experiment: data.roi
         path_key: data.roi_manifest
-      - what: Accepted rule_falcon_medgemma silver labels
-        experiment: data.silver.rule_falcon_medgemma
+      - what: Accepted medgemma silver labels
+        experiment: data.silver.medgemma
         path_key: supervision.silver_labels
     produces: [anatomy silver-multitask metrics, concat cell of the fusion comparison]
     status: blocked
@@ -1054,8 +892,8 @@ experiments:
       - what: ROI manifest supplying the heart/PA/lung branch masks
         experiment: data.roi
         path_key: data.roi_manifest
-      - what: Accepted rule_falcon_medgemma silver labels
-        experiment: data.silver.rule_falcon_medgemma
+      - what: Accepted medgemma silver labels
+        experiment: data.silver.medgemma
         path_key: supervision.silver_labels
     produces: [late-logit cell of the fusion comparison]
     status: blocked
@@ -1086,23 +924,22 @@ experiments:
       - what: ROI manifest supplying the heart/PA/lung branch masks
         experiment: data.roi
         path_key: data.roi_manifest
-      - what: Accepted rule_falcon_medgemma silver labels
-        experiment: data.silver.rule_falcon_medgemma
+      - what: Accepted medgemma silver labels
+        experiment: data.silver.medgemma
         path_key: supervision.silver_labels
     produces: [Soft-MoE cell of the fusion comparison]
     status: blocked
     blockers: ["Depends on C0, anatomy masks and accepted silver labels."]
 
   # ----------------------------------------------------------- PROGNOSIS
-  prog.pesi:
-    config: configs/runs/04_prognosis/modality/pesi.yaml
+  prog.spesi:
+    config: configs/runs/04_prognosis/modality/spesi.yaml
     group: PROGNOSIS
-    legacy_id: PR26_PESI_ONLY
-    description: PESI/sPESI severity score only
+    description: Simplified PESI severity score only
     question: How much 30-day mortality signal is already in the established clinical score?
     representation: none (tabular)
     task: prognosis
-    modalities: [pesi]
+    modalities: [spesi]
     anatomy: false
     supervision: native mortality label
     fusion: none
@@ -1110,18 +947,19 @@ experiments:
       - what: Prognosis manifest for the confirmed-acute-PE cohort
         experiment: data.dataset.full_inspect
         path_key: data.manifest
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
+      - what: sPESI scored in stage 0 from the MEDS/OMOP events
+        experiment: data.dataset.full_inspect
+        path_key: supervision.spesi
     produces: [the clinical baseline every imaging arm must beat]
     status: blocked
-    blockers: ["The confirmed-acute-PE prognosis manifest and its PESI columns are unresolved."]
+    blockers: ["Needs a built dataset profile whose clinical/spesi_features.csv has scored cases in all three splits."]
 
   prog.ehr:
     config: configs/runs/04_prognosis/modality/ehr.yaml
     group: PROGNOSIS
     legacy_id: PR27_CLINICAL_ONLY
     description: Raw clinical values plus missingness indicators only
-    question: Does the full clinical record beat the PESI score that summarizes part of it?
+    question: How much 30-day mortality signal does the full clinical record carry alone?
     representation: none (tabular)
     task: prognosis
     modalities: [ehr]
@@ -1163,54 +1001,6 @@ experiments:
     status: blocked
     blockers: ["Depends on C0 and on the prognosis manifest."]
 
-  prog.ehr_pesi:
-    config: configs/runs/04_prognosis/modality/ehr_pesi.yaml
-    group: PROGNOSIS
-    description: Clinical record plus PESI, no imaging
-    question: What is the best purely tabular model?
-    representation: none (tabular)
-    task: prognosis
-    modalities: [ehr, pesi]
-    anatomy: false
-    supervision: native mortality label
-    fusion: concat_mlp
-    requires:
-      - what: Prognosis manifest for the confirmed-acute-PE cohort
-        experiment: data.dataset.full_inspect
-        path_key: data.manifest
-      - what: EHR columns matching task.ehr_input_dim
-        path_key: supervision.ehr
-        blocker: ehr_columns
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
-    produces: [the tabular bar every imaging arm must clear]
-    status: blocked
-    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
-
-  prog.image_pesi:
-    config: configs/runs/04_prognosis/modality/image_pesi.yaml
-    group: PROGNOSIS
-    description: Global image plus PESI
-    question: Does imaging add anything on top of the established severity score?
-    representation: C0
-    task: prognosis
-    modalities: [image, pesi]
-    anatomy: false
-    supervision: native mortality label
-    fusion: concat_mlp
-    requires:
-      - what: Prognosis manifest for the confirmed-acute-PE cohort
-        experiment: data.dataset.full_inspect
-        path_key: data.manifest
-      - what: C0 checkpoint
-        experiment: repr.align
-        path_key: lineage.source_checkpoint
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
-    produces: [image + score mortality metrics]
-    status: blocked
-    blockers: ["Depends on C0 and on the prognosis manifest."]
-
   prog.image_ehr:
     config: configs/runs/04_prognosis/modality/image_ehr.yaml
     group: PROGNOSIS
@@ -1237,50 +1027,22 @@ experiments:
     status: blocked
     blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
 
-  prog.image_ehr_pesi:
-    config: configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
-    group: PROGNOSIS
-    legacy_id: PR20_IMAGE_CLINICAL_PESI_FULL
-    description: All three modalities, global image, concatenation fusion
-    question: Does the full multimodal model beat every smaller modality subset?
-    representation: C0
-    task: prognosis
-    modalities: [image, ehr, pesi]
-    anatomy: false
-    supervision: native mortality label
-    fusion: concat_mlp
-    requires:
-      - what: Prognosis manifest for the confirmed-acute-PE cohort
-        experiment: data.dataset.full_inspect
-        path_key: data.manifest
-      - what: C0 checkpoint
-        experiment: repr.align
-        path_key: lineage.source_checkpoint
-      - what: EHR columns matching task.ehr_input_dim
-        path_key: supervision.ehr
-        blocker: ehr_columns
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
-    produces: [full multimodal mortality metrics]
-    status: blocked
-    blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
-
   prog.global.concat:
-    alias_of: prog.image_ehr_pesi
-    config: configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
+    alias_of: prog.image_ehr
+    config: configs/runs/04_prognosis/modality/image_ehr.yaml
     group: PROGNOSIS
-    description: Concat cell of the global fusion comparison - the same run as prog.image_ehr_pesi
-    question: Does concatenation fuse the three modalities better than late-logit or Soft-MoE?
+    description: Concat cell of the global fusion comparison - the same run as prog.image_ehr
+    question: Does concatenation fuse the two modalities better than late-logit or Soft-MoE?
     representation: C0
     task: prognosis
-    modalities: [image, ehr, pesi]
+    modalities: [image, ehr]
     anatomy: false
     supervision: native mortality label
     fusion: concat_mlp
     requires:
-      - what: See prog.image_ehr_pesi - this name points at the same config on purpose
-        experiment: prog.image_ehr_pesi
-    produces: [nothing new - running prog.image_ehr_pesi produces this cell]
+      - what: See prog.image_ehr - this name points at the same config on purpose
+        experiment: prog.image_ehr
+    produces: [nothing new - running prog.image_ehr produces this cell]
     status: blocked
     blockers:
       - Deliberate alias, not a second run. A separate global/concat.yaml would be a
@@ -1289,11 +1051,11 @@ experiments:
   prog.global.late:
     config: configs/runs/04_prognosis/global/late_logit.yaml
     group: PROGNOSIS
-    description: Global image plus EHR plus PESI with late-logit fusion
+    description: Global image plus EHR with late-logit fusion
     question: Is averaging modality decisions better than concatenating modality features?
     representation: C0
     task: prognosis
-    modalities: [image, ehr, pesi]
+    modalities: [image, ehr]
     anatomy: false
     supervision: native mortality label
     fusion: late_logit
@@ -1307,8 +1069,6 @@ experiments:
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
     produces: [late-logit cell of the global fusion comparison]
     status: blocked
     blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
@@ -1316,11 +1076,11 @@ experiments:
   prog.global.moe:
     config: configs/runs/04_prognosis/global/soft_moe.yaml
     group: PROGNOSIS
-    description: Global image plus EHR plus PESI with Soft-MoE fusion
+    description: Global image plus EHR with Soft-MoE fusion
     question: Does a learned router over modalities beat fixed fusion?
     representation: C0
     task: prognosis
-    modalities: [image, ehr, pesi]
+    modalities: [image, ehr]
     anatomy: false
     supervision: native mortality label
     fusion: soft_moe
@@ -1334,8 +1094,6 @@ experiments:
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
     produces: [Soft-MoE cell of the global fusion comparison]
     status: blocked
     blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
@@ -1343,12 +1101,11 @@ experiments:
   prog.anatomy.concat:
     config: configs/runs/04_prognosis/anatomy/concat.yaml
     group: PROGNOSIS
-    legacy_id: PR22_ANATOMY_CLINICAL_PESI
-    description: Anatomy-aware image plus EHR plus PESI, concatenation fusion
+    description: Anatomy-aware image plus EHR, concatenation fusion
     question: Does anatomy-partitioned image evidence predict mortality better than a global vector?
     representation: C0
     task: prognosis
-    modalities: [image, ehr, pesi]
+    modalities: [image, ehr]
     anatomy: true
     supervision: native mortality label
     fusion: concat_mlp
@@ -1368,8 +1125,6 @@ experiments:
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
     produces: [anatomy-aware multimodal mortality metrics]
     status: blocked
     blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
@@ -1381,7 +1136,7 @@ experiments:
     question: With six branches, is averaging decisions better than concatenating features?
     representation: C0
     task: prognosis
-    modalities: [image, ehr, pesi]
+    modalities: [image, ehr]
     anatomy: true
     supervision: native mortality label
     fusion: late_logit
@@ -1401,8 +1156,6 @@ experiments:
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
     produces: [late-logit cell of the anatomy fusion comparison]
     status: blocked
     blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
@@ -1414,7 +1167,7 @@ experiments:
     question: Does a learned router over anatomy and clinical branches beat fixed fusion?
     representation: C0
     task: prognosis
-    modalities: [image, ehr, pesi]
+    modalities: [image, ehr]
     anatomy: true
     supervision: native mortality label
     fusion: soft_moe
@@ -1434,8 +1187,6 @@ experiments:
       - what: EHR columns matching task.ehr_input_dim
         path_key: supervision.ehr
         blocker: ehr_columns
-      - what: PESI columns present in the manifest
-        path_key: supervision.pesi
     produces: [Soft-MoE cell of the anatomy fusion comparison]
     status: blocked
     blockers: ["data.ehr_columns is empty; its length must equal task.ehr_input_dim (32)."]
@@ -1447,7 +1198,7 @@ experiments:
     question: Do auxiliary outcome horizons improve primary 30-day mortality prediction?
     representation: C0
     task: multitask prognosis
-    modalities: [image, ehr, pesi]
+    modalities: [image, ehr]
     anatomy: true
     supervision: seven native INSPECT outcome labels
     fusion: soft_moe
@@ -1461,11 +1212,11 @@ experiments:
       - what: Anatomy ROI masks
         experiment: data.roi
         path_key: data.roi_manifest
-      - what: Reviewed EHR columns and PESI mapping
-        blocker: ehr_columns_and_pesi_mapping
+      - what: Reviewed EHR columns
+        blocker: ehr_columns
     produces: [primary 30-day prediction plus masked auxiliary outcome heads]
     status: blocked
-    blockers: [Requires C0, ROI artifacts, reviewed EHR columns and approved PESI mapping.]
+    blockers: [Requires C0, ROI artifacts and reviewed EHR columns.]
 
   # ROI-only prognosis students (SUFFICIENCY). The prognosis counterpart of
   # anatomy.*_student, and the three arms the email names under "Summary of prognosis
@@ -2194,48 +1945,3 @@ experiments:
     blockers:
       - Depends on C0, which depends on the backbone contract.
 
-  deferred.contour:
-    config: configs/runs/06_deferred/contour/train.yaml
-    group: DEFERRED
-    legacy_id: CT01
-    description: Clot contour / segmentation refinement
-    question: Can the shared representation localize the embolus, not just detect it?
-    representation: C_diag
-    task: contour
-    modalities: [image]
-    anatomy: false
-    supervision: native embolus mask
-    fusion: none
-    requires:
-      - what: Contour manifest with reviewed embolus mask paths
-        path_key: data.manifest
-      - what: Source diagnosis checkpoint
-        path_key: lineage.source_checkpoint
-    produces: [contour checkpoint, Dice/NSD/HD95 metrics]
-    status: deferred
-    blockers:
-      - Deferred from the active pipeline; needs a reviewed embolus-mask manifest.
-
-  deferred.concept_bottleneck:
-    config: configs/runs/06_deferred/concept_bottleneck/prognosis.yaml
-    group: DEFERRED
-    legacy_id: PR17_concept_bottleneck
-    description: Interpretable concept-bottleneck prognosis, disabled by default
-    question: Can mortality be predicted through named clinical concepts instead of latent features?
-    representation: C_diag
-    task: prognosis
-    modalities: [image, ehr]
-    anatomy: true
-    supervision: native labels plus concept targets
-    fusion: none
-    requires:
-      - what: Real reviewed label column for every enabled concept
-        blocker: concept_targets
-    produces: [concept predictions plus mortality prediction]
-    status: deferred
-    blockers:
-      - Deferred and disabled. Every concept needs a real native / validated-silver /
-        expert-reviewed column before concept_bottleneck.enabled may become true.
-      - >-
-        Embolic burden and vascular pruning are intentionally absent because this dataset
-        has no defensible target for either.

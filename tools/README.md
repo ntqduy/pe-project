@@ -85,7 +85,7 @@ The launcher reads `experiment.stage` and picks the single matching entrypoint:
 ```bash
 python tools/launch.py --config configs/runs/02_representation/dapt/dino.yaml --gpus 0
 python tools/launch.py --config configs/runs/02_representation/dapt/dino.yaml --gpus 0,1,2,3
-python tools/launch.py --config configs/runs/00_data/silver/rule_falcon_medgemma.yaml --gpus 0,1 --allow-full
+python tools/launch.py --config configs/runs/00_data/silver/medgemma.yaml --gpus 0,1 --allow-full
 python tools/launch.py --config configs/runs/02_representation/dapt/dino.yaml --gpus 0,1 --dry-run
 ```
 
@@ -94,7 +94,7 @@ to logical `0..N-1`, and uses `torchrun` from two GPUs up. Foundation materializ
 one GPU only.
 
 Silver generation is not DDP model training: each rank loads its providers on its local GPU and
-processes a shard of reports, then rank 0 merges. rule_falcon_medgemma loads both Falcon and MedGemma per rank.
+processes a shard of reports, then rank 0 merges. the medgemma method loads MedGemma once per rank.
 
 ## Data selection
 
@@ -111,7 +111,7 @@ selection mode:
 python tools/create_masks/generate_masks.py --config configs/runs/00_data/segmentation.yaml \
   --patient-id P001 --gpus 0
 python tools/build_rois/build_rois.py --config configs/runs/00_data/roi.yaml --patient-id P001
-python tools/launch.py --config configs/runs/00_data/silver/rule_falcon_medgemma.yaml --patient-id P001 --gpus 0
+python tools/launch.py --config configs/runs/00_data/silver/medgemma.yaml --patient-id P001 --gpus 0
 ```
 
 `--patient-id` selects every record for that patient, not one study. For ROI the patient must
@@ -128,6 +128,16 @@ masks**. It writes `counterfactual_predictions.parquet`, paired bootstrap metric
 `tasks/evaluate.py` also accepts `--patient-id` or `--max-cases` for smoke inference on a real
 checkpoint. Smoke artifacts go to `RUN/smoke/<scope-hash>/` and never overwrite the full
 `predictions.parquet` / `result.json`.
+
+`tasks/evaluate.py --restrict-to <csv>` limits evaluation to one shared list of
+`patient_id[,study_id]`, so every arm of a comparison is scored on identical cases. Stage 0
+writes `clinical/spesi_evaluable.csv` for exactly this.
+
+`tasks/score_baseline.py` evaluates a manifest score column (for example `spesi`) as a fixed
+clinical baseline -- no model, no training -- with the same threshold rule, metrics, patient
+bootstrap and output layout as `evaluate.py`. `--transform` selects `platt` (default,
+calibrated on validation only), `minmax`, or `raw_sigmoid` (INSPECT's choice). Combine it
+with `--restrict-to` when the baseline is not computable for every case.
 
 ROI students and distilled students use `tasks/train_task.py`. A KD run additionally writes
 `distillation_validation_predictions.parquet` with teacher and student logits and the GT / KD /
@@ -154,7 +164,7 @@ parallel:
   jobs:
     - config: configs/runs/03_diagnosis/anatomy/single_concat.yaml
     - config: configs/runs/03_diagnosis/baseline/global_single.yaml
-    - config: configs/runs/04_prognosis/modality/image_ehr_pesi.yaml
+    - config: configs/runs/04_prognosis/modality/image_ehr.yaml
 ```
 
 ```bash
@@ -186,8 +196,8 @@ Calling a nested file directly with several GPUs does not spawn several processe
 ## Overrides, resume, overwrite
 
 ```bash
-python tools/launch.py --config configs/runs/02_representation/silver_adaptation/rule_falcon_medgemma.yaml \
-  --set silver_training.silver_source=rule_falcon --gpus 0,1
+python tools/launch.py --config configs/runs/02_representation/silver_adaptation/medgemma.yaml \
+  --set silver_training.silver_source=medgemma --gpus 0,1
 ```
 
 - `--set KEY=VALUE` is YAML-parsed and repeatable.

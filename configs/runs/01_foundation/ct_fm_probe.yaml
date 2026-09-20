@@ -5,8 +5,8 @@
 # Frozen encoder -> global average pool -> fixed linear head -> PE +/-.
 # CT-FM is an image-only encoder, so it is screened with a probe and never with zero-shot
 # text prompting.
-# BLOCKER: configs/components/backbones.yaml#ct_fm still needs factory / output_adapter /
-# feature_dim from the inspected checkpoint, and the weights must be staged locally.
+# Staged: configs/components/backbones.yaml#ct_fm carries factory / output_adapter /
+# feature_dim (512) read off the inspected checkpoint, and the weights are local.
 # Output: outputs/diagnosis/DX_probe_ct_fm/
 _base_:
   - ../../paths.yaml
