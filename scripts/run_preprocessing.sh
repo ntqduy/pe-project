@@ -16,6 +16,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=use_gcs_storage.sh
+source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 ACTION="${ACTION:-run}"
 PYTHON="${PYTHON:-python3}"
@@ -29,21 +31,7 @@ case "$ACTION" in
   *) printf 'error: ACTION must be run, dry, preflight, plan or show (got %s)\n' "$ACTION" >&2; exit 2 ;;
 esac
 
-# The pipeline writes only under PE_CLOUD_ROOT and reads only the raw release. Neither is
-# mounted by this repository, so fail here with the missing variable rather than half way
-# through a multi-hour build.
-if [[ -z "${PE_CLOUD_ROOT:-}" ]]; then
-  cat >&2 <<'MSG'
-error: PE_CLOUD_ROOT is not set. Mount the storage bucket, then export the roots:
-
-  export PE_CLOUD_ROOT=/mnt/pe-storage
-  export PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
-  export PE_DERIVED_ROOT=/mnt/pe-storage/derived
-  export PE_LOCAL_CACHE_ROOT=/mnt/pe-project/cache
-MSG
-  exit 2
-fi
-
+# The storage bucket must already be mounted; the helper only supplies default paths.
 RAW_ROOT="${PE_RAW_INSPECT_ROOT:-$PE_CLOUD_ROOT/data/Stanford_INSPECT_dataset}"
 if [[ ! -d "$RAW_ROOT/CT/full" ]]; then
   printf 'error: raw release not found at %s/CT/full\n' "$RAW_ROOT" >&2

@@ -19,10 +19,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -z "${PE_CLOUD_ROOT:-}" && -f "$PROJECT_ROOT/scripts/use_gcs_storage.sh" ]]; then
-  # shellcheck disable=SC1091 -- intentional repository-local environment helper
-  source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
-fi
+# shellcheck source=use_gcs_storage.sh
+source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
 PYTHON="${PYTHON:-python}"
 
 declare -a args=(--profile "${PROFILE:-test_500_sample}" --rule-sample "${RULE_SAMPLE:-2000}")

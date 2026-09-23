@@ -16,6 +16,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=use_gcs_storage.sh
+source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 SLICE_ORDER="${SLICE_ORDER:-superior_to_inferior}"
 AGGREGATE="${AGGREGATE:-max}"
@@ -23,10 +25,6 @@ PYTHON="${PYTHON:-python3}"
 CONFIG="$PROJECT_ROOT/configs/runs/01_foundation/penet_zero_shot.yaml"
 CHECKPOINT="${CHECKPOINT:-$PROJECT_ROOT/third_party/weights/penet_best.pth.tar}"
 
-if [[ -z "${PE_CLOUD_ROOT:-}" ]]; then
-  printf 'error: PE_CLOUD_ROOT is not set; see scripts/README.md for the roots to export\n' >&2
-  exit 2
-fi
 RAW_ROOT="${PE_RAW_INSPECT_ROOT:-$PE_CLOUD_ROOT/data/Stanford_INSPECT_dataset}"
 [[ -d "$RAW_ROOT/CT/full/CTPA" ]] || {
   printf 'error: raw CTPA series not found at %s/CT/full/CTPA\n' "$RAW_ROOT" >&2

@@ -23,13 +23,15 @@ scripts/
 ## Building a dataset profile
 
 ```bash
-export PE_CLOUD_ROOT=/mnt/pe-storage
-export PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
-
 PROFILE=smoke_30 bash scripts/run_preprocessing.sh        # rehearse first
 ACTION=preflight bash scripts/run_preprocessing.sh        # check the full build
 bash scripts/run_preprocessing.sh                         # full_inspect, hours
 ```
+
+The scripts load `scripts/use_gcs_storage.sh`, which defaults `PE_CLOUD_ROOT` to
+`/mnt/pe-storage`, `PE_RAW_INSPECT_ROOT` to `/mnt/Stanford_INSPECT_dataset`, and
+`PE_DERIVED_ROOT` to `/mnt/pe-storage/derived`. Existing exports override these defaults.
+Mount the bucket at `/mnt/pe-storage` before running; the helper does not mount it.
 
 `PROFILE` picks `smoke_30`, `test_500_sample` or `full_inspect`; `ACTION` picks
 `run`, `dry`, `preflight`, `plan` or `show`; `OVERWRITE=1` rebuilds over an existing

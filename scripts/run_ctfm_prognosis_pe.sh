@@ -9,4 +9,6 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=use_gcs_storage.sh
+source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
 TASK=prognosis COHORT=pe exec "${PROJECT_ROOT}/scripts/run_ctfm_frozen.sh" "$@"

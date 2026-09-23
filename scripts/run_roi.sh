@@ -4,6 +4,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=use_gcs_storage.sh
+source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 ACTION="${ACTION:-run}"
 PYTHON="${PYTHON:-python3}"

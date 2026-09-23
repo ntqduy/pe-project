@@ -6,14 +6,16 @@ the CT-FM path creates a new split or moves a patient between splits.
 
 ## 1. Environment and storage
 
-The scripts expect the storage roots to be exported before running:
+The scripts set these defaults automatically through `scripts/use_gcs_storage.sh`:
 
-```bash
-export PE_CLOUD_ROOT=/mnt/pe-storage
-export PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
-export PE_DERIVED_ROOT=/mnt/pe-storage/derived
-export PE_LOCAL_CACHE_ROOT=/mnt/pe-project/cache
+```text
+PE_CLOUD_ROOT=/mnt/pe-storage
+PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
+PE_DERIVED_ROOT=/mnt/pe-storage/derived
 ```
+
+You only need to export these variables when your paths differ. Mount the bucket at
+`/mnt/pe-storage` before running the scripts.
 
 The raw release must contain the CTPA volumes below:
 
