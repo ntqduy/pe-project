@@ -395,10 +395,16 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                         )
                     )
                 ),
+                # Diagnosis is a fully observed classification target, so every row must
+                # carry its primary label. Prognosis endpoints are time-to-event style
+                # outcomes: rows can legitimately be censored/unobserved and are masked by
+                # CTPADataset + masked_multitask_loss. The label columns themselves remain
+                # required above; only the per-row primary-label requirement is relaxed for
+                # prognosis. A later split-level check below ensures each split still has
+                # usable supervision.
                 primary_target=(
                     str(task.get("primary_target"))
-                    if effective_stage in {"diagnosis", "prognosis"}
-                    and task.get("primary_target")
+                    if effective_stage == "diagnosis" and task.get("primary_target")
                     else None
                 ),
                 fold_column=data_config.get("fold_column"),
@@ -425,6 +431,36 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     manifest_rows = read_rows(manifest)
                 except ManifestError:
                     manifest_rows = None
+            if (
+                effective_stage == "prognosis"
+                and manifest_rows is not None
+                and task.get("primary_target")
+            ):
+                target = str(task["primary_target"])
+                split_column = str(data_config.get("split_column", "split"))
+                valid_by_split: dict[str, int] = {}
+                for row in manifest_rows:
+                    split = str(row.get(split_column) or "").strip().lower()
+                    value = row.get(target)
+                    if split and value is not None and str(value).strip() != "":
+                        valid_by_split[split] = valid_by_split.get(split, 0) + 1
+                missing_splits = [
+                    split for split in ("train", "validation", "test")
+                    if valid_by_split.get(split, 0) == 0
+                ]
+                checks.append(
+                    Check(
+                        "DATA",
+                        "prognosis_primary_target_coverage",
+                        "FAIL" if missing_splits else "PASS",
+                        (
+                            f"target={target} valid_by_split={dict(sorted(valid_by_split.items()))}; "
+                            f"no usable labels in: {', '.join(missing_splits)}"
+                            if missing_splits
+                            else f"target={target} valid_by_split={dict(sorted(valid_by_split.items()))}"
+                        ),
+                    )
+                )
         except (ManifestError, PathConfigurationError) as exc:
             checks.append(Check("DATA", "split_manifest", "FAIL", str(exc)))
     model = dict(config.get("model") or {})

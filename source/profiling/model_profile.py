@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
@@ -8,6 +11,27 @@ import torch
 from torch import nn
 
 from source.components.peft.freeze import trainable_parameter_summary
+
+
+@contextlib.contextmanager
+def _quiet_native_profiler_output():
+    """Hide Kineto/USDT diagnostics emitted directly by the native profiler."""
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        with open(os.devnull, "w", encoding="utf-8") as sink:
+            os.dup2(sink.fileno(), 1)
+            os.dup2(sink.fileno(), 2)
+            yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
 
 
 @torch.no_grad()
@@ -37,8 +61,9 @@ def profile_model(
     gflops: float | None = None
     reason = "PyTorch profiler did not report supported operator FLOPs"
     try:
-        with torch.profiler.profile(with_flops=True) as profiler:
-            forward()
+        with _quiet_native_profiler_output():
+            with torch.profiler.profile(with_flops=True) as profiler:
+                forward()
         flops = sum(int(event.flops or 0) for event in profiler.key_averages())
         if flops > 0:
             gflops = flops / 1e9

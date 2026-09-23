@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import math
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,17 @@ def _available(row: Mapping[str, Any], name: str | None) -> bool:
         return str(raw).strip().upper() in {"TRUE", "T", "YES", "Y"}
 
 
+def _observed_label(row: Mapping[str, Any], name: str) -> bool:
+    """Return whether a numeric outcome is present and finite in a manifest row."""
+    raw = row.get(name)
+    if raw is None or str(raw).strip() == "":
+        return False
+    try:
+        return math.isfinite(float(raw))
+    except (TypeError, ValueError):
+        return False
+
+
 class CTPADataset(Dataset[dict[str, Any]]):
     """Dataset API for validated full-data manifests; paths are resolved by the caller."""
 
@@ -87,15 +99,35 @@ class CTPADataset(Dataset[dict[str, Any]]):
         roi_control_for: Mapping[str, str] | None = None,
         silver_path: str | Path | None = None,
         silver_targets: Sequence[str] = (),
+        drop_rows_without_labels: bool = False,
     ):
         self.manifest = Path(manifest)
         self.data_root = Path(data_root)
-        self.rows = [row for row in read_rows(self.manifest) if str(row.get("split")) == split]
+        self.label_columns = tuple(label_columns)
+        source_rows = [row for row in read_rows(self.manifest) if str(row.get("split")) == split]
+        self.dropped_unlabeled_rows: tuple[dict[str, Any], ...] = ()
+        if drop_rows_without_labels and self.label_columns:
+            kept_rows = [
+                row for row in source_rows
+                if any(_observed_label(row, column) for column in self.label_columns)
+            ]
+            self.dropped_unlabeled_rows = tuple(
+                row for row in source_rows if not any(
+                    _observed_label(row, column) for column in self.label_columns
+                )
+            )
+            self.rows = kept_rows
+        else:
+            self.rows = source_rows
         if not self.rows:
+            if self.dropped_unlabeled_rows:
+                raise ValueError(
+                    f"manifest has no rows with observed labels for split={split!r}; "
+                    f"dropped={len(self.dropped_unlabeled_rows)}"
+                )
             raise ValueError(f"manifest has no rows for split={split!r}")
         self.transform = transform
         self.image_column = image_column
-        self.label_columns = tuple(label_columns)
         self.ehr_columns = tuple(ehr_columns)
         self.spesi_columns = tuple(spesi_columns)
         self.ehr_availability_column = str(ehr_availability_column or "").strip() or None

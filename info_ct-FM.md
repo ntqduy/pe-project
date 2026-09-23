@@ -312,7 +312,8 @@ checkpoint is written to `best.ckpt`; the final state is written to `last.ckpt`.
 does not calculate confidence intervals; CI/bootstrap chỉ được tính trong bước evaluate trên
 test split.
 
-Sau khi train xong, mỗi run có thêm bundle theo số epoch thực tế đã chạy:
+Sau khi train/evaluate xong, mỗi run chỉ giữ metadata tối thiểu ở root và một bundle theo số
+epoch thực tế đã chạy:
 
 ```text
 outputs/<family>/<RUN_ID>/epoch_<epochs_run>/
@@ -320,15 +321,21 @@ outputs/<family>/<RUN_ID>/epoch_<epochs_run>/
 │   ├── best.ckpt                 # validation-selected checkpoint
 │   └── last.ckpt                 # state ở epoch cuối, kể cả khi early stopping
 ├── logs.txt                      # terminal stream của wrapper + run log
-├── result.csv                   # history từng epoch; evaluate sẽ append metric test + CI
-├── plots/
-│   └── training_curves.pdf      # train/val loss và train/val AUROC
+├── result.csv                   # một dòng train, validation, test cho mỗi target
+├── training_curves.pdf           # train/val loss và train/val AUROC
 └── preview/
-    ├── *_feature_activation.png # mean absolute backbone activation
-    ├── *_gradcam.png            # target-specific heatmap tại slice giữa
-    ├── README.txt
-    └── summary.json
+    ├── *_axial_feature_activation.png   # mean absolute activation, axial middle slice
+    ├── *_axial_gradcam.png              # target-specific axial heatmap
+    ├── *_coronal_feature_activation.png # mean absolute activation, vertical coronal slice
+    ├── *_coronal_gradcam.png            # target-specific vertical coronal heatmap
+    ├── README.txt                       # preview contract và lỗi từng sample nếu có
+    └── summary.json              # số sample đã ghi và số lỗi
 ```
+
+Root chỉ giữ `resolved_config.yaml` và `result.json`; các bản sao checkpoint, log, metrics,
+environment và file QC trung gian được dọn sau khi run hoàn tất. Với CT-FM frozen, nếu
+gradient backbone không khả dụng thì ảnh Grad-CAM dùng tên
+`*_axial_feature_activation_max.png` và `*_coronal_feature_activation_max.png`.
 
 Preview mặc định lấy 5 patient đầu tiên của validation manifest để kiểm tra định tính;
 không dùng test để tạo heatmap và không làm thay đổi split. Với model prognosis chỉ có
@@ -372,28 +379,23 @@ Task output is written under the relevant persistent output family:
 ```text
 outputs/diagnosis/<RUN_ID>/
 outputs/prognosis/<RUN_ID>/
-├── best.ckpt
-├── predictions.parquet
-├── metrics.json
+├── resolved_config.yaml
 ├── result.json
-├── reporting_checklist.json
-└── logs/
+└── epoch_<epochs_run>/
+    ├── checkpoint/{best.ckpt,last.ckpt}
+    ├── logs.txt
+    ├── result.csv
+    ├── training_curves.pdf
+    └── preview/
 ```
 
-`epoch_<epochs_run>/result.csv` là bảng long-format để kiểm tra smoke run hoặc tổng hợp nhiều
-model. Nó gồm:
+`epoch_<epochs_run>/result.csv` là bảng wide-format; mỗi dòng là một split/target:
 
 ```text
-record_type=parameter          toàn bộ config/model/training/evaluation parameters
-record_type=epoch              loss + train/validation AUROC/AUPRC theo epoch
-record_type=final_metric       từng target × từng metric trên test, point estimate + CI
-record_type=evaluation_summary threshold, validation/test patient count
-record_type=evaluation_parameter bootstrap unit/samples/confidence, status và lý do fallback
+split=train                    point metrics, không bootstrap CI
+split=validation               point metrics dùng threshold chọn trên validation
+split=test                     point metrics + patient-bootstrap CI
 ```
-
-Sau khi profiling, các parameter runtime như `parameter_count`, `trainable_parameter_count`,
-`gflops_per_volume`, `latency_ms_per_volume`, `peak_vram_gb` và lý do FLOPs không khả dụng
-cũng được append vào `result.csv`.
 
 Với prognosis, `final_metric` được ghi cho toàn bộ target có trong config, hiện gồm:
 `1_month_mortality`, `6_month_mortality`, `12_month_mortality`, `1_month_readmission`,

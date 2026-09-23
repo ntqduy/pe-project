@@ -24,7 +24,12 @@ from source.distributed.setup import initialize_distributed, rank_zero_call, wra
 from source.engine.checkpoint import checkpoint_sha256, load_checkpoint
 from source.engine.experiment import OutputManager, atomic_write_json
 from source.engine.factory import build_task_model
-from source.engine.task_artifacts import append_evaluation_result_csv, refresh_epoch_log
+from source.engine.task_artifacts import (
+    append_evaluation_result_csv,
+    cleanup_task_run,
+    refresh_epoch_log,
+    write_backbone_previews,
+)
 from source.engine.trainer import move_to_device
 from source.metrics.bootstrap import (
     bootstrap_binary_predictions,
@@ -321,6 +326,45 @@ def _metric_bundle(rows, stage: str, threshold: float, *, samples: int, confiden
         return point_with_empty_ci(), f"bootstrap_failed:{type(exc).__name__}:{exc}"
 
 
+def _point_metric_bundle(rows, stage: str, threshold: float) -> dict[str, dict[str, Any]]:
+    """Return split metrics without bootstrap; CI is reserved for the test split."""
+    if not rows:
+        return {}
+    from source.metrics.classification import binary_classification_metrics
+    from source.metrics.prognosis import prognosis_metrics
+
+    point_fn = prognosis_metrics if stage == "prognosis" else binary_classification_metrics
+    point = point_fn(
+        [int(row["y_true"]) for row in rows],
+        [float(row["y_prob"]) for row in rows],
+        threshold,
+    )
+    return {
+        name: {
+            "value": value,
+            "ci_low": float("nan"),
+            "ci_high": float("nan"),
+            "valid_replicates": 0,
+        }
+        for name, value in point.items()
+        if name != "threshold"
+    }
+
+
+def _run_checkpoint(run_dir: Path) -> Path:
+    """Resolve the canonical checkpoint after root compatibility copies are cleaned."""
+    root = run_dir / "best.ckpt"
+    if root.is_file():
+        return root
+    candidates = sorted(
+        run_dir.glob("epoch_*/checkpoint/best.ckpt"),
+        key=lambda path: int(path.parent.parent.name.removeprefix("epoch_")),
+    )
+    if not candidates:
+        raise FileNotFoundError(f"no best checkpoint found under {run_dir}")
+    return candidates[-1]
+
+
 @torch.no_grad()
 def _contour_rows(model, loader, context, tolerance):
     model.eval()
@@ -416,7 +460,7 @@ def main() -> int:
                 return destination
 
             run_dir = rank_zero_call(context, prepare)
-        checkpoint = args.checkpoint or run_dir / "best.ckpt"
+        checkpoint = args.checkpoint or _run_checkpoint(run_dir)
         restriction = None if args.restrict_to is None else _read_restriction(args.restrict_to)
         smoke_scope = bool(args.patient_ids or args.max_cases is not None)
         if smoke_scope:
@@ -466,6 +510,7 @@ def main() -> int:
             thresholds: dict[str, float] = {}
             threshold_sources: dict[str, str] = {}
             validation_rows_by_target: dict[str, list[dict[str, Any]] | None] = {}
+            train_rows_by_target: dict[str, list[dict[str, Any]] | None] = {}
             if external_evaluation.get("test_only"):
                 if context.is_main:
                     threshold, threshold_artifact = _locked_external_threshold(
@@ -474,6 +519,16 @@ def main() -> int:
                     thresholds[primary] = float(threshold)
                     threshold_sources[primary] = "internal_validation_artifact"
             else:
+                train_loader, _ = _loader(
+                    config, paths, "train", context, restrict=restriction
+                )
+                train_local = _classification_rows_all_targets(
+                    model, train_loader, stage, target_names, context, task_config, seed
+                )
+                for target in target_names:
+                    train_rows_by_target[target] = _gather_target_rows(
+                        train_local, target, train_loader.dataset.rows, context
+                    )
                 validation_loader, _ = _loader(
                     config, paths, "validation", context, restrict=restriction
                 )
@@ -539,11 +594,24 @@ def main() -> int:
                         seed=seed,
                     )
                     validation_rows = validation_rows_by_target.get(target) or []
+                    train_rows = train_rows_by_target.get(target) or []
+                    split_metrics = {
+                        "train": _point_metric_bundle(train_rows, stage, threshold),
+                        "validation": _point_metric_bundle(validation_rows, stage, threshold),
+                        "test": metrics,
+                        "train_rows": len(train_rows),
+                        "train_patients": len({row["patient_id"] for row in train_rows}),
+                        "validation_rows": len(validation_rows),
+                        "validation_patients": len({row["patient_id"] for row in validation_rows}),
+                        "test_rows": len(target_rows),
+                        "test_patients": len({row["patient_id"] for row in target_rows}),
+                    }
                     target_result: dict[str, Any] = {
                         "target": target,
                         "threshold": threshold,
                         "threshold_source": threshold_sources[target],
                         "metrics": metrics,
+                        "split_metrics": split_metrics,
                         "validation_patients": len({row["patient_id"] for row in validation_rows}),
                         "evaluated_patients": len({row["patient_id"] for row in target_rows}),
                         "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
@@ -583,6 +651,10 @@ def main() -> int:
                     ),
                     "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
                     "metrics": primary_result["metrics"],
+                    "split_metrics": {
+                        target: target_result["split_metrics"]
+                        for target, target_result in target_results.items()
+                    },
                     "evaluated_patients": primary_result["evaluated_patients"],
                     "bootstrap_unavailable_reason": primary_result["unavailable_reason"],
                     "targets": target_results,
@@ -709,6 +781,24 @@ def main() -> int:
             atomic_write_json(result_path, result)
             append_evaluation_result_csv(run_dir, result_evaluation)
             refresh_epoch_log(run_dir)
+            if (
+                stage in {"diagnosis", "prognosis"}
+                and not external_evaluation.get("test_only")
+            ):
+                epoch_candidates = sorted(run_dir.glob("epoch_*"), reverse=True)
+                if epoch_candidates:
+                    preview_report = write_backbone_previews(
+                        model,
+                        validation_loader.dataset,
+                        config,
+                        context.device,
+                        epoch_candidates[0] / "preview",
+                        maximum_patients=5,
+                    )
+                    atomic_write_json(
+                        epoch_candidates[0] / "preview" / "summary.json",
+                        preview_report,
+                    )
             if stage in {"diagnosis", "prognosis"}:
                 from source.metrics.reporting import stard_ai_checklist, tripod_ai_checklist
 
@@ -718,6 +808,7 @@ def main() -> int:
                     else tripod_ai_checklist(config, result_evaluation)
                 )
                 atomic_write_json(evaluation_dir / "reporting_checklist.json", checklist)
+            cleanup_task_run(run_dir)
             print(final_evaluation_block(
                 str(config["experiment"]["id"]), result_evaluation, evaluation_dir
             ))

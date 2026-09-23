@@ -57,13 +57,37 @@ def _write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "split",
         "cohort",
         "target",
+        "epoch",
+        "n_rows",
+        "n_patients",
+        "threshold",
+        "threshold_source",
+        "auroc",
+        "auroc_ci_low",
+        "auroc_ci_high",
+        "auroc_valid_replicates",
+        "auprc",
+        "auprc_ci_low",
+        "auprc_ci_high",
+        "auprc_valid_replicates",
+        "accuracy",
+        "accuracy_ci_low",
+        "accuracy_ci_high",
+        "accuracy_valid_replicates",
+        "balanced_accuracy",
+        "sensitivity",
+        "specificity",
+        "ppv",
+        "npv",
+        "f1",
+        "brier",
+        "calibration_intercept",
+        "calibration_slope",
         "metric",
         "value",
         "ci_low",
         "ci_high",
         "valid_replicates",
-        "threshold",
-        "threshold_source",
         "parameter_scope",
         "parameter",
         "parameter_value",
@@ -149,8 +173,8 @@ def write_training_artifacts(
 ) -> Path:
     """Materialize the user-facing per-epoch artifact bundle.
 
-    The historical root files remain in place for compatibility.  This bundle is a
-    reproducible snapshot, with the validation-selected and final checkpoints side by side.
+    The epoch directory is the user-facing artifact bundle. Root metadata remains available
+    for collision checks and later evaluation, while task artifacts live under one epoch.
     """
     history = [dict(row) for row in training_result.get("history", [])]
     epochs_run = int(training_result.get("epochs_run") or (history[-1]["epoch"] if history else 0))
@@ -159,8 +183,7 @@ def write_training_artifacts(
     destination = epoch_directory(run_dir, epochs_run)
     checkpoint_dir = destination / "checkpoint"
     preview_dir = destination / "preview"
-    plots_dir = destination / "plots"
-    for directory in (checkpoint_dir, preview_dir, plots_dir):
+    for directory in (checkpoint_dir, preview_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     for name in ("best.ckpt", "last.ckpt"):
@@ -175,40 +198,12 @@ def write_training_artifacts(
     else:
         (destination / "logs.txt").write_text("run.log was not created\n", encoding="utf-8")
 
-    result_rows = [{"record_type": "epoch", "split": "train_validation", **row} for row in history]
-    if config is not None:
-        result_rows.extend(
-            {
-                "record_type": "parameter",
-                "parameter_scope": "config",
-                **row,
-            }
-            for row in _flatten_parameters(config)
-        )
-    if extra_parameters:
-        result_rows.extend(
-            {
-                "record_type": "parameter",
-                "parameter_scope": "runtime",
-                **row,
-            }
-            for row in _flatten_parameters(extra_parameters)
-        )
-    _write_rows(destination / "result.csv", result_rows)
-    _plot_training_curves(plots_dir / "training_curves.pdf", history)
-    metadata = {
-        "epochs_configured": int(training_result.get("epochs", epochs_run)),
-        "epochs_run": epochs_run,
-        "early_stopping_patience": training_result.get("early_stopping_patience"),
-        "stopped_early": bool(training_result.get("stopped_early", False)),
-        "checkpoint": {"best": "checkpoint/best.ckpt", "last": "checkpoint/last.ckpt"},
-        "preview_split": "validation",
-        "split_policy": "read-only official train/validation/test manifest; no repartition",
-        "lineage": dict(lineage or {}),
-    }
-    (destination / "artifacts.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
+    # Evaluation replaces this compact training row with one wide row per split/target.
+    _write_rows(
+        destination / "result.csv",
+        [{"record_type": "training_epoch", **dict(history[-1])}],
     )
+    _plot_training_curves(destination / "training_curves.pdf", history)
     return destination
 
 
@@ -225,79 +220,87 @@ def append_evaluation_result_csv(
     destination = next((item for item in candidates if item.is_dir()), None)
     if destination is None:
         return None
-    rows: list[dict[str, Any]] = []
     existing = destination / "result.csv"
-    if existing.is_file():
-        with existing.open("r", encoding="utf-8", newline="") as handle:
-            rows.extend(dict(row) for row in csv.DictReader(handle))
-    rows = [
-        row
-        for row in rows
-        if row.get("record_type")
-        not in {"final_metric", "evaluation_summary", "evaluation_parameter"}
-    ]
+    rows: list[dict[str, Any]] = []
     targets = result_evaluation.get("targets") or {
         result_evaluation.get("primary_target", ""): result_evaluation
     }
     cohort = result_evaluation.get("cohort", "")
     for target, target_result in targets.items():
         target_result = dict(target_result or {})
-        metrics = target_result.get("metrics") or {}
-        ordered_metrics = sorted(
-            metrics.items(),
-            key=lambda item: (
-                METRIC_ORDER.index(str(item[0]))
-                if str(item[0]) in METRIC_ORDER
-                else len(METRIC_ORDER),
-                str(item[0]),
-            ),
-        )
-        for name, values in ordered_metrics:
-            item = {
-                "record_type": "final_metric",
-                "split": "test",
+        split_metrics = target_result.get("split_metrics") or {}
+        if not split_metrics:
+            split_metrics = {"test": target_result.get("metrics") or {}}
+        for split in ("train", "validation", "test"):
+            metrics = split_metrics.get(split) or {}
+            row: dict[str, Any] = {
+                "record_type": "metrics",
+                "split": split,
                 "cohort": cohort,
                 "target": target,
-                "metric": name,
+                "epoch": destination.name.removeprefix("epoch_"),
+                "threshold": target_result.get("threshold"),
+                "threshold_source": target_result.get("threshold_source"),
+                "n_rows": split_metrics.get(f"{split}_rows"),
+                "n_patients": split_metrics.get(f"{split}_patients"),
             }
-            if isinstance(values, Mapping):
-                item.update(values)
-            else:
-                item["value"] = values
-            rows.append(item)
-        for name in ("threshold", "evaluated_patients", "validation_patients"):
-            if name in target_result:
-                rows.append(
-                    {
-                        "record_type": "evaluation_summary",
-                        "split": "test",
-                        "cohort": cohort,
-                        "target": target,
-                        "metric": name,
-                        "value": target_result[name],
-                    }
-                )
-        for name, value in {
-            "bootstrap.unit": (target_result.get("bootstrap") or {}).get("unit"),
-            "bootstrap.samples": (target_result.get("bootstrap") or {}).get("samples"),
-            "bootstrap.confidence": (target_result.get("bootstrap") or {}).get("confidence"),
-            "threshold_source": target_result.get("threshold_source"),
-            "status": target_result.get("status"),
-            "unavailable_reason": target_result.get("unavailable_reason"),
-        }.items():
-            if value not in (None, ""):
-                rows.append(
-                    {
-                        "record_type": "evaluation_parameter",
-                        "split": "test",
-                        "cohort": cohort,
-                        "target": target,
-                        "parameter": name,
-                        "parameter_value": value,
-                    }
-                )
+            for name in METRIC_ORDER:
+                values = metrics.get(name)
+                if isinstance(values, Mapping):
+                    row[name] = values.get("value")
+                    row[f"{name}_ci_low"] = values.get("ci_low")
+                    row[f"{name}_ci_high"] = values.get("ci_high")
+                    row[f"{name}_valid_replicates"] = values.get("valid_replicates")
+                elif values is not None:
+                    row[name] = values
+            rows.append(row)
     _write_rows(existing, rows)
     return existing
+
+
+def cleanup_task_run(run_dir: Path) -> None:
+    """Remove compatibility duplicates after a task has produced its epoch bundle."""
+    for name in (
+        "best.ckpt",
+        "last.ckpt",
+        "best.ckpt.metadata.json",
+        "last.ckpt.metadata.json",
+        "config.yaml",
+        "metrics.json",
+        "lineage.json",
+        "environment.json",
+    ):
+        path = run_dir / name
+        if path.is_file():
+            path.unlink()
+    for name in ("logs", "checkpoints", "figures", "qc"):
+        path = run_dir / name
+        if path.is_dir():
+            shutil.rmtree(path)
+    for pattern in (
+        "predictions.parquet",
+        "calibration_curve*.parquet",
+        "bootstrap_metrics.parquet",
+        "reporting_checklist.json",
+    ):
+        for path in run_dir.glob(pattern):
+            if path.is_file():
+                path.unlink()
+    for epoch_dir in run_dir.glob("epoch_*"):
+        plots_dir = epoch_dir / "plots"
+        old_curve = plots_dir / "training_curves.pdf"
+        new_curve = epoch_dir / "training_curves.pdf"
+        if old_curve.is_file() and not new_curve.exists():
+            shutil.move(str(old_curve), str(new_curve))
+        if plots_dir.is_dir():
+            shutil.rmtree(plots_dir)
+    for epoch_dir in run_dir.glob("epoch_*"):
+        if not epoch_dir.is_dir():
+            continue
+        for name in ("artifacts.json",):
+            path = epoch_dir / name
+            if path.is_file():
+                path.unlink()
 
 
 def refresh_epoch_log(run_dir: Path, *, epochs_run: int | None = None) -> Path | None:
@@ -399,13 +402,19 @@ def write_backbone_previews(
     *,
     maximum_patients: int = 5,
 ) -> dict[str, Any]:
-    """Write two middle-slice diagnostics per validation patient.
+    """Write axial and coronal middle-slice diagnostics per validation patient.
 
     ``feature_activation`` shows mean absolute backbone activation; ``gradcam`` is
-    target-specific and is computed from the selected primary logit.  This is qualitative
-    validation-only output and never changes the official split or task metrics.
+    target-specific and is computed from the selected primary logit. Both maps are shown
+    on an axial and a coronal middle slice. This is qualitative validation-only output and
+    never changes the official split or task metrics.
     """
     destination.mkdir(parents=True, exist_ok=True)
+    # Do not leave stale previews from an earlier visualization contract (for example,
+    # the old narrow single-plane files) beside the regenerated axial/coronal images.
+    # Only generated PNGs are removed; README/summary and all task artifacts are kept.
+    for stale_png in destination.glob("*.png"):
+        stale_png.unlink()
     stage = str((config.get("experiment") or {}).get("stage") or "")
     if stage in {"ablation", "roi_student"}:
         stage = str((config.get("task") or {}).get("base_stage") or stage)
@@ -421,16 +430,37 @@ def write_backbone_previews(
     errors: list[str] = []
     hook_state: dict[str, Tensor] = {}
 
-    def capture(_module: nn.Module, _inputs: tuple[Any, ...], output: Any) -> None:
+    def _feature_map_from_output(output: Any) -> Tensor | None:
+        """Extract a spatial feature map from wrapper/backbone outputs."""
         feature_map = getattr(output, "feature_map", None)
         if feature_map is None and isinstance(output, Mapping):
             feature_map = output.get("feature_map")
-        if feature_map is None:
-            raise RuntimeError("image encoder output did not expose feature_map")
-        hook_state["feature_map"] = feature_map
-        feature_map.retain_grad()
+        if isinstance(feature_map, Tensor) and feature_map.ndim == 5:
+            return feature_map
+        if isinstance(output, Tensor) and output.ndim == 5:
+            return output
+        if isinstance(output, (list, tuple)):
+            for candidate in reversed(output):
+                nested = _feature_map_from_output(candidate)
+                if nested is not None:
+                    return nested
+        return None
 
-    handle = encoder.register_forward_hook(capture)
+    def capture(_module: nn.Module, _inputs: tuple[Any, ...], output: Any) -> None:
+        feature_map = _feature_map_from_output(output)
+        if feature_map is None:
+            raise RuntimeError("backbone output did not expose a 5D feature_map")
+        hook_state["feature_map"] = feature_map
+        if isinstance(feature_map, Tensor) and feature_map.requires_grad:
+            feature_map.retain_grad()
+
+    # BaseImageEncoder.forward() returns only global_embedding. Hook the actual
+    # third-party backbone when the project wrapper exposes it, so CT-FM's final
+    # pyramid tensor is available for qualitative previews.
+    hook_module = getattr(encoder, "model", None)
+    if not isinstance(hook_module, nn.Module):
+        hook_module = encoder
+    handle = hook_module.register_forward_hook(capture)
     try:
         model.eval()
         for index in range(min(int(maximum_patients), len(dataset))):
@@ -461,31 +491,52 @@ def write_backbone_previews(
                 probability = float(torch.sigmoid(_primary_logit(output, stage, target)).detach().cpu())
                 _primary_logit(output, stage, target).backward()
                 feature_map = hook_state.get("feature_map")
-                if feature_map is None or feature_map.grad is None:
-                    raise RuntimeError("backbone feature map gradient was unavailable")
+                if feature_map is None:
+                    raise RuntimeError("backbone feature map was unavailable")
                 activation = feature_map.detach().abs().mean(dim=1, keepdim=True)
-                gradient = feature_map.grad.detach()
-                weights = gradient.mean(dim=(2, 3, 4), keepdim=True)
-                gradcam = (weights * feature_map.detach()).sum(dim=1, keepdim=True).relu()
+                gradient = feature_map.grad
+                if gradient is not None:
+                    weights = gradient.detach().mean(dim=(2, 3, 4), keepdim=True)
+                    second_map = (weights * feature_map.detach()).sum(dim=1, keepdim=True).relu()
+                    second_name = "gradcam"
+                else:
+                    second_map = feature_map.detach().abs().amax(dim=1, keepdim=True)
+                    second_name = "feature_activation_max"
                 size = tuple(int(value) for value in volume.shape[-3:])
                 activation = F.interpolate(activation, size=size, mode="trilinear", align_corners=False)[0, 0]
-                gradcam = F.interpolate(gradcam, size=size, mode="trilinear", align_corners=False)[0, 0]
+                second_map = F.interpolate(second_map, size=size, mode="trilinear", align_corners=False)[0, 0]
                 activation = activation / activation.amax().clamp_min(1e-8)
-                gradcam = gradcam / gradcam.amax().clamp_min(1e-8)
-                middle = int(volume.shape[-3] // 2)
-                image = volume[0, 0, middle]
+                second_map = second_map / second_map.amax().clamp_min(1e-8)
+                middle_axial = int(volume.shape[-3] // 2)
+                middle_coronal = int(volume.shape[-2] // 2)
                 prefix = f"{written + 1:02d}_{_safe_name(patient)}_{_safe_name(study)}"
+
+                # Volume contract is [C, S, P, L] after CT-FM preprocessing (SPL
+                # orientation). The usual axial view fixes S; the additional vertical
+                # coronal view fixes P and displays S x L.
                 _write_heatmap(
-                    image,
-                    activation[:, :, middle],
-                    destination / f"{prefix}_feature_activation.png",
-                    f"feature activation | p={probability:.3f} | z={middle}",
+                    volume[0, 0, middle_axial],
+                    activation[middle_axial, :, :],
+                    destination / f"{prefix}_axial_feature_activation.png",
+                    f"axial feature activation | p={probability:.3f} | z={middle_axial}",
                 )
                 _write_heatmap(
-                    image,
-                    gradcam[:, :, middle],
-                    destination / f"{prefix}_gradcam.png",
-                    f"target Grad-CAM ({target}) | p={probability:.3f} | z={middle}",
+                    volume[0, 0, middle_axial],
+                    second_map[middle_axial, :, :],
+                    destination / f"{prefix}_axial_{second_name}.png",
+                    f"axial {second_name} ({target}) | p={probability:.3f} | z={middle_axial}",
+                )
+                _write_heatmap(
+                    volume[0, 0, :, middle_coronal, :],
+                    activation[:, middle_coronal, :],
+                    destination / f"{prefix}_coronal_feature_activation.png",
+                    f"coronal feature activation | p={probability:.3f} | y={middle_coronal}",
+                )
+                _write_heatmap(
+                    volume[0, 0, :, middle_coronal, :],
+                    second_map[:, middle_coronal, :],
+                    destination / f"{prefix}_coronal_{second_name}.png",
+                    f"coronal {second_name} ({target}) | p={probability:.3f} | y={middle_coronal}",
                 )
                 written += 1
             except Exception as exc:  # preview is diagnostic; one bad case must not erase metrics
@@ -496,8 +547,11 @@ def write_backbone_previews(
 
     readme = (
         "Preview source split: validation (first five manifest rows).\n"
+        "axial: middle S slice, shown in the standard transverse plane.\n"
+        "coronal: middle P slice, shown as a vertical S x L plane.\n"
         "feature_activation: mean absolute backbone feature activation.\n"
-        "gradcam: target-specific gradient-weighted feature activation.\n"
+        "gradcam: target-specific gradient-weighted feature activation when gradients are available.\n"
+        "feature_activation_max: frozen-backbone fallback when feature gradients are unavailable.\n"
         "These images are qualitative diagnostics only; they are not task metrics.\n"
     )
     if errors:
@@ -524,6 +578,7 @@ def _move_preview_batch(batch: Mapping[str, Any], device: torch.device) -> dict[
 __all__ = [
     "append_evaluation_result_csv",
     "append_epoch_parameters",
+    "cleanup_task_run",
     "epoch_directory",
     "refresh_epoch_log",
     "write_backbone_previews",

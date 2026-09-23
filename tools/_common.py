@@ -155,6 +155,11 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
         roi_control_for=dict(data.get("roi_control_for") or {}),
         silver_path=silver_path,
         silver_targets=silver_targets if silver_path else (),
+        # Prognosis manifests retain censored/unobserved rows for split auditing. At runtime,
+        # remove rows with no observed configured outcome at all so a batch cannot contain a
+        # sample that contributes no loss. Rows with only some missing multitask outcomes stay
+        # in the dataset and are masked per target.
+        drop_rows_without_labels=(stage == "prognosis"),
     )
 
 

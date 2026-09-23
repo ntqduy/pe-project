@@ -172,6 +172,11 @@ def main() -> int:
                         help="INSPECT root or directory containing CT/full/CTPA")
     parser.add_argument("--output-name", default="ct_fm_frozen")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="print a compact cache summary; the full QC remains in dataset.json",
+    )
     args = parser.parse_args()
 
     dataset_root = args.dataset_root.resolve()
@@ -320,7 +325,15 @@ def main() -> int:
     (output_root / "dataset.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    if args.quiet:
+        print(
+            "CT-FM cache ready: "
+            f"studies={studies_cached}/{studies_attempted} "
+            f"failures={len(failures)} dropped_rows={len(dropped_rows)} "
+            f"shape={spec.target_shape} output={output_root}"
+        )
+    else:
+        print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if not failures else 1
 
 

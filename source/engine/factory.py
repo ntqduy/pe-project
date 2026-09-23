@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from typing import Any
+
+# CT-FM's timm dependency still registers a legacy TorchScript interface. It is
+# unrelated to this experiment and does not indicate a model/runtime failure.
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.jit\.interface` is deprecated\. Please use `torch\.compile` instead\.",
+)
 
 from torch import nn
 

@@ -6,4 +6,6 @@ compute:
   num_nodes: 1
   precision: bf16
   distributed_backend: nccl
-  num_workers: 8
+  # Four workers matches the current project host and avoids DataLoader oversubscription.
+  # Override per run with NUM_WORKERS=<n> in scripts/run_ctfm_frozen.sh.
+  num_workers: 4

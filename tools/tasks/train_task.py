@@ -21,7 +21,7 @@ from source.engine.factory import build_task_model
 from source.engine.task_steps import task_loss_step
 from source.engine.trainer import Trainer, move_to_device
 from source.engine.task_artifacts import (
-    append_epoch_parameters,
+    cleanup_task_run,
     refresh_epoch_log,
     write_backbone_previews,
     write_training_artifacts,
@@ -311,12 +311,18 @@ def main() -> int:
         if context.is_main:
             run_logger = RunLogger(run_dir / "logs" / "run.log")
             run_logger.log(experiment_header(config, run_dir, preflight.manifest))
-            run_logger.log(f"command={' '.join(sys.argv)}")
         else:
             run_logger = None
         seed_everything(int(config["seed"]) + context.rank)
         train_data = build_dataset(config, paths, "train")
         validation_data = build_dataset(config, paths, "validation")
+        if run_logger is not None:
+            for split_name, dataset in (("train", train_data), ("validation", validation_data)):
+                dropped = getattr(dataset, "dropped_unlabeled_rows", ())
+                if dropped:
+                    run_logger.log(
+                        f"prognosis_unlabeled_rows_skipped split={split_name} count={len(dropped)}"
+                    )
         workers = int(config["compute"].get("num_workers", 0))
         batch_size = int((config.get("training") or {}).get("batch_size", 1))
         train_sampler = DistributedSampler(train_data, shuffle=True) if context.distributed else None
@@ -471,20 +477,6 @@ def main() -> int:
                 warmup=1,
                 iterations=int((config.get("profiling") or {}).get("iterations", 5)),
             )
-            append_epoch_parameters(
-                run_dir,
-                {
-                    "model_profile": profile,
-                    "training_result": {
-                        "epochs_configured": training_result["epochs"],
-                        "epochs_run": training_result["epochs_run"],
-                        "early_stopping_patience": training_result["early_stopping_patience"],
-                        "stopped_early": training_result["stopped_early"],
-                    },
-                },
-                scope="runtime",
-                epochs_run=int(training_result["epochs_run"]),
-            )
             training_peak = max((row["peak_vram_gb"] for row in training_result["history"]), default=0.0)
             audit = preflight.manifest or {}
             evaluation_payload = {
@@ -564,13 +556,14 @@ def main() -> int:
                     "temperature": float(config["distillation"]["temperature"]),
                     "lambda_kd": float(config["distillation"]["alpha_distill"]),
                 }
-            manager.write_result(run_dir, result)
+            manager.write_result(run_dir, result, split_artifacts=False)
             if run_logger is not None:
                 run_logger.log(
                     f"training run={experiment_id} status=finished "
                     f"best_validation_metric={training_result['best_validation_metric']}"
                 )
             refresh_epoch_log(run_dir, epochs_run=int(training_result["epochs_run"]))
+            cleanup_task_run(run_dir)
             print(f"TRAINING COMPLETED | {experiment_id} | Saved: {run_dir}")
         context.barrier()
         return 0

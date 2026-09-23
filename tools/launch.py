@@ -33,6 +33,11 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="hide launcher command/mode diagnostics; child output is unchanged",
+    )
+    parser.add_argument(
         "--evaluate",
         action="store_true",
         help="launch tools/tasks/evaluate.py instead of the training entrypoint",
@@ -83,6 +88,11 @@ def main() -> int:
     if stage == "counterfactual" and not args.allow_full and not args.evaluate:
         config["resume"] = True
     if stage == "silver" and not args.overwrite and not args.evaluate:
+        config["resume"] = True
+    # Evaluation is a second phase of an already-completed training run. It must be
+    # allowed to read/reuse that run directory; otherwise ACTION=all trains successfully
+    # and then fails preflight on OUTPUT/collision before writing test metrics.
+    if args.evaluate and not args.overwrite:
         config["resume"] = True
     if str(config["experiment"].get("family") or "") == "remove_roi":
         raise SystemExit(
@@ -147,9 +157,10 @@ def main() -> int:
         else "DDP (one experiment)"
     )
     mode = "CPU" if not physical else "single GPU" if len(physical) == 1 else distributed_mode
-    print("Launch:", shlex.join(spec.command))
-    print("Mode:", mode)
-    print("Physical GPUs:", ",".join(map(str, physical)) if physical else "none")
+    if not args.quiet:
+        print("Launch:", shlex.join(spec.command))
+        print("Mode:", mode)
+        print("Physical GPUs:", ",".join(map(str, physical)) if physical else "none")
     if args.dry_run:
         return 0
     process = launch(spec)

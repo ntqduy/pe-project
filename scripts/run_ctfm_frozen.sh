@@ -21,6 +21,7 @@ PYTHON="${PYTHON:-python3}"
 GPUS="${GPUS:-0}"
 EPOCHS="${EPOCHS:-50}"
 EARLY_STOPPING="${EARLY_STOPPING:-10}"
+NUM_WORKERS="${NUM_WORKERS:-}"
 if [[ "${SMOKE:-0}" == "1" ]]; then
   EPOCHS=1
 fi
@@ -121,6 +122,7 @@ if [[ "$ACTION" == "prepare" || "$ACTION" == "all" ]]; then
       --dataset-root "$DATASET_ROOT" \
       --raw-root "$RAW_ROOT" \
       --output-name ct_fm_frozen \
+      --quiet \
       "${PREPARE_ARGS[@]}"
   fi
 fi
@@ -136,6 +138,7 @@ TRAIN_ARGS=(
 )
 TRAIN_ARGS+=("${TARGET_ARGS[@]}")
 [[ -n "${BATCH_SIZE:-}" ]] && TRAIN_ARGS+=(--set "training.batch_size=${BATCH_SIZE}")
+[[ -n "${NUM_WORKERS:-}" ]] && TRAIN_ARGS+=(--set "compute.num_workers=${NUM_WORKERS}")
 [[ -n "${OVERWRITE:-}" ]] && TRAIN_ARGS+=(--overwrite)
 
 if [[ "$ACTION" == "preflight" ]]; then
@@ -178,7 +181,7 @@ if [[ "$ACTION" == "train" || "$ACTION" == "all" ]]; then
   cd "$PROJECT_ROOT"
   # Use the launcher so GPUS=0,1 becomes a real torchrun/DDP job rather than a
   # single process that merely records two device IDs in the config.
-  "$PYTHON" tools/launch.py "${TRAIN_ARGS[@]}"
+  "$PYTHON" tools/launch.py --quiet "${TRAIN_ARGS[@]}"
 fi
 
 if [[ "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
@@ -199,8 +202,9 @@ if [[ "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
     --set "training.early_stopping_patience=${EARLY_STOPPING}"
   )
   EVAL_ARGS+=("${TARGET_ARGS[@]}")
+  [[ -n "${NUM_WORKERS:-}" ]] && EVAL_ARGS+=(--set "compute.num_workers=${NUM_WORKERS}")
   [[ -n "${OVERWRITE:-}" ]] && EVAL_ARGS+=(--overwrite)
-  "$PYTHON" tools/launch.py "${EVAL_ARGS[@]}"
+  "$PYTHON" tools/launch.py --quiet "${EVAL_ARGS[@]}"
 fi
 
 if [[ "$ACTION" == "train" || "$ACTION" == "all" || "$ACTION" == "evaluate" ]]; then
@@ -213,15 +217,18 @@ if [[ "$ACTION" == "train" || "$ACTION" == "all" || "$ACTION" == "evaluate" ]]; 
   fi
   FAMILY="diagnosis"
   [[ "$TASK" == "prognosis" ]] && FAMILY="prognosis"
+  RUN_DIR="${OUTPUT_ROOT}/${FAMILY}/${RUN_ID}__ds_${PROFILE}"
+  if [[ ! -d "$RUN_DIR" ]]; then
+    RUN_DIR="$(find "${OUTPUT_ROOT}/${FAMILY}" -mindepth 1 -maxdepth 1 -type d -name "${RUN_ID}*" | sort | tail -n 1)"
+  fi
   printf '\n==> completed task=%s cohort=%s profile=%s\n' "$TASK" "$COHORT" "$PROFILE"
   printf '    epochs=%s early_stopping_patience=%s gpus=%s\n' "$EPOCHS" "$EARLY_STOPPING" "$GPUS"
-  printf '    output=%s/%s/%s\n' "$OUTPUT_ROOT" "$FAMILY" "$RUN_ID"
-  printf '    metrics=%s/%s/%s/result.json\n' "$OUTPUT_ROOT" "$FAMILY" "$RUN_ID"
-  if [[ -n "$TERMINAL_LOG" && -d "${OUTPUT_ROOT}/${FAMILY}/${RUN_ID}" ]]; then
-    EPOCH_DIR="$(find "${OUTPUT_ROOT}/${FAMILY}/${RUN_ID}" -mindepth 1 -maxdepth 1 -type d -name 'epoch_*' | sort | tail -n 1)"
+  printf '    output=%s\n' "$RUN_DIR"
+  printf '    metrics=%s/result.json\n' "$RUN_DIR"
+  if [[ -n "$RUN_DIR" && -d "$RUN_DIR" ]]; then
+    EPOCH_DIR="$(find "$RUN_DIR" -mindepth 1 -maxdepth 1 -type d -name 'epoch_*' | sort | tail -n 1)"
     if [[ -n "$EPOCH_DIR" ]]; then
-      cp "$TERMINAL_LOG" "${EPOCH_DIR}/logs.txt"
-      printf '    terminal_log=%s/logs.txt\n' "$EPOCH_DIR"
+      printf '    log_file=%s/logs.txt\n' "$EPOCH_DIR"
     fi
   fi
 fi

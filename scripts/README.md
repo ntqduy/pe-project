@@ -97,14 +97,14 @@ PROFILE=full_inspect TARGET=12_month_PH GPUS=0,1 \
 
 `ACTION` for these wrappers is `prepare`, `train`, `evaluate`, `all`, `preflight`, or
 `dry`. `all` prepares the CT-FM cache, trains the MLP, then evaluates the untouched test
-split. Outputs include `history.csv`, `best.ckpt`, `predictions.parquet`, `metrics.json`,
-and `result.json`. Task training additionally creates
-`epoch_<epochs_run>/checkpoint/{best.ckpt,last.ckpt}`, `logs.txt`, `result.csv`,
-`plots/training_curves.pdf`, and validation-only `preview/` heatmaps for up to five patients.
-`result.csv` starts with per-epoch loss/AUC history and evaluation appends point metrics plus
-patient-bootstrap CI for every configured target. For prognosis this includes all seven
-endpoints and records the cohort (`all_comers` or `pe_positive_only`) in every final-metric
-row; `parameter` rows preserve the complete resolved config for later model comparison.
+split. The task output is intentionally compact: `resolved_config.yaml`, `result.json`, and
+one `epoch_<epochs_run>/` bundle containing `checkpoint/{best.ckpt,last.ckpt}`, `logs.txt`,
+`result.csv`, `training_curves.pdf`, and validation-only `preview/` heatmaps for up to five
+patients. `result.csv` has one wide row per split (`train`, `validation`, `test`) and target;
+the test row additionally contains patient-bootstrap CI columns. For prognosis this includes
+all seven endpoints and records the cohort (`all_comers` or `pe_positive_only`) in every row.
+`logs.txt` keeps the experiment header, split audit, epoch summaries and completion/error
+messages; launcher command lines and low-level launcher diagnostics are not stored there.
 Diagnosis reports AUROC/AUPRC, sensitivity, specificity, F1, Brier and
 the validation-selected threshold; prognosis reports the same plus calibration metrics and
 a calibration curve. Prognosis runs default to all seven endpoints; set `TARGET` to run
