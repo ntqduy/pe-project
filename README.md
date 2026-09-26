@@ -121,23 +121,25 @@ Everything derived lives under `/mnt/pe-storage` in this workspace: cohorts unde
 
 | stage | wrapper | reads | writes |
 |---|---|---|---|
-| **0 data preprocessing** | `scripts/0_data_preprocessing/build_*.sh` | the read-only INSPECT release | `derived/datasets/<profile>/`: `manifests/*.csv`, physical CT cache `volumes/*.npy` plus geometry/patch sidecars, `clinical/*`, `data_quality.{md,json}`, `audit/*`, `dataset.json` |
-| **1 segmentation** | `scripts/1_segmentation/totalsegmentator.sh`, then `roi.sh` | `manifests/ctpa.csv` | `outputs/segmentation/SEG_pseudo_anatomy/` (19 masks/study + QC manifest), then `outputs/roi/ROI_anatomy_and_controls/` (ROI1–ROI8 + matched random controls) |
+| **0 data preprocessing** | `scripts/run_preprocessing.sh` | the read-only INSPECT release | `derived/datasets/<profile>/`: task manifests, `data_quality.md`, `dataset.json`, `logs.txt`; CT/EHR caches in `derived/cache/<profile>/` |
+| **1 segmentation** | `scripts/1_segmentation/totalsegmentator.sh`, then `roi.sh` | `manifests/ctpa.csv` | `outputs/segmentation/SEG_pseudo_anatomy/` (26 masks/study incl. lung lobes and sides + QC manifest), then `outputs/roi/ROI_anatomy_and_controls/` (ROI1–ROI8 + matched random controls) |
 | **2 silver label** | `scripts/2_silver_label/<method>.sh` | `manifests/reports.csv` | `outputs/silver_label/<method>/silver_labels.csv` + `silver_label_confidence.csv` + `logs/run.log` |
 | **3 shared encoder** | `scripts/3_shared_encoder/<n>_<stage>/*.sh` | `manifests/ctpa.csv`, `manifests/paired_reports.csv`, silver labels | `outputs/pretraining/{dapt,alignment,silver}/<id>/best.ckpt` with full lineage |
 | **4 diagnosis** | `scripts/4_diagnosis/*.sh` | `manifests/diagnosis.csv`, ROI masks, silver labels, an encoder checkpoint | `outputs/diagnosis/DX_*/` (`best.ckpt`, `result.json`, predictions) |
-| **5 prognosis** | `scripts/5_prognosis/*.sh` | `manifests/prognosis.csv`, `clinical/ehr_features.csv`, ROI masks, an encoder checkpoint | `outputs/prognosis/PR_*/` |
+| **5 prognosis** | `scripts/5_prognosis/*.sh` | `manifests/prognosis.csv` (EHR/sPESI columns included), ROI masks, an encoder checkpoint | `outputs/prognosis/PR_*/` |
 | **6 counterfactual** | `scripts/6_counterfactual/*.sh` | the frozen `DX_anatomy_concat` checkpoint + ROI masks | `outputs/counterfactual/CF_*/` (paired deltas, no retraining) |
 
 `run.py plan <experiment>` prints this chain for one arm and marks each link
 READY / MISSING / BLOCKED. It never runs a prerequisite for you.
 
-- **DATASET** — three profiles, one implementation. `data.dataset.smoke_30` is the small
-  all-split technical check; `data.dataset.test_500_sample` is the 500-patient rehearsal;
+- **DATASET** — three profiles, one implementation. `data.dataset.smoke_30` samples 30
+  candidates (10 per official split) before eligibility/CT checks, so the final cohort may be
+  smaller; `data.dataset.test_500_sample` is the 500-patient rehearsal;
   `data.dataset.full_inspect` is the whole eligible cohort. They inherit the identical
   eligibility, integrity, adjudication, manifest and preprocessing contract from
-  `source/dataset/profiles/_common.yaml`. Each build writes `data_quality.md/json`,
-  `dataset.json`, and detailed findings under `audit/` next to the manifests.
+  `source/dataset/profiles/_common.yaml`. Each build writes one `data_quality.md`
+  with task label/missing counts, `dataset.json`, `logs.txt`, and patient-linked
+  exclusions in `manifests/exclusions.csv` next to the task manifests.
 - **DATA** — support artifacts built on top of a profile: pseudo-anatomy masks
   (`data.segmentation`, TotalSegmentator with a LungMask lung-Dice cross-check), ROI masks and
   volume-matched random controls (`data.roi`), and report-derived silver labels
@@ -270,10 +272,10 @@ clinical baseline that release reports against. `source/clinical/spesi.py` is ve
 against that function directly.
 
 ```text
-clinical/spesi_features.csv        spesi, spesi_high_risk, spesi_computable, per study
-clinical/spesi_components.csv      the six resolved components with code and event-time provenance
-clinical/spesi_status.json         scored cases by split, score distribution, missing components
-clinical/spesi_mapping_audit.json  the effective code set each component resolved to
+derived/cache/<profile>/clinical/spesi_features.csv        spesi, spesi_high_risk, spesi_computable, per study
+derived/cache/<profile>/clinical/spesi_components.csv      the six resolved components with code and event-time provenance
+derived/cache/<profile>/clinical/spesi_status.json         scored cases by split, score distribution, missing components
+derived/cache/<profile>/clinical/spesi_mapping_audit.json  the effective code set each component resolved to
 ```
 
 Six criteria, one point each: age > 80, active cancer, chronic cardiopulmonary disease,
@@ -296,15 +298,15 @@ The point of `prog.spesi` is to be the thing a CT-FM arm has to beat, so the com
 has to be like-for-like in three ways that are easy to get wrong:
 
 ```bash
-D=$PE_DERIVED_ROOT/datasets/full_inspect
+PROFILE=full_inspect
 
 # 1. the baseline is a fixed score, not a trained model
 python tools/tasks/score_baseline.py --config configs/runs/04_prognosis/modality/spesi.yaml \
-  --score-column spesi --allow-full --restrict-to $D/clinical/spesi_evaluable.csv
+  --score-column spesi --allow-full --restrict-to ${PE_DERIVED_ROOT}/cache/$PROFILE/clinical/spesi_evaluable.csv
 
 # 2. every other arm is scored on the identical case list
 python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image.yaml \
-  --restrict-to $D/clinical/spesi_evaluable.csv --allow-full
+  --restrict-to ${PE_DERIVED_ROOT}/cache/$PROFILE/clinical/spesi_evaluable.csv --allow-full
 ```
 
 - **Fixed score, not a learned arm.** `score_baseline.py` maps the raw score onto `[0,1]`
@@ -315,7 +317,7 @@ python tools/tasks/evaluate.py --config configs/runs/04_prognosis/modality/image
 - **One shared case list.** sPESI is not computable for every study, so without
   `--restrict-to` the baseline and the imaging arm would be scored on different patients
   and the difference between them would be uninterpretable. Stage 0 writes
-  `clinical/spesi_evaluable.csv` for this; it is the same thing INSPECT does inline with
+  `derived/cache/<profile>/clinical/spesi_evaluable.csv` for this; it is the same thing INSPECT does inline with
   `--compare_vs_pesi`.
 - **Reproducing their number.** Set `spesi.index_overrides` in the dataset profile to
   `{age_precision: fractional, age_days_per_year: 365, event_window_after_index_hours: 48}`
@@ -560,15 +562,20 @@ Each profile writes, under `${PE_DERIVED_ROOT}/datasets/<profile>/`:
 
 ```text
 data_quality.md     one-page report: cohort funnel (samples left after every step),
-                    label distribution per split, QC and data loss, clinical readiness
-data_quality.json   machine-readable form of that report
+                    task label/missing counts, QC and clinical readiness
+logs.txt            terminal output from the preprocessing wrapper
 dataset.json        full provenance, including the preprocessing fingerprint
 manifests/          ctpa.csv, diagnosis.csv, prognosis.csv, paired_reports.csv, reports.csv
-volumes/            the preprocessed volume cache; each NPY has a physical-geometry
-                    sidecar and, when configured, a world-coordinate patch manifest
-clinical/           leakage-safe EHR artifacts and the sPESI score, components and audit
-audit/              detailed exclusions, integrity, split and cache-QC findings
+manifests/exclusions.csv                 patient/study IDs excluded with reasons
+manifests/ct_fm/*.csv                    CT-FM copies of the task manifests (image_path -> CT-FM features)
 ```
+
+`derived/cache/<profile>/volumes/` is the shared RAS cache;
+`derived/cache/<profile>/ct_fm/features/` holds per-study CT-FM features (SPL, 3x1x1 mm, 24x128x128 patches).
+`derived/cache/<profile>/clinical/` retains EHR and sPESI features/provenance.
+To move an existing profile without rebuilding, preview then run:
+`python tools/data/migrate_dataset_layout.py --dataset-root <derived>/datasets/<profile>`,
+then add `--apply` after checking the planned moves.
 
 Manifests carry at least `patient_id, study_id, split, image_path`; `split` is one of
 `train | validation | test | external`, and the build fails if a patient appears in two.

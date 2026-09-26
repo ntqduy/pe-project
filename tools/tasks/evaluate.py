@@ -22,32 +22,56 @@ from source.data.preflight import require_preflight
 from source.distributed.gather import gather_prediction_rows
 from source.distributed.setup import initialize_distributed, rank_zero_call, wrap_ddp
 from source.engine.checkpoint import checkpoint_sha256, load_checkpoint
-from source.engine.experiment import OutputManager, atomic_write_json
+from source.engine.experiment import (
+    OutputManager,
+    atomic_write_json,
+    run_output_id,
+    task_epoch_bundle,
+)
 from source.engine.factory import build_task_model
 from source.engine.task_artifacts import (
-    append_evaluation_result_csv,
     cleanup_task_run,
-    refresh_epoch_log,
+    latest_epoch_directory,
+    preview_log_lines,
     write_backbone_previews,
 )
 from source.engine.trainer import move_to_device
-from source.metrics.bootstrap import (
-    bootstrap_binary_predictions,
-    bootstrap_prognosis_predictions,
-    patient_bootstrap,
+from source.metrics.bootstrap import patient_bootstrap
+from source.metrics.calibration import DEFAULT_CALIBRATION_MIN_EVENTS
+from source.metrics.result_table import (
+    DEFAULT_MIN_CLASS_COUNT,
+    THRESHOLD_SOURCE_LOCKED,
+    calibration_reason,
+    log_lines,
+    metric_bundle,
+    prediction_rows,
+    read_prediction_file,
+    result_rows,
+    select_threshold,
+    split_summary,
+    threshold_rule,
+    write_predictions_csv,
+    write_result_csv,
 )
-from source.metrics.classification import select_threshold_on_validation
 from source.metrics.segmentation import segmentation_case_metrics
-from source.utils.console import final_evaluation_block
+from source.utils.console import BAR, final_evaluation_block
 from source.utils.environment import environment_report
+from source.utils.logger import RunLogger
+from source.utils.progress import with_progress
 from source.utils.seed import seed_everything
-from tools._common import base_parser, build_dataset, resolve_cli_config, write_parquet_atomic
+from source.utils.workers import LOADER_WORKER_GB, resolve_workers
+from tools._common import (
+    base_parser,
+    build_dataset,
+    resolve_cli_config,
+    write_csv_atomic,
+    write_parquet_atomic,
+)
 
 
 def _read_prediction_rows(path: Path) -> list[dict[str, Any]]:
-    import pandas as pd
-
-    return pd.read_parquet(path).to_dict(orient="records")
+    """Reference predictions: epoch_<N>/predictions.csv (test rows) or a legacy parquet."""
+    return read_prediction_file(path, split="test")
 
 
 def _locked_external_threshold(config, paths, checkpoint: Path) -> tuple[float, Path]:
@@ -166,6 +190,9 @@ def _loader(
         batch_size=int((config.get("evaluation") or {}).get("batch_size", 1)),
         sampler=sampler,
         shuffle=False,
+        # Resolved once in main() from compute.num_workers ("auto" or a RAM-capped number);
+        # the order of the rows is unchanged with workers.
+        num_workers=int((config.get("compute") or {}).get("num_workers_resolved", 0)),
     )
     expected = {(str(row["patient_id"]), str(row["study_id"])) for row in rows}
     return loader, expected
@@ -217,12 +244,12 @@ def _classification_rows(model, loader, stage, primary, label_index, context, ta
 
 
 @torch.no_grad()
-def _classification_rows_all_targets(model, loader, stage, targets, context, task, seed):
+def _classification_rows_all_targets(model, loader, stage, targets, context, task, seed, log=None, label="inference"):
     """Run one inference pass and emit one prediction row per observable target."""
     model.eval()
     target_names = tuple(str(target) for target in targets)
     local: list[dict[str, Any]] = []
-    for batch in loader:
+    for batch in with_progress(loader, log, label):
         identifiers = list(zip(batch["patient_id"], batch["study_id"]))
         moved = move_to_device(batch, context.device)
         if "volume" in moved:
@@ -285,77 +312,14 @@ def _gather_target_rows(local_rows, target, dataset_rows, context):
     return gather_prediction_rows(local, context, expected_ids=expected)
 
 
-def _metric_bundle(rows, stage: str, threshold: float, *, samples: int, confidence: float, seed: int):
-    """Point metrics plus patient-bootstrap CI, with an explicit fallback reason."""
-    if not rows:
-        return {}, "no_evaluable_test_rows"
-    from source.metrics.classification import binary_classification_metrics
-    from source.metrics.prognosis import prognosis_metrics
-
-    point_fn = prognosis_metrics if stage == "prognosis" else binary_classification_metrics
-
-    def point_with_empty_ci():
-        point = point_fn(
-            [int(row["y_true"]) for row in rows],
-            [float(row["y_prob"]) for row in rows],
-            threshold,
-        )
-        return {
-            name: {
-                "value": value,
-                "ci_low": float("nan"),
-                "ci_high": float("nan"),
-                "valid_replicates": 0,
-            }
-            for name, value in point.items()
-            if name != "threshold"
-        }
-
-    patient_count = len({str(row["patient_id"]) for row in rows})
-    if patient_count < 2:
-        return point_with_empty_ci(), "fewer_than_two_patients"
-    bootstrap = bootstrap_prognosis_predictions if stage == "prognosis" else bootstrap_binary_predictions
-    try:
-        return (
-            bootstrap(rows, threshold, n_bootstrap=samples, confidence=confidence, seed=seed),
-            None,
-        )
-    except (RuntimeError, ValueError) as exc:
-        # Preserve the point estimate when a small/single-class target cannot produce a
-        # stable bootstrap distribution. The reason is recorded per target in result.csv.
-        return point_with_empty_ci(), f"bootstrap_failed:{type(exc).__name__}:{exc}"
-
-
-def _point_metric_bundle(rows, stage: str, threshold: float) -> dict[str, dict[str, Any]]:
-    """Return split metrics without bootstrap; CI is reserved for the test split."""
-    if not rows:
-        return {}
-    from source.metrics.classification import binary_classification_metrics
-    from source.metrics.prognosis import prognosis_metrics
-
-    point_fn = prognosis_metrics if stage == "prognosis" else binary_classification_metrics
-    point = point_fn(
-        [int(row["y_true"]) for row in rows],
-        [float(row["y_prob"]) for row in rows],
-        threshold,
-    )
-    return {
-        name: {
-            "value": value,
-            "ci_low": float("nan"),
-            "ci_high": float("nan"),
-            "valid_replicates": 0,
-        }
-        for name, value in point.items()
-        if name != "threshold"
-    }
-
-
 def _run_checkpoint(run_dir: Path) -> Path:
     """Resolve the canonical checkpoint after root compatibility copies are cleaned."""
     root = run_dir / "best.ckpt"
     if root.is_file():
         return root
+    bundle = run_dir / "checkpoint" / "best.ckpt"
+    if bundle.is_file():
+        return bundle
     candidates = sorted(
         run_dir.glob("epoch_*/checkpoint/best.ckpt"),
         key=lambda path: int(path.parent.parent.name.removeprefix("epoch_")),
@@ -409,7 +373,7 @@ def main() -> int:
         help=(
             "CSV/parquet of patient_id[,study_id] limiting evaluation to one shared case "
             "list, so every arm of a comparison is scored on identical cases. Stage 0 "
-            "writes clinical/spesi_evaluable.csv for exactly this purpose."
+            "writes cache/<profile>/clinical/spesi_evaluable.csv for exactly this purpose."
         ),
     )
     parser.add_argument(
@@ -440,22 +404,30 @@ def main() -> int:
             )
     config["resume"] = True
     context = initialize_distributed(str(config["compute"].get("distributed_backend") or "") or None)
+    logger: RunLogger | None = None
+
+    def log(message: str) -> None:
+        if logger is not None:
+            logger.log(message)
+
     try:
         paths = ProjectPaths.resolve(config)
         seed_everything(int(config.get("seed", 42)) + context.rank)
         rank_zero_call(context, lambda: require_preflight(config, paths))
         manager = OutputManager(paths)
         family = str(config["experiment"].get("family") or config["experiment"]["stage"])
-        run_dir = manager.run_dir(family, str(config["experiment"]["id"]))
+        # Same folder train_task.py wrote: <id>/epoch_<training.epochs> for a trained task.
+        output_id = run_output_id(config)
+        run_dir = manager.run_dir(family, output_id)
         if not run_dir.exists():
             if args.checkpoint is None:
                 raise FileNotFoundError(
-                    f"trained run not found: {run_dir}; "
-                    "provide --checkpoint for external evaluation"
+                    f"trained run not found: {run_dir}; train with the same training.epochs "
+                    "first, or provide --checkpoint for external evaluation"
                 )
 
             def prepare() -> Path:
-                destination = manager.prepare(family, str(config["experiment"]["id"]))
+                destination = manager.prepare(family, output_id)
                 manager.write_config(destination, {**config, "resolved_paths": paths.as_dict()})
                 return destination
 
@@ -477,14 +449,40 @@ def main() -> int:
         else:
             scope = {"mode": "full_test"}
             evaluation_dir = run_dir
+        # Human-facing artifacts (result.csv, predictions.csv, logs.txt) go into the epoch
+        # bundle next to the checkpoint; a smoke-scope evaluation keeps its own directory so
+        # it never overwrites the full-test tables. result.json stays in evaluation_dir.
+        # A trained task run is itself the bundle; older run folders hold epoch_<N>/.
+        bundle_dir = run_dir if task_epoch_bundle(config) else latest_epoch_directory(run_dir)
+        if smoke_scope:
+            output_dir = evaluation_dir
+        else:
+            output_dir = bundle_dir or run_dir
+        if context.is_main:
+            # Append: logs.txt already holds the training log of this run.
+            logger = RunLogger(output_dir / "logs.txt")
+        log(BAR)
+        log(f"EVALUATION {config['experiment']['id']} | scope={json.dumps(scope, sort_keys=True)}")
+        log(f"checkpoint={Path(checkpoint).resolve()}")
+        log(f"output={output_dir}")
+        log(BAR)
         model, _ = build_task_model(config)
         checkpoint_payload = load_checkpoint(checkpoint, model=model, strict=True)
         model = wrap_ddp(model, context)
+        # Sized after the model is loaded, so the free RAM already excludes it.
+        loader_workers, worker_note = resolve_workers(
+            (config.get("compute") or {}).get("num_workers", 0), per_worker_gb=LOADER_WORKER_GB,
+            minimum=0, maximum=16, share=context.world_size,
+        )
+        config.setdefault("compute", {})["num_workers_resolved"] = loader_workers
+        log(f"data loader {worker_note}")
         stage = str(config["experiment"]["stage"])
         task_config = dict(config.get("task") or {})
         if stage in {"ablation", "roi_student"}:
             stage = str(task_config.get("base_stage") or "")
         evaluation_config = dict(config.get("evaluation") or {})
+        table_rows: list[dict[str, Any]] = []
+        prediction_table: list[dict[str, Any]] = []
         samples = int(evaluation_config.get("bootstrap_samples", 2000))
         confidence = float(evaluation_config.get("confidence", 0.95))
         seed = int(config.get("seed", 42))
@@ -509,21 +507,30 @@ def main() -> int:
             threshold_artifact = None
             thresholds: dict[str, float] = {}
             threshold_sources: dict[str, str] = {}
+            threshold_method = str(evaluation_config.get("threshold_method", "youden"))
+            calibration_min_events = int(
+                evaluation_config.get("calibration_min_events", DEFAULT_CALIBRATION_MIN_EVENTS)
+            )
+            min_class_count = int(
+                evaluation_config.get("min_class_count_warning", DEFAULT_MIN_CLASS_COUNT)
+            )
             validation_rows_by_target: dict[str, list[dict[str, Any]] | None] = {}
             train_rows_by_target: dict[str, list[dict[str, Any]] | None] = {}
+            validation_loader = None
             if external_evaluation.get("test_only"):
                 if context.is_main:
                     threshold, threshold_artifact = _locked_external_threshold(
                         config, paths, Path(checkpoint)
                     )
                     thresholds[primary] = float(threshold)
-                    threshold_sources[primary] = "internal_validation_artifact"
+                    threshold_sources[primary] = THRESHOLD_SOURCE_LOCKED
             else:
                 train_loader, _ = _loader(
                     config, paths, "train", context, restrict=restriction
                 )
                 train_local = _classification_rows_all_targets(
-                    model, train_loader, stage, target_names, context, task_config, seed
+                    model, train_loader, stage, target_names, context, task_config, seed,
+                    log=log, label="evaluate train",
                 )
                 for target in target_names:
                     train_rows_by_target[target] = _gather_target_rows(
@@ -533,31 +540,31 @@ def main() -> int:
                     config, paths, "validation", context, restrict=restriction
                 )
                 validation_local = _classification_rows_all_targets(
-                    model, validation_loader, stage, target_names, context, task_config, seed
+                    model, validation_loader, stage, target_names, context, task_config, seed,
+                    log=log, label="evaluate validation",
                 )
                 for target in target_names:
                     validation_rows_by_target[target] = _gather_target_rows(
                         validation_local, target, validation_loader.dataset.rows, context
                     )
                 if context.is_main:
-                    threshold_method = str(evaluation_config.get("threshold_method", "youden"))
+                    # Youden on validation; 0.5 when validation holds a single class.
                     for target in target_names:
-                        target_rows = validation_rows_by_target[target] or []
-                        if len({int(row["y_true"]) for row in target_rows}) == 2:
-                            thresholds[target] = select_threshold_on_validation(
-                                [row["y_true"] for row in target_rows],
-                                [row["y_prob"] for row in target_rows],
-                                method=threshold_method,
-                            )
-                            threshold_sources[target] = "validation"
-                        else:
-                            thresholds[target] = 0.5
-                            threshold_sources[target] = "fallback_0.5_validation_single_class"
+                        thresholds[target], threshold_sources[target] = select_threshold(
+                            validation_rows_by_target[target] or [], threshold_method
+                        )
             if context.distributed:
                 payload = [thresholds, threshold_sources]
                 dist.broadcast_object_list(payload, src=0)
                 thresholds = dict(payload[0])
                 threshold_sources = dict(payload[1])
+            for target in target_names:
+                if target in thresholds:
+                    log(
+                        f"threshold target={target} value={thresholds[target]:.6f} "
+                        f"rule={threshold_rule(threshold_sources[target], threshold_method)} "
+                        "(p >= threshold -> predicted positive; applied unchanged to every split)"
+                    )
 
             test_loader, _ = _loader(
                 config,
@@ -569,7 +576,8 @@ def main() -> int:
                 restrict=restriction,
             )
             test_local = _classification_rows_all_targets(
-                model, test_loader, stage, target_names, context, task_config, seed
+                model, test_loader, stage, target_names, context, task_config, seed,
+                log=log, label="evaluate test",
             )
             rows_by_target: dict[str, list[dict[str, Any]] | None] = {}
             for target in target_names:
@@ -579,37 +587,79 @@ def main() -> int:
             rows: list[dict[str, Any]] | None = [] if context.is_main else None
             target_results: dict[str, dict[str, Any]] = {}
             if context.is_main:
+                experiment_name = str(config["experiment"]["id"])
                 for target in target_names:
                     target_rows = [dict(row) for row in (rows_by_target[target] or [])]
                     threshold = float(thresholds[target])
                     for row in target_rows:
                         row["y_pred"] = int(row["y_prob"] >= threshold)
                     rows.extend(target_rows)
-                    metrics, bootstrap_reason = _metric_bundle(
+                    metrics, bootstrap_reason = metric_bundle(
                         target_rows,
                         stage,
                         threshold,
+                        with_ci=True,
                         samples=samples,
                         confidence=confidence,
                         seed=seed,
+                        calibration_min_events=calibration_min_events,
                     )
                     validation_rows = validation_rows_by_target.get(target) or []
                     train_rows = train_rows_by_target.get(target) or []
-                    split_metrics = {
-                        "train": _point_metric_bundle(train_rows, stage, threshold),
-                        "validation": _point_metric_bundle(validation_rows, stage, threshold),
+                    rows_by_split = {"train": train_rows, "validation": validation_rows, "test": target_rows}
+                    # Bootstrap CI is computed on the test split only, by protocol.
+                    split_metrics: dict[str, Any] = {
+                        "train": metric_bundle(
+                            train_rows, stage, threshold, with_ci=False,
+                            calibration_min_events=calibration_min_events,
+                        )[0],
+                        "validation": metric_bundle(
+                            validation_rows, stage, threshold, with_ci=False,
+                            calibration_min_events=calibration_min_events,
+                        )[0],
                         "test": metrics,
-                        "train_rows": len(train_rows),
-                        "train_patients": len({row["patient_id"] for row in train_rows}),
-                        "validation_rows": len(validation_rows),
-                        "validation_patients": len({row["patient_id"] for row in validation_rows}),
-                        "test_rows": len(target_rows),
-                        "test_patients": len({row["patient_id"] for row in target_rows}),
                     }
+                    table_splits: dict[str, dict[str, Any]] = {}
+                    for split, items in rows_by_split.items():
+                        summary = split_summary(items, threshold)
+                        split_metrics[f"{split}_rows"] = summary["n_studies"]
+                        split_metrics[f"{split}_patients"] = summary["n_patients"]
+                        split_metrics[f"{split}_positives"] = summary["n_pos"]
+                        split_metrics[f"{split}_negatives"] = summary["n_neg"]
+                        if not items and split != "test":
+                            continue  # test-only external runs score no train/validation rows
+                        for line in log_lines(
+                            target, split, summary, threshold=threshold, min_class_count=min_class_count
+                        ):
+                            log(line)
+                        table_splits[split] = {
+                            "metrics": split_metrics[split],
+                            "summary": summary,
+                            "ci_reason": bootstrap_reason if split == "test" else None,
+                            "calibration_reason": (
+                                calibration_reason(items, min_events=calibration_min_events)
+                                if stage == "prognosis"
+                                else None
+                            ),
+                        }
+                        prediction_table.extend(prediction_rows(split, target, items, threshold))
+                    table_rows.extend(
+                        result_rows(
+                            experiment=experiment_name,
+                            target=target,
+                            splits=table_splits,
+                            threshold=threshold,
+                            threshold_source=threshold_sources[target],
+                            stage=stage,
+                            threshold_method=threshold_method,
+                            min_class_count=min_class_count,
+                        )
+                    )
                     target_result: dict[str, Any] = {
                         "target": target,
                         "threshold": threshold,
                         "threshold_source": threshold_sources[target],
+                        "threshold_rule": threshold_rule(threshold_sources[target], threshold_method),
                         "metrics": metrics,
                         "split_metrics": split_metrics,
                         "validation_patients": len({row["patient_id"] for row in validation_rows}),
@@ -621,22 +671,14 @@ def main() -> int:
                     if stage == "prognosis" and target_rows:
                         from source.metrics.calibration import calibration_curve_points
 
-                        curve = calibration_curve_points(
+                        # Kept in result.json; the per-target parquet copies were deleted by
+                        # the run cleanup and are no longer written.
+                        target_result["calibration_curve"] = calibration_curve_points(
                             [row["y_true"] for row in target_rows],
                             [row["y_prob"] for row in target_rows],
                             bins=int(evaluation_config.get("calibration_bins", 10)),
                             strategy=str(evaluation_config.get("calibration_strategy", "quantile")),
                         )
-                        target_result["calibration_curve"] = curve
-                        safe_target = "".join(
-                            character if character.isalnum() or character in "._-" else "_"
-                            for character in target
-                        )
-                        write_parquet_atomic(
-                            curve, evaluation_dir / f"calibration_curve_{safe_target}.parquet"
-                        )
-                        if target == primary:
-                            write_parquet_atomic(curve, evaluation_dir / "calibration_curve.parquet")
                     target_results[target] = target_result
                 primary_result = target_results[primary]
                 primary_rows = [row for row in rows if str(row.get("target")) == primary]
@@ -646,6 +688,8 @@ def main() -> int:
                     "cohort": (config.get("data") or {}).get("cohort") or stage,
                     "threshold": primary_result["threshold"],
                     "threshold_source": primary_result["threshold_source"],
+                    "threshold_rule": primary_result["threshold_rule"],
+                    "threshold_method": threshold_method,
                     "threshold_artifact": (
                         str(threshold_artifact) if threshold_artifact is not None else None
                     ),
@@ -741,7 +785,11 @@ def main() -> int:
         else:
             raise ValueError(f"evaluation does not support stage={stage}")
         if context.is_main:
-            write_parquet_atomic(rows, evaluation_dir / "predictions.parquet")
+            if stage in {"diagnosis", "prognosis"}:
+                write_result_csv(output_dir / "result.csv", table_rows, stage=stage)
+                write_predictions_csv(output_dir / "predictions.csv", prediction_table)
+            else:
+                write_csv_atomic(rows, output_dir / "predictions.csv")
             result_path = evaluation_dir / "result.json"
             if result_path.is_file():
                 result = json.loads(result_path.read_text(encoding="utf-8"))
@@ -770,7 +818,14 @@ def main() -> int:
                     "reproducibility": environment_report(paths.code_root),
                     "config_hash": config.get("config_hash"),
                 }
-            result["evaluation"] = result_evaluation
+            # Keep the training summary train_task.py recorded (epochs_run, stopped_early, ...):
+            # epoch_<E> names the budget, so this is where the epochs actually run are kept.
+            training_summary = (result.get("evaluation") or {}).get("training")
+            result["evaluation"] = (
+                {**result_evaluation, "training": training_summary}
+                if training_summary is not None and "training" not in result_evaluation
+                else result_evaluation
+            )
             result["evaluation_scope"] = scope
             result["evaluation_checkpoint"] = {
                 "path": str(Path(checkpoint).resolve()),
@@ -779,26 +834,34 @@ def main() -> int:
                 "load_report": checkpoint_payload.get("load_report"),
             }
             atomic_write_json(result_path, result)
-            append_evaluation_result_csv(run_dir, result_evaluation)
-            refresh_epoch_log(run_dir)
             if (
                 stage in {"diagnosis", "prognosis"}
                 and not external_evaluation.get("test_only")
+                and validation_loader is not None
             ):
-                epoch_candidates = sorted(run_dir.glob("epoch_*"), reverse=True)
-                if epoch_candidates:
+                if bundle_dir is not None:
                     preview_report = write_backbone_previews(
                         model,
                         validation_loader.dataset,
                         config,
                         context.device,
-                        epoch_candidates[0] / "preview",
+                        bundle_dir / "preview",
                         maximum_patients=5,
+                        # Same validation-selected cutoff as result.csv, so each preview can say
+                        # whether the model is right for that patient.
+                        threshold=thresholds.get(primary),
+                        threshold_rule=threshold_rule(threshold_sources.get(primary), threshold_method),
+                        # The validation probabilities scored above: shown in the header and
+                        # checked against the preview's own forward pass.
+                        reference_probabilities={
+                            (str(row["patient_id"]), str(row["study_id"])): float(row["y_prob"])
+                            for row in validation_rows_by_target.get(primary) or ()
+                        },
+                        checkpoint=Path(checkpoint).resolve(),
+                        checkpoint_sha256=result["evaluation_checkpoint"]["sha256"],
                     )
-                    atomic_write_json(
-                        epoch_candidates[0] / "preview" / "summary.json",
-                        preview_report,
-                    )
+                    for line in preview_log_lines(preview_report, bundle_dir / "preview"):
+                        log(line)
             if stage in {"diagnosis", "prognosis"}:
                 from source.metrics.reporting import stard_ai_checklist, tripod_ai_checklist
 
@@ -809,11 +872,19 @@ def main() -> int:
                 )
                 atomic_write_json(evaluation_dir / "reporting_checklist.json", checklist)
             cleanup_task_run(run_dir)
-            print(final_evaluation_block(
-                str(config["experiment"]["id"]), result_evaluation, evaluation_dir
-            ))
+            log(
+                f"written: {output_dir / 'result.csv'} | {output_dir / 'predictions.csv'} | {result_path}"
+                if stage in {"diagnosis", "prognosis"}
+                else f"written: {output_dir / 'predictions.csv'} | {result_path}"
+            )
+            log(final_evaluation_block(str(config["experiment"]["id"]), result_evaluation, output_dir))
+            log("evaluation status=finished")
         context.barrier()
         return 0
+    except Exception as exc:
+        if logger is not None:
+            logger.exception("evaluation status=failed", exc)  # noqa: PLE1205, TRY401 - RunLogger.exception(message, error)
+        raise
     finally:
         context.close()
 

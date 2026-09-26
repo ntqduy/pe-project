@@ -9,10 +9,19 @@ Per series it takes sigmoid of each window logit and keeps the maximum, which is
 
     python tools/tasks/zeroshot_penet.py \
       --config configs/runs/01_foundation/penet_zero_shot.yaml --allow-full
+
+Output (same tables as a trained diagnosis run, so the two can be compared row by row):
+    result.csv            one row per split (validation, test), same columns as CT-FM runs
+    predictions.csv       validation + test series: y_true, y_prob, y_pred, windows
+    preview/*.{html,png}  Grad-CAM of the first five validation studies (TP/TN/FP/FN in the name)
+    logs.txt              terminal log
+    result.json           full metric payload and the PENet input contract
+    resolved_config.yaml
 """
 from __future__ import annotations
 
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,10 +41,23 @@ from source.components.encoders.image.penet_zeroshot import (
 from source.data.manifests import read_rows
 from source.data.paths import ProjectPaths
 from source.engine.experiment import OutputManager, atomic_write_json
-from source.metrics.bootstrap import bootstrap_binary_predictions
-from source.metrics.classification import binary_classification_metrics, select_threshold_on_validation
+from source.imaging.penet_preview import write_penet_previews
+from source.metrics.result_table import (
+    log_lines,
+    metric_bundle,
+    prediction_rows,
+    result_rows,
+    select_threshold,
+    split_summary,
+    threshold_rule,
+    write_predictions_csv,
+    write_result_csv,
+)
+from source.utils.console import BAR, final_evaluation_block
 from source.utils.logger import RunLogger
-from tools._common import base_parser, resolve_cli_config, resolve_manifest, write_parquet_atomic
+from tools._common import base_parser, resolve_cli_config, resolve_manifest
+
+PROGRESS_EVERY = 25       # studies between "scored N/total" log lines
 
 
 def _restriction(path: Path | None) -> set[str] | None:
@@ -101,18 +123,28 @@ def main() -> int:
     parser.add_argument("--slice-order", choices=("superior_to_inferior", "inferior_to_superior"),
                         default="superior_to_inferior")
     parser.add_argument("--max-cases", type=int, default=None)
+    parser.add_argument("--preview-patients", type=int, default=5,
+                        help="first N validation studies to render as Grad-CAM previews (default: 5)")
     parser.add_argument("--allow-full", action="store_true")
     args = parser.parse_args()
     if not args.allow_full and args.max_cases is None:
         raise SystemExit("zero-shot inference needs an explicit scope: --allow-full or --max-cases N")
+    if args.preview_patients < 0:
+        raise SystemExit("--preview-patients must be nonnegative")
 
     config = resolve_cli_config(args)
     paths = ProjectPaths.resolve(config)
     manager = OutputManager(paths)
     experiment = dict(config["experiment"])
-    run_dir = manager.run_dir(str(experiment.get("family") or experiment["stage"]), str(experiment["id"]))
-    run_dir.mkdir(parents=True, exist_ok=True)
-    logger = RunLogger(run_dir / "logs" / "run.log")
+    family = str(experiment.get("family") or experiment["stage"])
+    # Collision-checked like every other run: an existing result is never silently
+    # overwritten; pass --overwrite (OVERWRITE=1 in the wrapper) to replace it.
+    run_dir = manager.prepare(family, str(experiment["id"]), overwrite=args.overwrite, directories=())
+    manager.write_config(run_dir, {**config, "resolved_paths": paths.as_dict()}, compatibility_copy=False)
+    logger = RunLogger(run_dir / "logs.txt")
+    logger.log(BAR)
+    logger.log(f"ZERO-SHOT {experiment['id']} | PENet released weights, no training")
+    logger.log(BAR)
 
     penet_config = dict(config.get("penet") or {})
     checkpoint = args.checkpoint or Path(str(penet_config.get("checkpoint") or ""))
@@ -136,44 +168,127 @@ def main() -> int:
     model.to(device)
     logger.log(f"penet checkpoint={checkpoint} device={device} meta={model_meta}")
 
-    results: dict[str, list[dict[str, Any]]] = {}
-    skipped: list[dict[str, str]] = []
+    selected: dict[str, list[dict[str, Any]]] = {}
     for split in ("validation", "test"):
         rows = _rows_for_split(manifest_rows, split, label_column, restrict)
-        if args.max_cases is not None:
-            rows = rows[: int(args.max_cases)]
+        selected[split] = rows[: int(args.max_cases)] if args.max_cases is not None else rows
+    total = sum(len(rows) for rows in selected.values())
+    logger.log(f"studies validation={len(selected['validation'])} test={len(selected['test'])} total={total}")
+
+    results: dict[str, list[dict[str, Any]]] = {}
+    skipped: list[dict[str, str]] = []
+    done, began = 0, time.perf_counter()
+    for split in ("validation", "test"):
+        rows = selected[split]
         for row in rows:
             path = _raw_series_path(paths, config, row["study_id"])
             try:
                 volume = read_series_hu(path, args.slice_order)
                 probability, windows = _series_probability(model, volume, device, args.aggregate)
+                row["y_prob"], row["windows"] = probability, windows
             except (PenetError, RuntimeError, OSError) as exc:
                 skipped.append({"study_id": row["study_id"], "error": f"{type(exc).__name__}: {exc}"})
-                continue
-            row["y_prob"], row["windows"] = probability, windows
+                logger.log(f"study {row['study_id']} skipped: {skipped[-1]['error']}")
+            done += 1
+            if done % PROGRESS_EVERY == 0 or done == total:
+                rate = (time.perf_counter() - began) / done
+                logger.log(f"scored {done}/{total} split={split} ({rate:.1f} s/study, "
+                           f"~{rate * (total - done) / 3600:.1f} h left)")
         results[split] = [row for row in rows if "y_prob" in row]
         logger.log(f"split={split} scored={len(results[split])} skipped={len(skipped)}")
         if not results[split]:
             raise SystemExit(f"no scorable series in split={split}")
 
-    threshold = select_threshold_on_validation(
-        [r["y_true"] for r in results["validation"]],
-        [r["y_prob"] for r in results["validation"]],
-        str(evaluation.get("threshold_method", "youden")),
+    threshold_method = str(evaluation.get("threshold_method", "youden"))
+    threshold, threshold_source = select_threshold(results["validation"], threshold_method)
+    logger.log(
+        f"threshold={threshold:.6f} rule={threshold_rule(threshold_source, threshold_method)} "
+        "(chosen on validation, applied unchanged to test)"
     )
-    rows = results["test"]
     samples = int(evaluation.get("bootstrap_samples", 2000))
     confidence = float(evaluation.get("confidence", 0.95))
-    point = binary_classification_metrics(
-        [r["y_true"] for r in rows], [r["y_prob"] for r in rows], threshold
+    seed = int(config.get("seed", 42))
+    validation_metrics, _ = metric_bundle(results["validation"], "diagnosis", threshold, with_ci=False)
+    test_metrics, ci_reason = metric_bundle(
+        results["test"], "diagnosis", threshold,
+        with_ci=True, samples=samples, confidence=confidence, seed=seed,
     )
-    interval = bootstrap_binary_predictions(
-        rows, threshold, n_bootstrap=samples, confidence=confidence, seed=int(config.get("seed", 42))
+    split_entries: dict[str, dict[str, Any]] = {}
+    predictions: list[dict[str, Any]] = []
+    split_metrics: dict[str, Any] = {"validation": validation_metrics, "test": test_metrics}
+    for split in ("validation", "test"):
+        summary = split_summary(results[split], threshold)
+        split_metrics[f"{split}_rows"] = summary["n_studies"]
+        split_metrics[f"{split}_patients"] = summary["n_patients"]
+        split_metrics[f"{split}_positives"] = summary["n_pos"]
+        split_metrics[f"{split}_negatives"] = summary["n_neg"]
+        for line in log_lines(label_column, split, summary, threshold=threshold):
+            logger.log(line)
+        split_entries[split] = {
+            "metrics": split_metrics[split],
+            "summary": summary,
+            "ci_reason": ci_reason if split == "test" else None,
+        }
+        predictions.extend(prediction_rows(split, label_column, results[split], threshold))
+    write_result_csv(
+        run_dir / "result.csv",
+        result_rows(
+            experiment=str(experiment["id"]),
+            target=label_column,
+            splits=split_entries,
+            threshold=threshold,
+            threshold_source=threshold_source,
+            stage="diagnosis",
+            threshold_method=threshold_method,
+        ),
+        stage="diagnosis",
     )
-
-    write_parquet_atomic(rows, run_dir / "predictions.parquet")
+    write_predictions_csv(run_dir / "predictions.csv", predictions)
+    preview_report = write_penet_previews(
+        [{**row, "y_pred": int(float(row["y_prob"]) >= threshold)}
+         for row in results["validation"]],
+        run_dir / "preview",
+        lambda study_id: _raw_series_path(paths, config, study_id),
+        model=model,
+        device=device,
+        threshold=threshold,
+        threshold_rule=threshold_rule(threshold_source, threshold_method),
+        maximum_patients=args.preview_patients,
+        slice_order=args.slice_order,
+        aggregate=args.aggregate,
+        checkpoint=checkpoint,
+        target=label_column,
+    )
+    logger.log(
+        f"preview status={preview_report['status']} studies={preview_report['patients']} "
+        f"dir={run_dir / 'preview'} cam={','.join(preview_report['cam_status'])} "
+        f"max_abs_dp={preview_report['max_abs_probability_delta']} files={','.join(preview_report['files'])}"
+    )
+    for error in preview_report["errors"]:
+        logger.log(f"preview error {error}")
+    point = {name: item["value"] for name, item in test_metrics.items()}
+    point["threshold"] = threshold
+    result_evaluation = {
+        "primary_target": label_column,
+        "threshold": threshold,
+        "threshold_split": "validation",
+        "threshold_method": threshold_method,
+        "threshold_source": threshold_source,
+        "threshold_rule": threshold_rule(threshold_source, threshold_method),
+        "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
+        "point_metrics": point,
+        "metrics": test_metrics,
+        "split_metrics": {label_column: split_metrics},
+        "bootstrap_unavailable_reason": ci_reason,
+        "evaluated_patients": split_metrics["test_patients"],
+        "scored": {split: len(items) for split, items in results.items()},
+        "skipped_series": skipped[:200],
+        "skipped_count": len(skipped),
+        "label_column": label_column,
+        "restrict_to": str(args.restrict_to) if args.restrict_to else None,
+    }
     atomic_write_json(run_dir / "result.json", {
-        "experiment": experiment,
+        "experiment": {**experiment, "status": "completed"},
         "zero_shot": {
             "model": "PENet",
             "trained_here": False,
@@ -185,24 +300,13 @@ def main() -> int:
             "aggregate": args.aggregate,
             "reads": "raw release NIfTI, not the shared volumes/*.npy cache",
         },
-        "evaluation": {
-            "threshold": threshold,
-            "threshold_split": "validation",
-            "threshold_method": str(evaluation.get("threshold_method", "youden")),
-            "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
-            "point_metrics": point,
-            "metrics": interval,
-            "scored": {split: len(items) for split, items in results.items()},
-            "skipped_series": skipped[:200],
-            "skipped_count": len(skipped),
-            "label_column": label_column,
-            "restrict_to": str(args.restrict_to) if args.restrict_to else None,
-        },
+        "evaluation": result_evaluation,
+        "preview": preview_report,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
     })
-    logger.log(f"zeroshot_penet status=finished auroc={point.get('auroc')}")
-    print(f"zero-shot PENet written to {run_dir}")
-    print(f"  auroc={point.get('auroc'):.4f}  n={len(rows)}  skipped={len(skipped)}")
+    logger.log(f"written: {run_dir / 'result.csv'} | {run_dir / 'predictions.csv'} | {run_dir / 'preview'} | {run_dir / 'result.json'}")
+    logger.log(final_evaluation_block(str(experiment["id"]), result_evaluation, run_dir))
+    logger.log("zeroshot_penet status=finished")
     return 0
 
 

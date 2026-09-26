@@ -2,12 +2,13 @@
 
 Three profiles are active:
 
-    smoke_30           a deterministic, all-split technical smoke cohort
+    smoke_30           30 deterministic candidates sampled before eligibility / CT checks
     test_500_sample   the clean/filtered cohort, then 500 patients sampled patient-level
     full_inspect      the same clean/filtered cohort, no sampling at all
 
 They inherit the identical eligibility, integrity, adjudication, manifest and
-preprocessing blocks from ``profiles/_common.yaml`` and differ only in ``sampling``.
+preprocessing blocks from ``profiles/_common.yaml`` and differ only in ``sampling``. The
+smoke profile samples from candidate metadata before applying those shared checks.
 `assert_shared_preprocessing()` enforces that at import time of any consumer, so the
 active profiles cannot silently drift apart and make their results incomparable.
 

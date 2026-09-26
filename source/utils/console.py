@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,14 @@ def experiment_header(config: Mapping[str, Any], output: Path, manifest: Mapping
     )
 
 
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def final_evaluation_block(experiment_id: str, evaluation: Mapping[str, Any], output: Path) -> str:
     lines = [BAR, f"FINAL TEST | {experiment_id}", BAR]
     if evaluation.get("primary_target") is not None:
@@ -52,15 +61,16 @@ def final_evaluation_block(experiment_id: str, evaluation: Mapping[str, Any], ou
         lines.append(f"Patients    : {evaluation['evaluated_patients']}")
     for name, item in (evaluation.get("metrics") or {}).items():
         if isinstance(item, Mapping):
-            lines.append(
-                f"{name.upper():12s}: {float(item['value']):.4f} "
-                f"[95% CI {float(item['ci_low']):.4f}, {float(item['ci_high']):.4f}]"
-            )
+            value, low, high = (_finite(item.get(key)) for key in ("value", "ci_low", "ci_high"))
+            shown = "n/a (undefined for this split)" if value is None else f"{value:.4f}"
+            interval = f" [95% CI {low:.4f}, {high:.4f}]" if low is not None and high is not None else ""
+            lines.append(f"{name.upper():12s}: {shown}{interval}")
     bootstrap = evaluation.get("bootstrap") or {}
     if bootstrap:
-        lines.append(f"\nCI          : patient bootstrap N={bootstrap.get('samples')}")
+        lines.append(f"\nCI          : patient bootstrap N={bootstrap.get('samples')} (test split only)")
     if evaluation.get("threshold") is not None:
-        lines.append(f"Threshold   : {float(evaluation['threshold']):.6f} (validation)")
+        rule = evaluation.get("threshold_rule") or evaluation.get("threshold_source") or "validation"
+        lines.append(f"Threshold   : {float(evaluation['threshold']):.6f} ({rule})")
     if evaluation.get("bootstrap_unavailable_reason"):
         lines.append(f"CI note     : {evaluation['bootstrap_unavailable_reason']}")
     lines.extend(("", "Saved:", str(output), BAR))

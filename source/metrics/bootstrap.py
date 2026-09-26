@@ -15,7 +15,7 @@ def patient_bootstrap(
     confidence: float = 0.95,
     seed: int = 42,
     patient_column: str = "patient_id",
-) -> dict[str, dict[str, float | int]]:
+) -> dict[str, dict[str, Any]]:
     if n_bootstrap < 1 or not 0 < confidence < 1:
         raise ValueError("bootstrap count and confidence are invalid")
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -44,13 +44,22 @@ def patient_bootstrap(
             if np.isfinite(value):
                 samples[name].append(value)
     alpha = (1 - confidence) / 2
-    output: dict[str, dict[str, float | int]] = {}
+    output: dict[str, dict[str, Any]] = {}
     for name, value in point.items():
         valid = np.asarray(samples[name], dtype=float)
         if not np.isfinite(float(value)):
             output[name] = {"value": float("nan"), "ci_low": float("nan"), "ci_high": float("nan"), "valid_replicates": int(valid.size)}
         elif valid.size < max(20, n_bootstrap // 2):
-            raise RuntimeError(f"insufficient valid bootstrap replicates for {name}: {valid.size}/{n_bootstrap}")
+            # Too few defined replicates (e.g. AUROC when most resamples miss the only
+            # positive patient): this metric keeps its point estimate without an interval.
+            # The other metrics keep theirs; one undefined metric must not erase every CI.
+            output[name] = {
+                "value": float(value),
+                "ci_low": float("nan"),
+                "ci_high": float("nan"),
+                "valid_replicates": int(valid.size),
+                "ci_note": f"insufficient valid bootstrap replicates ({valid.size}/{n_bootstrap})",
+            }
         else:
             output[name] = {
                 "value": float(value),
@@ -90,14 +99,19 @@ def bootstrap_prognosis_predictions(
     n_bootstrap: int = 2000,
     confidence: float = 0.95,
     seed: int = 42,
+    calibration_min_events: int | None = None,
 ) -> dict[str, dict[str, float | int]]:
+    from .calibration import DEFAULT_CALIBRATION_MIN_EVENTS
     from .prognosis import prognosis_metrics
+
+    min_events = DEFAULT_CALIBRATION_MIN_EVENTS if calibration_min_events is None else int(calibration_min_events)
 
     def calculate(items: list[dict[str, Any]]) -> Mapping[str, float]:
         metrics = prognosis_metrics(
             [int(item["y_true"]) for item in items],
             [float(item["y_prob"]) for item in items],
             threshold,
+            calibration_min_events=min_events,
         )
         metrics.pop("threshold")
         return metrics

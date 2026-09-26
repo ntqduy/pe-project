@@ -23,6 +23,12 @@ def _ct_fm(config: Mapping[str, Any]) -> BaseImageEncoder:
     return build_ct_fm(config)
 
 
+def _ct_fm_features(config: Mapping[str, Any]) -> BaseImageEncoder:
+    from .ct_fm import build_ct_fm_features
+
+    return build_ct_fm_features(config)
+
+
 def _ct_clip(config: Mapping[str, Any]) -> BaseImageEncoder:
     from .ct_clip import build_ct_clip
 
@@ -42,6 +48,7 @@ def _penet_style(config: Mapping[str, Any]) -> BaseImageEncoder:
 
 
 register_backbone("ct_fm", _ct_fm)
+register_backbone("ct_fm_features", _ct_fm_features)
 register_backbone("ct_clip", _ct_clip)
 register_backbone("totalfm", _totalfm)
 register_backbone("penet_style", _penet_style)

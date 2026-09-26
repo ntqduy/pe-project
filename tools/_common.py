@@ -117,6 +117,23 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
             ),
             label_columns=tuple(data.get("label_columns") or ()),
         )
+    if (config.get("model") or {}).get("cached_features"):
+        # Precomputed CT-FM features are not an image: HU windowing, resizing and
+        # image-space ROI erasing would silently corrupt them.
+        counterfactual = str(task.get("input_counterfactual") or "")
+        if counterfactual and counterfactual != "full":
+            raise ValueError(
+                f"task.input_counterfactual={counterfactual!r} needs an image-space model input; "
+                "cached CT-FM features (model.backbone=ct_fm_features) cannot erase an ROI"
+            )
+        if preprocessing.get("window") or preprocessing.get("shape"):
+            raise ValueError("preprocessing.window/shape cannot be applied to cached CT-FM features")
+    input_contract = image_input_contract(config)
+    if input_contract and "window" in preprocessing:
+        raise ValueError(
+            "preprocessing.window re-scales intensities that the image encoder converts from "
+            f"the cache's own HU range {input_contract.get('hu_range')}; remove the window"
+        )
     if "window" in preprocessing:
         transforms.append(CTWindowNormalize(*preprocessing["window"]))
     if preprocessing.get("shape"):
@@ -160,7 +177,32 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
         # sample that contributes no loss. Rows with only some missing multitask outcomes stay
         # in the dataset and are masked per target.
         drop_rows_without_labels=(stage == "prognosis"),
+        input_contract=input_contract,
+        # Keep small inputs (pooled CT-FM features) in RAM instead of re-reading each epoch.
+        preload=bool(data.get("preload_inputs", False)),
     )
+
+
+def image_input_contract(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Cache sidecar fields an image encoder converts from (backbones.yaml factory_kwargs).
+
+    CT-FM declares input_orientation / input_hu_range because it re-orients and re-scales
+    the shared cache to its own pre-training contract; a volume cached differently would be
+    converted wrongly without any error, so the dataset checks every sidecar against them.
+    """
+    model = dict(config.get("model") or {})
+    kwargs = dict(model.get("factory_kwargs") or {})
+    contract: dict[str, Any] = {}
+    if model.get("cached_features"):
+        contract["representation"] = str(model.get("feature_representation") or "ct_fm_features_v1")
+        if model.get("weight_sha256"):
+            contract["weight_sha256"] = str(model["weight_sha256"])
+    if kwargs.get("input_orientation"):
+        contract["orientation"] = str(kwargs["input_orientation"]).upper()
+    if kwargs.get("input_hu_range"):
+        contract["hu_range"] = [float(value) for value in kwargs["input_hu_range"]]
+        contract["normalization"] = "minmax"
+    return contract
 
 
 def build_training_lineage(

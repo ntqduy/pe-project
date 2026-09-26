@@ -177,7 +177,8 @@ python run.py run anatomy.remove_random
 
 ```bash
 # cột sufficiency — paired bootstrap so với full model
-REF="$PE_CLOUD_ROOT/pe-project/outputs/diagnosis/DX_anatomy_concat/predictions.parquet"
+# predictions.csv of the reference run (test rows are used); legacy predictions.parquet is also accepted
+REF="$(ls -d $PE_CLOUD_ROOT/pe-project/outputs/diagnosis/DX_anatomy_concat*/epoch_*/predictions.csv | sort -V | tail -n 1)"
 for R in pa heart lung random; do
   python run.py run anatomy.${R}_student --set data.profile=full_inspect --gpus 0
   python tools/tasks/evaluate.py --config configs/runs/05_anatomy_analysis/students/gt/$R.yaml --set data.profile=full_inspect --reference-predictions "$REF" --allow-full
@@ -220,7 +221,8 @@ done
 
 ```bash
 # Δ paired so với hàng trần
-REF="$PE_CLOUD_ROOT/pe-project/outputs/prognosis/PR_image_only/predictions.parquet"
+# predictions.csv of the reference run (test rows are used); legacy predictions.parquet is also accepted
+REF="$(ls -d $PE_CLOUD_ROOT/pe-project/outputs/prognosis/PR_image_only*/epoch_*/predictions.csv | sort -V | tail -n 1)"
 for R in heart pa lung random; do
   python tools/tasks/evaluate.py --config configs/runs/04_prognosis/students/$R.yaml --set data.profile=full_inspect --reference-predictions "$REF" --allow-full
 done

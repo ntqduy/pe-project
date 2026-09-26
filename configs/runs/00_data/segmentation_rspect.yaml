@@ -22,8 +22,6 @@ segmentation:
   weights_directory: third_party/weights/segmentation/totalsegmentator
   fast: false
   preview_cases: null
-  preview_slices_per_mask: 3
-  preview_anatomies: [lung, strict_heart, pa_tree]
   preview_window_width: 700
   preview_window_level: 100
   devices: []

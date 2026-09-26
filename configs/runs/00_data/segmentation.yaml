@@ -6,14 +6,22 @@
 # Support artifact: consumed by anatomy-aware training, ROI construction and counterfactuals.
 #
 # Output: outputs/segmentation/SEG_pseudo_anatomy/
-#   masks/<patient_id>/<study_id>/canonical/<anatomy>.nii.gz   19 masks per study: lung, heart,
+#   masks/<patient_id>/<study_id>/<anatomy>.nii.gz   26 masks per study: lung, lung_left,
+#       lung_right, the five lung lobes (lung_{upper,lower}_lobe_left,
+#       lung_{upper,middle,lower}_lobe_right), heart,
 #       strict_heart, myocardium, mediastinum, central_pa, lung_arteries, lung_veins,
 #       lung_vessels, airways, pa_tree, hilar_vessels, body, body_wall, rv, lv, ra, la,
 #       lung_lungmask (the independent LungMask cross-check)
-#   previews/<patient_id>/<study_id>/segmentation/<anatomy>/*.png  configurable CTPA overlays
-#   manifest.parquet, result.json                 mask index/QC and run summary
+#   previews/<patient_id>_<study_id>.png          contact sheet for the first preview_cases
+#                                                 studies: every mask on its largest axial
+#                                                 slice + coronal overview
+#   qc_summary.csv                                one flat row per (study, anatomy): status,
+#                                                 voxels, mL, z range, duplicate_of, reason
+#   manifest.parquet, result.json                 mask index for ROI construction; run summary
 #   state/<patient_id>/<study_id>.json            resume state for interrupted runs
-#   logs/run.log, logs/segmentation_qc.csv        terminal log and normalized per-mask QC
+#   logs/run.log                                  terminal log with per-step timings
+# Raw per-task TotalSegmentator output is written to a local temporary directory
+# (scratch_dir) and deleted once the masks are built; it never reaches the output tree.
 # The id says "pseudo": these are public-model masks, not expert-validated segmentations.
 _base_:
   - ../../paths.yaml
@@ -33,34 +41,21 @@ segmentation:
   repository: third_party/repos/TotalSegmentator
   weights_directory: third_party/weights/segmentation/totalsegmentator
   fast: false
-  # null means every processed study. For each selected anatomy: largest-area slice plus
-  # deterministic slices before/after its center. Reduce to 1 or 2 for a smaller review set.
-  preview_cases: null
-  preview_slices_per_mask: 3
-  # Generate QC overlays for every canonical mask, including the independent LungMask check.
-  # This creates up to 19 * 3 PNGs per study; use preview_cases or --max-cases for a smoke test.
-  preview_anatomies:
-    - lung
-    - heart
-    - strict_heart
-    - myocardium
-    - mediastinum
-    - central_pa
-    - lung_arteries
-    - lung_veins
-    - lung_vessels
-    - airways
-    - pa_tree
-    - hilar_vessels
-    - body
-    - body_wall
-    - rv
-    - lv
-    - ra
-    - la
-    - lung_lungmask
+  # null = write the contact sheet for every processed study; N = only the first N studies
+  # of the manifest (a fixed set, also across resumed runs). Drawing it took ~2 of ~10 min
+  # per study on smoke_30, so a full cohort draws a checkable sample instead of every study.
+  preview_cases: 20
   preview_window_width: 700
   preview_window_level: 100
+  # Local directory for raw TotalSegmentator task output (null = system temp, e.g. /tmp).
+  # Keep it off the gcsfuse mount: it is rewritten for every study and deleted afterwards.
+  scratch_dir: null
+  # TotalSegmentator worker processes. Its default of 6 saving processes (several GB each)
+  # gets OOM-killed on a 16 GB VM, after which nnU-Net hangs; keep 1 unless RAM allows more.
+  totalseg_resample_threads: 1
+  totalseg_saving_threads: 1
+  # Kill a TotalSegmentator task (and its workers) that runs longer than this.
+  task_timeout_sec: 3600
   devices: []
   # null = one worker per GPU in devices. Set a number to run more studies at once; on CPU
   # (devices: []) that is the only way to get past one study at a time.

@@ -7,8 +7,13 @@ import torch
 from torch import Tensor
 
 from source.components.adapters.organ import OrganAdapterBank
-from source.components.encoders.image.base import BaseImageEncoder
+from source.components.encoders.image.base import BaseImageEncoder, ImageFeatures
 from source.components.roi.feature_extractor import ROIFeatureExtractor
+
+# Pooling tag of an encoder whose global_embedding already excludes padding cells: the cached
+# CT-FM adapter (source/components/encoders/image/ct_fm.py) weights every feature cell by the
+# fraction of it inside the scanned body box, so canvas padding never enters the embedding.
+BODY_WEIGHTED_POOLING = "body_weighted_mean"
 
 
 @dataclass(frozen=True)
@@ -59,17 +64,30 @@ def global_average_pool(feature_map: Tensor) -> Tensor:
     return feature_map.mean(dim=(2, 3, 4))
 
 
-def extract_anatomy_features(
+def global_embedding(image: ImageFeatures) -> Tensor:
+    """Whole-volume embedding of one encoder output.
+
+    Cached CT-FM places each body crop on a fixed canvas padded with air (17-75% of the cells
+    on smoke_30). Those cells carry a nearly patient-independent CT-FM "air" vector, so a plain
+    mean over every cell mixes it into the embedding in a proportion set by body size. Such an
+    encoder already returns a body-weighted embedding; every other encoder keeps the plain
+    spatial mean of its feature map.
+    """
+    if (image.metadata or {}).get("pooling") == BODY_WEIGHTED_POOLING:
+        return image.global_embedding
+    return global_average_pool(image.feature_map)
+
+
+def pool_anatomy_features(
     image_encoder: BaseImageEncoder,
     roi: ROIFeatureExtractor,
-    organ_adapters: OrganAdapterBank,
     volume: Tensor,
     masks: dict[str, Tensor] | Any,
-) -> AnatomyFeatureOutput:
-    """Encode a full CTPA once, then pool and adapt global/organ representations."""
+) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
+    """Encode a full CTPA once and pool it into global and organ vectors (before adapters)."""
 
     image = image_encoder.forward_features(volume)
-    z_global = global_average_pool(image.feature_map)
+    z_global = global_embedding(image)
     if z_global.shape[1] != int(image_encoder.feature_dim):
         raise ValueError(
             "encoder feature_dim must equal spatial feature-map channels: "
@@ -81,18 +99,34 @@ def extract_anatomy_features(
         "global": torch.ones(volume.shape[0], dtype=torch.bool, device=volume.device),
         **regional_present,
     }
+    return raw, available
+
+
+def extract_anatomy_features(
+    image_encoder: BaseImageEncoder,
+    roi: ROIFeatureExtractor,
+    organ_adapters: OrganAdapterBank,
+    volume: Tensor,
+    masks: dict[str, Tensor] | Any,
+) -> AnatomyFeatureOutput:
+    """Encode a full CTPA once, then pool and adapt global/organ representations.
+
+    ``z_*`` are the pooled vectors as pooled; the adapters see them after the bank's optional
+    train-fit standardization (organ_adapter.standardize_inputs).
+    """
+
+    raw, available = pool_anatomy_features(image_encoder, roi, volume, masks)
     adapted, adapted_present = organ_adapters(raw, available)
     available.update(adapted_present)
 
     return AnatomyFeatureOutput(
-        z_global=z_global,
-        z_heart=regional.get("heart"),
-        z_pa=regional.get("pa"),
-        z_lung=regional.get("lung"),
+        z_global=raw["global"],
+        z_heart=raw.get("heart"),
+        z_pa=raw.get("pa"),
+        z_lung=raw.get("lung"),
         adapted_global=adapted.get("global"),
         adapted_heart=adapted.get("heart"),
         adapted_pa=adapted.get("pa"),
         adapted_lung=adapted.get("lung"),
         available=available,
     )
-

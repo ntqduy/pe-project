@@ -13,9 +13,23 @@ PYTHON="${PYTHON:-python3}"
 case "$PROFILE" in smoke_30|test_500_sample|full_inspect) ;; *) echo "error: invalid PROFILE=$PROFILE" >&2; exit 2 ;; esac
 case "$ACTION" in run|preflight) ;; *) echo "error: ACTION must be run or preflight" >&2; exit 2 ;; esac
 
+# Segmentation output ids carry the dataset profile (SEG_pseudo_anatomy__ds_<profile>) except
+# for full_inspect, the baseline profile that is never stamped, so the matching run is the
+# default; SEGMENTATION_RUN=<path under outputs/> overrides it.
+if [[ -z "${SEGMENTATION_RUN:-}" ]]; then
+  SEGMENTATION_RUN="segmentation/SEG_pseudo_anatomy"
+  [[ "$PROFILE" != "full_inspect" ]] && SEGMENTATION_RUN+="__ds_${PROFILE}"
+  if [[ ! -d "${PE_CLOUD_PROJECT_ROOT}/outputs/${SEGMENTATION_RUN}" ]]; then
+    printf 'error: no segmentation run for PROFILE=%s at %s\n' "$PROFILE" \
+      "${PE_CLOUD_PROJECT_ROOT}/outputs/${SEGMENTATION_RUN}" >&2
+    printf '       run: PROFILE=%s bash scripts/run_segmentation.sh  (or set SEGMENTATION_RUN=...)\n' "$PROFILE" >&2
+    exit 2
+  fi
+fi
+
 ARGS=(--set "data.profile=${PROFILE}" --set "data.manifest=manifests/ctpa.csv")
 [[ -n "${ROI_WORKERS:-}" ]] && ARGS+=(--set "roi.workers=${ROI_WORKERS}")
-[[ -n "${SEGMENTATION_RUN:-}" ]] && ARGS+=(--set "roi.segmentation_run=${SEGMENTATION_RUN}")
+ARGS+=(--set "roi.segmentation_run=${SEGMENTATION_RUN}")
 [[ -n "${OVERWRITE:-}" ]] && ARGS+=(--overwrite)
 
 if [[ "$ACTION" == "preflight" ]]; then

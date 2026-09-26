@@ -8,20 +8,25 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import time
+
 import torch
-from torch.utils.data import DataLoader
+import torch.distributed as dist
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 
+from source.components.anatomy import pool_anatomy_features
 from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
 from source.distributed.setup import initialize_distributed, rank_zero_call, wrap_ddp
 from source.engine.checkpoint import load_checkpoint
-from source.engine.experiment import OutputManager, compact_result
+from source.engine.experiment import OutputManager, compact_result, run_output_id
 from source.engine.factory import build_task_model
 from source.engine.task_steps import task_loss_step
 from source.engine.trainer import Trainer, move_to_device
 from source.engine.task_artifacts import (
     cleanup_task_run,
+    preview_log_lines,
     refresh_epoch_log,
     write_backbone_previews,
     write_training_artifacts,
@@ -33,6 +38,8 @@ from source.utils.console import experiment_header
 from source.utils.environment import environment_report
 from source.utils.seed import seed_everything
 from source.utils.logger import RunLogger
+from source.utils.progress import with_progress
+from source.utils.workers import LOADER_WORKER_GB, resolve_workers
 from tools._common import (
     base_parser,
     build_dataset,
@@ -70,7 +77,66 @@ def _fit_clinical_preprocessor(model, dataset, config) -> dict[str, object] | No
 
 
 @torch.no_grad()
-def _auc_rows(model, loader, config, context):
+def _fit_feature_standardizer(model, dataset, config, context, *, batch_size, workers):
+    """Fit the organ adapter bank's per-branch z-score of pooled features on training rows.
+
+    One pass over the train split pools every study exactly as training will (same input
+    counterfactual) and accumulates per-branch sums over the rows in which that branch is
+    present. Each rank pools a disjoint shard and the sums are all-reduced, so every rank fits
+    identical buffers before DDP wraps the model.
+    """
+    from source.components.roi.masks import apply_counterfactual
+
+    standardizer = getattr(getattr(model, "organ_adapters", None), "input_standardizer", None)
+    if standardizer is None:
+        if (config.get("organ_adapter") or {}).get("standardize_inputs"):
+            raise ValueError(
+                "organ_adapter.standardize_inputs is set but "
+                f"{type(model).__name__} has no organ adapter bank that supports it"
+            )
+        return None
+    task = dict(config.get("task") or {})
+    shard = (
+        Subset(dataset, range(context.rank, len(dataset), context.world_size))
+        if context.distributed
+        else dataset
+    )
+    loader = DataLoader(shard, batch_size=batch_size, shuffle=False, num_workers=workers)
+    was_training = model.training
+    model.to(context.device).eval()
+    names = standardizer.feature_names
+    total = torch.zeros(len(names), standardizer.feature_dim, dtype=torch.float64, device=context.device)
+    total_square = torch.zeros_like(total)
+    count = torch.zeros(len(names), dtype=torch.float64, device=context.device)
+    started = time.perf_counter()
+    for batch in loader:
+        moved = move_to_device(batch, context.device)
+        volume = apply_counterfactual(
+            moved["volume"], moved["masks"], str(task.get("input_counterfactual") or ""),
+            matched_region=str(task.get("matched_region", "pa")),
+            masking_policy=task.get("masking_policy", "local_mean"),
+            seed=int(config.get("seed", 42)),
+            patient_ids=batch.get("patient_id"), study_ids=batch.get("study_id"),
+        )
+        raw, available = pool_anatomy_features(model.image_encoder, model.roi, volume, moved["masks"])
+        for index, name in enumerate(names):
+            present = available[name].bool()
+            values = raw[name][present].to(torch.float64)
+            total[index] += values.sum(dim=0)
+            total_square[index] += values.square().sum(dim=0)
+            count[index] += present.sum()
+    if context.distributed:
+        for tensor in (total, total_square, count):
+            dist.all_reduce(tensor)
+    standardizer.fit_moments(total, total_square, count)
+    model.train(was_training)
+    state = standardizer.export_state()
+    state["fit_seconds"] = round(time.perf_counter() - started, 1)
+    return state
+
+
+@torch.no_grad()
+def _auc_rows(model, loader, config, context, log=None, label="epoch AUROC pass"):
     """Collect configured target probabilities for one epoch's AUC curves."""
     from source.components.roi.masks import apply_counterfactual
 
@@ -92,7 +158,7 @@ def _auc_rows(model, loader, config, context):
         targets = list(columns)
     model.eval()
     rows = []
-    for batch in loader:
+    for batch in with_progress(loader, log, label):
         moved = move_to_device(batch, context.device)
         if stage == "diagnosis":
             volume = apply_counterfactual(
@@ -135,11 +201,12 @@ def _auc_rows(model, loader, config, context):
     return rows
 
 
-def _epoch_auc_metrics(model, train_loader, validation_loader, config, context) -> Mapping[str, float]:
+def _epoch_auc_metrics(model, train_loader, validation_loader, config, context, log=None) -> Mapping[str, float]:
     from source.distributed.gather import gather_prediction_rows
 
-    train_local = _auc_rows(model, train_loader, config, context)
-    validation_local = _auc_rows(model, validation_loader, config, context)
+    # record_epoch_auc re-reads the whole train and validation split every epoch.
+    train_local = _auc_rows(model, train_loader, config, context, log, "epoch AUROC pass train")
+    validation_local = _auc_rows(model, validation_loader, config, context, log, "epoch AUROC pass validation")
     task = dict(config.get("task") or {})
     data = dict(config.get("data") or {})
     stage = str((config.get("experiment") or {}).get("stage") or "")
@@ -294,7 +361,8 @@ def main() -> int:
         manager = OutputManager(paths)
         family = str(config["experiment"].get("family") or config["experiment"]["stage"])
         experiment_id = str(config["experiment"]["id"])
-        output_id = str(config["experiment"].get("output_id") or experiment_id)
+        # <id>/epoch_<training.epochs>: the whole run, metadata included, lives in its bundle.
+        output_id = run_output_id(config)
         run_dir = manager.run_dir(family, output_id)
 
         def prepare() -> Path:
@@ -323,7 +391,16 @@ def main() -> int:
                     run_logger.log(
                         f"prognosis_unlabeled_rows_skipped split={split_name} count={len(dropped)}"
                     )
-        workers = int(config["compute"].get("num_workers", 0))
+                preload = getattr(dataset, "preload_report", {})
+                if preload.get("enabled"):
+                    run_logger.log(f"preload_inputs split={split_name} {json.dumps(preload, sort_keys=True)}")
+        # compute.num_workers: "auto" or a number, capped by the RAM free on this machine.
+        workers, worker_note = resolve_workers(
+            config["compute"].get("num_workers", 0), per_worker_gb=LOADER_WORKER_GB,
+            minimum=0, maximum=16, share=context.world_size,
+        )
+        if run_logger is not None:
+            run_logger.log(f"data loader {worker_note}")
         batch_size = int((config.get("training") or {}).get("batch_size", 1))
         train_sampler = DistributedSampler(train_data, shuffle=True) if context.distributed else None
         validation_sampler = (
@@ -372,6 +449,21 @@ def main() -> int:
             if run_logger is not None:
                 run_logger.log("checkpoint_load=" + json.dumps(transfer_report, sort_keys=True, default=str))
         clinical_preprocessing = _fit_clinical_preprocessor(model, train_data, config)
+        feature_standardization = _fit_feature_standardizer(
+            model, train_data, config, context, batch_size=batch_size, workers=workers
+        )
+        if run_logger is not None and feature_standardization is not None:
+            run_logger.log(
+                "feature_standardization="
+                + json.dumps(feature_standardization, sort_keys=True, default=str)
+            )
+            if feature_standardization["identity_branches"]:
+                run_logger.log(
+                    "WARNING feature_standardization skipped for "
+                    + ",".join(feature_standardization["identity_branches"])
+                    + ": fewer than 2 training rows, so these branches enter the adapters "
+                    "unstandardized"
+                )
         model = wrap_ddp(model, context)
         parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
         if not parameters:
@@ -405,7 +497,8 @@ def main() -> int:
         epoch_metrics_fn = None
         if bool(training.get("record_epoch_auc", True)):
             epoch_metrics_fn = lambda current_model, train, validation, current_context: _epoch_auc_metrics(
-                current_model, train, validation, config, current_context
+                current_model, train, validation, config, current_context,
+                log=run_logger.log if run_logger is not None else None,
             )
         training_result = trainer.fit(
             train_loader,
@@ -453,11 +546,11 @@ def main() -> int:
                 context.device,
                 epoch_artifact_dir / "preview",
                 maximum_patients=5,
+                checkpoint=epoch_artifact_dir / "checkpoint" / "best.ckpt",
             )
-            (epoch_artifact_dir / "preview" / "summary.json").write_text(
-                json.dumps(preview_report, indent=2, sort_keys=True, default=str) + "\n",
-                encoding="utf-8",
-            )
+            if run_logger is not None:
+                for line in preview_log_lines(preview_report, epoch_artifact_dir / "preview"):
+                    run_logger.log(line)
             underlying = model.module if hasattr(model, "module") else model
             profile_batch = move_to_device(next(iter(validation_loader)), context.device)
             effective_stage = str(config["experiment"]["stage"])
@@ -522,6 +615,7 @@ def main() -> int:
                     "architecture": (config.get("task") or {}).get("architecture"),
                     "modalities": (config.get("task") or {}).get("modalities", ["image"]),
                     "clinical_preprocessing": clinical_preprocessing,
+                    "feature_standardization": feature_standardization,
                 },
                 compute={
                     "strategy": config["compute"]["strategy"],
@@ -560,9 +654,15 @@ def main() -> int:
             if run_logger is not None:
                 run_logger.log(
                     f"training run={experiment_id} status=finished "
-                    f"best_validation_metric={training_result['best_validation_metric']}"
+                    f"best_epoch={int(best_row['epoch'])} "
+                    f"best_validation_metric={training_result['best_validation_metric']} "
+                    f"(selection: negative validation loss)"
                 )
-            refresh_epoch_log(run_dir, epochs_run=int(training_result["epochs_run"]))
+                run_logger.log(
+                    f"artifacts: {epoch_artifact_dir} (checkpoint/, preview/, training_curves.png); "
+                    "result.csv and predictions.csv are written by the evaluation step"
+                )
+            refresh_epoch_log(run_dir)
             cleanup_task_run(run_dir)
             print(f"TRAINING COMPLETED | {experiment_id} | Saved: {run_dir}")
         context.barrier()

@@ -6,14 +6,35 @@ Chỉ còn một method sinh nhãn: `medgemma`. Cascade machinery trong
 
 ## Cơ chế quyết định và abstention
 
-1. Rule chỉ accept khi pattern rõ ràng; không có evidence thì chuyển stage kế tiếp hoặc
-   `no_result`.
-2. Falcon/MedGemma chỉ accept giá trị hợp lệ khi confidence đạt threshold cấu hình.
-3. Nếu hai model được dùng để adjudicate, chúng phải trả cùng giá trị và cả hai confidence
-   đạt `agreement_confidence_threshold`; disagreement hoặc confidence thấp đều `abstained`.
-4. `abstained` và `failed/no_result` luôn có final value rỗng, không biến thành nhãn âm.
-5. Threshold mặc định hiện là fixed pending validation calibration. Muốn báo cáo lâm sàng
-   phải hiệu chỉnh trên validation và điền artifact calibration; tuyệt đối không tune trên test.
+Mỗi report được hỏi 19 target, mỗi target một lần gọi MedGemma (prompt `v2`).
+
+1. **MedGemma trả lời trước.** Prompt v2 quy định rõ: `true` khi report ghi có (mọi mức
+   độ/bên đều tính, vd. "small bilateral pleural effusions"); `false` khi report ghi không có
+   hoặc một câu rõ ràng loại trừ (vd. "No pulmonary embolism" → mọi vị trí PE đều false);
+   `null` khi không nhắc tới hoặc chỉ nói nước đôi. Có ví dụ JSON; `max_new_tokens=384`.
+2. **Parse mềm, không làm mất nhãn vì lỗi format:** `"yes"/"present"/"small"` → `true`,
+   `"no"/"absent"` → `false`, confidence `"95%"` → 0.95, field thừa bị bỏ, offset evidence
+   được tính lại từ câu trích (không tin offset model). Mọi chuyển đổi ghi ở `normalization`
+   trong audit. Câu trích không có trong report → không accept (`medgemma_evidence_not_in_report`).
+3. **Retry:** câu trả lời không dùng được (không phải JSON, value sai kiểu) được hỏi lại 1 lần
+   kèm thông báo lỗi (`silver.medgemma.retries`). Raw response luôn lưu trong audit `.state/`.
+4. **Chỉ accept khi confidence ≥ `medgemma_confidence_threshold` (0.8).**
+5. **`rule_rescue: true` — regex (`source/silver/rules.py`) làm backup, không thay MedGemma:**
+   - MedGemma chắc chắn nhưng regex thấy câu ghi rõ điều ngược lại → abstain
+     (`medgemma_rule_conflict`);
+   - MedGemma abstain/lỗi nhưng report ghi rõ ràng → lấy giá trị regex, `source=rule`
+     (`rule_..._after_medgemma_abstained` / `_after_medgemma_failure`).
+6. **`pe_consistency: true` — nhất quán trong một report:** `pe_present=false` → mọi vị trí PE
+   (central/lobar/segmental/subsegmental/saddle) false, acuity bị rút; chưa quyết được
+   `pe_present` thì "vị trí = false" bị abstain vì đó là đoán.
+7. `abstained` và `failed/no_result` luôn có final value rỗng, không biến thành nhãn âm.
+8. Threshold mặc định là fixed pending validation calibration; không tune trên test.
+
+Giới hạn dữ liệu: INSPECT chỉ có phần **IMPRESSION** của report, không có FINDINGS. Những gì
+impression không nhắc (RV, septal bowing, emphysema, ...) đúng là không trích được và sẽ
+`abstained` — đó không phải lỗi parse. Đổi `prompt_version`, `rule_rescue`, `pe_consistency`
+hay threshold, model checkpoint hoặc nội dung report thì cache `.state/` tự bị bỏ và report
+được gán nhãn lại. Report có lỗi kỹ thuật `no_result` cũng được hỏi lại khi resume.
 
 ## Output chính
 
@@ -78,18 +99,10 @@ lung disease, fibrosis và emphysema. Chi tiết kiểu/range nằm ở
 ## Chạy và QC
 
 ```bash
-# wrapper: một script cho mỗi cascade
-python run.py run data.silver.rule --max-reports 10
-python run.py run data.silver.medgemma --allow-full --gpus 0,1
-
-# run.py trực tiếp
-python run.py run data.silver.rule --max-reports 10
-python run.py run data.silver.medgemma --gpus 0 --allow-full
+PROFILE=smoke_30 MAX_REPORTS=30 GPUS=0 bash scripts/run_silver_labels.sh      # thử 30 report
+OVERWRITE=1 PROFILE=smoke_30 MAX_REPORTS=30 GPUS=0 bash scripts/run_silver_labels.sh
+PROFILE=full_inspect GPUS=0,1 bash scripts/run_silver_labels.sh              # toàn bộ
 ```
-
-Bảy script trong `scripts/2_silver_label/` tương ứng bảy method: `rule.sh`, `falcon.sh`,
-`medgemma.sh`, `medgemma.sh`, `medgemma.sh`, `medgemma.sh`,
-`medgemma.sh`.
 
 Sau chạy, kiểm tra tỷ lệ abstention theo target/source, lọc `abstain_reason`, đọc evidence
 và so report gốc. `result.json` chỉ dùng để xem thống kê nhanh; audit ở mức case phải đọc

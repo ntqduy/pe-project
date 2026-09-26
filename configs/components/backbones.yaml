@@ -24,6 +24,7 @@ _presets_:
         display_name: CT-FM
         repo: third_party/repos/CT-FM
         checkpoint: third_party/weights/ct_fm_feature_extractor/model.safetensors
+        weight_sha256: b521ff13764ad0fce67f8ad2e5aa9ccc0823f69e4544b446581d8a2dee686215
         factory: source.components.encoders.image.ct_fm:build_ct_fm_backbone
         output_adapter: source.components.encoders.image.ct_fm:ct_fm_output_adapter
         feature_dim: 512
@@ -33,6 +34,30 @@ _presets_:
           init_filters: 32
           in_channels: 1
           blocks_down: [1, 2, 2, 4, 4]
+          # The shared image cache (tools/data/build_cache.py) stores RAS arrays min-max
+          # scaled from [-1000, 1000] HU; the encoder reorients them to CT-FM's SPL and
+          # rescales them to its [-1024, 2048] HU scaling. The dataset checks each volume's
+          # sidecar against these two values. Spacing stays the cache's ~2.4x2.4x2.0 mm.
+          input_orientation: RAS
+          input_hu_range: [-1000, 1000]
+        # SegResEncoder has no Linear layers, so LoRA wraps the convolutions of its two
+        # deepest stages instead of peft.target_modules (attn/projection, transformer names).
+        lora_target_modules: [layers.3.blocks, layers.4.blocks]
+      ct_fm_features:
+        # The same CT-FM weights, applied once per study by tools/data/build_ctfm_cache.py at
+        # the upstream contract (SPL, 3x1x1 mm, [-1024, 2048] -> [0, 1], non-overlapping
+        # 24x128x128 patches). Runs read the cached [513, d, h, w] tensors (512 feature
+        # channels + body-coverage channel) from manifests/ct_fm/*.csv; the encoder only
+        # splits them. Frozen use only: no fine-tuning and no image-space ROI counterfactual.
+        display_name: CT-FM (cached features)
+        repo: third_party/repos/CT-FM
+        checkpoint: third_party/weights/ct_fm_feature_extractor/model.safetensors
+        factory: source.components.encoders.image.ct_fm:build_ct_fm_feature_passthrough
+        output_adapter: source.components.encoders.image.ct_fm:ct_fm_cached_feature_adapter
+        feature_dim: 512
+        cached_features: true
+        feature_representation: ct_fm_features_v1
+        weight_sha256: b521ff13764ad0fce67f8ad2e5aa9ccc0823f69e4544b446581d8a2dee686215
       ct_clip:
         display_name: CT-CLIP
         repo: third_party/repos/CT-CLIP/CT_CLIP
@@ -70,6 +95,16 @@ _presets_:
       backbone: ct_fm
     experiment:
       baseline_backbone: ct_fm
+
+  ct_fm_features:
+    # Select precomputed CT-FM features (see the registry entry). Used by the frozen CT-FM
+    # runs in configs/runs/01_foundation; baseline_backbone keeps their output ids unchanged.
+    _base_:
+      - backbones.yaml#registry
+    model:
+      backbone: ct_fm_features
+    experiment:
+      baseline_backbone: ct_fm_features
 
   ct_clip:
     # Select the ct_clip entry of the shared backbone registry.

@@ -22,14 +22,25 @@ def apply_peft(module: nn.Module, config: Mapping[str, Any]) -> dict[str, Any]:
         return {"method": method, "modified_modules": []}
     if method == "lora":
         set_requires_grad(module, False)
+        # Layer names are backbone specific: a transformer has attn/projection Linears, the
+        # CT-FM SegResNet encoder only convolutions. A backbone that declares its own LoRA
+        # targets (backbones.yaml lora_target_modules) therefore takes precedence over the
+        # generic peft.target_modules.
+        backbone_targets = tuple(getattr(module, "lora_target_modules", ()) or ())
+        targets = backbone_targets or tuple(config.get("target_modules") or ())
         replaced = inject_lora(
             module,
-            config.get("target_modules") or (),
+            targets,
             rank=int(config.get("rank", 8)),
             alpha=float(config.get("alpha", 16)),
             dropout=float(config.get("dropout", 0)),
         )
-        return {"method": method, "modified_modules": replaced}
+        return {
+            "method": method,
+            "modified_modules": replaced,
+            "target_modules": list(targets),
+            "target_source": "backbone" if backbone_targets else "peft.target_modules",
+        }
     raise ValueError(f"unsupported PEFT method: {method}")
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,13 +12,16 @@ import numpy as np
 
 from source.engine.experiment import atomic_write_json
 from source.imaging.nifti import binary_dice, load_nifti, mask_qc
-from source.imaging.preview import write_overlay_previews
+from source.imaging.preview import write_segmentation_contact_sheet
 
+from .labels import parse_pe_present
 from .lungmask import LungMaskRunner
-from .totalsegmentator import TASK_CLASSES, TotalSegmentatorRunner
+from .totalsegmentator import LUNG_LOBES, LUNG_SIDES, TASK_CLASSES, TotalSegmentatorRunner
 
 ANATOMIES = (
     "lung",
+    *LUNG_SIDES,
+    *LUNG_LOBES,
     "heart",
     "strict_heart",
     "myocardium",
@@ -38,10 +42,13 @@ ANATOMIES = (
     "lung_lungmask",
 )
 # Preview paths and the patient/study output hierarchy are part of cached rows.
-STATE_SCHEMA_VERSION = 3
+# 4: flat masks/<patient>/<study>/<anatomy>.nii.gz, one contact-sheet preview per study.
+# 5: + lung_left/lung_right and the five lung lobes (26 masks per study).
+STATE_SCHEMA_VERSION = 5
 
 ANATOMY_TASK = {
     "lung": "total",
+    **{name: "total" for name in (*LUNG_SIDES, *LUNG_LOBES)},
     "heart": "total",
     "strict_heart": "derived",
     "myocardium": "heartchambers_highres",
@@ -97,13 +104,85 @@ def _cached_rows(state_path: Path) -> list[dict[str, Any]] | None:
     if payload.get("schema_version") != STATE_SCHEMA_VERSION:
         return None
     rows = payload.get("rows")
-    if not isinstance(rows, list):
+    if not isinstance(rows, list) or len(rows) != len(ANATOMIES):
+        return None
+    if {str(row.get("anatomy")) for row in rows if isinstance(row, dict)} != set(ANATOMIES):
         return None
     for row in rows:
         mask_path = row.get("mask_path")
         if mask_path and not Path(str(mask_path)).is_file():
             return None
+        # A missing canonical mask is a retryable task failure, not completed state.
+        if row.get("anatomy") != "lung_lungmask" and row.get("status") == "UNAVAILABLE":
+            return None
     return [dict(row) for row in rows]
+
+
+def study_preview_path(run_dir: Path, patient_id: str, study_id: str) -> Path:
+    """One contact-sheet PNG per study, directly under ``previews/``."""
+    return run_dir / "previews" / f"{patient_id}_{study_id}.png"
+
+
+def _remove_legacy_previews(run_dir: Path, patient_id: str, study_id: str) -> None:
+    """Drop the old ``previews/<patient>/<study>/segmentation/<anatomy>/*.png`` tree."""
+    legacy = run_dir / "previews" / patient_id / study_id
+    if legacy.is_dir():
+        shutil.rmtree(legacy, ignore_errors=True)
+        parent = legacy.parent
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+
+
+def _assign_duplicates(rows: list[dict[str, Any]]) -> None:
+    """Flag voxel-identical masks, e.g. pa_tree == lung_arteries when the latter holds the PA."""
+    groups: dict[str, list[str]] = {}
+    for item in rows:
+        digest = item.get("mask_sha1")
+        if item.get("mask_path") and digest and int(item.get("voxel_count") or 0) > 0:
+            groups.setdefault(str(digest), []).append(str(item["anatomy"]))
+    for item in rows:
+        members = groups.get(str(item.get("mask_sha1") or ""), [])
+        others = [name for name in members if name != item["anatomy"]]
+        item["duplicate_of"] = ";".join(others)
+
+
+def _write_study_preview(
+    rows: list[dict[str, Any]],
+    *,
+    image_path: Path,
+    run_dir: Path,
+    patient_id: str,
+    study_id: str,
+    segmentation_config: Mapping[str, Any],
+    note: str,
+    pe_present: bool | None,
+    progress: Callable[[str], None] | None,
+) -> str:
+    """Write the study contact sheet; a preview failure never fails the study."""
+    destination = study_preview_path(run_dir, patient_id, study_id)
+    try:
+        write_segmentation_contact_sheet(
+            image_path,
+            rows,
+            destination,
+            study_id=study_id,
+            patient_id=patient_id,
+            window_width=float(segmentation_config.get("preview_window_width", 700.0)),
+            window_level=float(segmentation_config.get("preview_window_level", 100.0)),
+            title_note=note,
+            pe_present=pe_present,
+        )
+    except Exception as exc:  # noqa: BLE001 - preview is diagnostic output only
+        if progress:
+            progress(
+                f"segmentation study={study_id} patient={patient_id} "
+                f"preview=failed reason={type(exc).__name__}: {exc}"
+            )
+        return ""
+    _remove_legacy_previews(run_dir, patient_id, study_id)
+    if progress:
+        progress(f"segmentation study={study_id} patient={patient_id} preview={destination}")
+    return str(destination)
 
 
 def _process_study(
@@ -120,6 +199,7 @@ def _process_study(
 ) -> list[dict[str, Any]]:
     patient_id = str(row.get("patient_id") or "")
     study_id = str(row.get("study_id") or "")
+    pe_present = parse_pe_present(row.get("pe_present"))
     if not patient_id or not study_id:
         raise ValueError("segmentation rows require patient_id and study_id")
     state_path = run_dir / "state" / patient_id / f"{study_id}.json"
@@ -131,53 +211,86 @@ def _process_study(
     raw_image_root_value = segmentation_config.get("raw_image_root")
     raw_image_root = Path(str(raw_image_root_value)).resolve() if raw_image_root_value else None
     image_path = _source_image(row, data_root, image_column, raw_image_root)
+    # Flat layout: masks/<patient>/<study>/<anatomy>.nii.gz (one per ANATOMIES entry, 26).
     study_root = run_dir / "masks" / patient_id / study_id
+    # A retry after a failed task must not leave an old mask beside the new output.
+    for anatomy in ANATOMIES:
+        (study_root / f"{anatomy}.nii.gz").unlink(missing_ok=True)
     if progress:
         progress(
             f"segmentation study={study_id} patient={patient_id} "
             f"device={_device(gpu_id)} status=started"
         )
-    if backend == "totalsegmentator":
-        runner = TotalSegmentatorRunner(
-            executable=str(segmentation_config.get("executable") or "TotalSegmentator"),
-            repository=Path(str(segmentation_config["repository"])).resolve(),
-            weights_directory=Path(str(segmentation_config["weights_directory"])).resolve(),
-            fast=bool(segmentation_config.get("fast", False)),
-            body_wall_thickness_mm=float(segmentation_config.get("body_wall_thickness_mm", 15.0)),
-            hilar_proximity_mm=float(segmentation_config.get("hilar_proximity_mm", 12.0)),
-            extra_arguments=tuple(segmentation_config.get("extra_arguments") or ()),
-        )
-        generated = runner.run(
-            image_path,
-            study_root,
-            device=_device(gpu_id),
-            log=progress,
-        )
-        lungmask_config = dict(segmentation_config.get("lungmask") or {})
-        if lungmask_config.get("enabled", True):
-            try:
-                lungmask = LungMaskRunner(
-                    executable=str(lungmask_config.get("executable") or "lungmask"),
-                    checkpoint=Path(str(lungmask_config.get("checkpoint") or "")).resolve(),
-                    model_name=str(lungmask_config.get("model_name") or "R231"),
-                    force_cpu=bool(lungmask_config.get("force_cpu", False)),
-                )
-                path = study_root / "canonical" / "lung_lungmask.nii.gz"
-                lungmask.run(image_path, path, gpu_id=gpu_id, log=progress)
-                generated["masks"]["lung_lungmask"] = path
-            except Exception as exc:  # noqa: BLE001 - independent QC model may be unavailable
-                generated["errors"]["lungmask"] = f"{type(exc).__name__}: {exc}"
-    else:
+    if backend != "totalsegmentator":
         raise ValueError(f"unknown segmentation backend: {backend}")
+    scratch_value = segmentation_config.get("scratch_dir")
+    runner = TotalSegmentatorRunner(
+        executable=str(segmentation_config.get("executable") or "TotalSegmentator"),
+        repository=Path(str(segmentation_config["repository"])).resolve(),
+        weights_directory=Path(str(segmentation_config["weights_directory"])).resolve(),
+        fast=bool(segmentation_config.get("fast", False)),
+        body_wall_thickness_mm=float(segmentation_config.get("body_wall_thickness_mm", 15.0)),
+        hilar_proximity_mm=float(segmentation_config.get("hilar_proximity_mm", 12.0)),
+        extra_arguments=tuple(segmentation_config.get("extra_arguments") or ()),
+        scratch_directory=Path(str(scratch_value)) if scratch_value else None,
+        resample_threads=int(segmentation_config.get("totalseg_resample_threads", 1)),
+        saving_threads=int(segmentation_config.get("totalseg_saving_threads", 1)),
+        task_timeout_sec=(
+            float(segmentation_config["task_timeout_sec"])
+            if segmentation_config.get("task_timeout_sec") is not None
+            else 3600.0
+        ),
+    )
+    generated = runner.run(
+        image_path,
+        study_root,
+        device=_device(gpu_id),
+        log=progress,
+    )
 
     limits = dict(segmentation_config.get("qc_volume_ml") or {})
-    rows: list[dict[str, Any]] = []
-    for anatomy in ANATOMIES:
-        path = generated["masks"].get(anatomy)
-        task = ANATOMY_TASK[anatomy]
-        item_provenance = dict(generated.get("mask_provenance", {}).get(anatomy) or {})
-        if path is None:
-            task_error = generated["errors"].get(anatomy) or generated["errors"].get(task)
+    qc_cache: dict[str, dict[str, Any]] = {}
+
+    def build_rows(pending: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for anatomy in ANATOMIES:
+            path = generated["masks"].get(anatomy)
+            task = ANATOMY_TASK[anatomy]
+            item_provenance = dict(generated.get("mask_provenance", {}).get(anatomy) or {})
+            if path is None:
+                task_error = (
+                    (pending or {}).get(anatomy)
+                    or generated["errors"].get(anatomy)
+                    or generated["errors"].get(task)
+                )
+                rows.append(
+                    {
+                        "patient_id": patient_id,
+                        "study_id": study_id,
+                        "split": row.get("split"),
+                        "image_path": str(image_path),
+                        "anatomy": anatomy,
+                        "status": "UNAVAILABLE",
+                        "reason": task_error or "source_mask_not_generated",
+                        "mask_path": None,
+                        "source_model": item_provenance.get("source_model", "TotalSegmentator"),
+                        "source_task": json.dumps(item_provenance.get("source_task", task)),
+                        "postprocessing": item_provenance.get("postprocessing"),
+                        "parameters": json.dumps(item_provenance.get("parameters", {}), sort_keys=True),
+                        "is_approximation": item_provenance.get("is_approximation"),
+                        "fallback": item_provenance.get("fallback"),
+                    }
+                )
+                continue
+            if anatomy not in qc_cache:
+                anatomy_limits = dict(limits.get(anatomy) or {})
+                qc_cache[anatomy] = mask_qc(
+                    path,
+                    image_path,
+                    minimum_volume_ml=anatomy_limits.get("minimum"),
+                    maximum_volume_ml=anatomy_limits.get("maximum"),
+                )
+            qc = qc_cache[anatomy]
             rows.append(
                 {
                     "patient_id": patient_id,
@@ -185,57 +298,71 @@ def _process_study(
                     "split": row.get("split"),
                     "image_path": str(image_path),
                     "anatomy": anatomy,
-                    "status": "UNAVAILABLE",
-                    "reason": task_error or "source_mask_not_generated",
-                    "mask_path": None,
-                    "source_model": item_provenance.get("source_model", "TotalSegmentator"),
+                    "status": qc["status"],
+                    "reason": qc["reason"],
+                    "mask_path": str(path),
+                    "source_model": (
+                        "LungMask"
+                        if anatomy == "lung_lungmask"
+                        else item_provenance.get("source_model", "TotalSegmentator")
+                    ),
                     "source_task": json.dumps(item_provenance.get("source_task", task)),
-                    "postprocessing": item_provenance.get("postprocessing"),
+                    "source_classes": json.dumps(item_provenance.get("source_classes", [])),
+                    "postprocessing": item_provenance.get("postprocessing", "binarize(value>0)"),
                     "parameters": json.dumps(item_provenance.get("parameters", {}), sort_keys=True),
-                    "is_approximation": item_provenance.get("is_approximation"),
+                    "is_approximation": bool(item_provenance.get("is_approximation", False)),
                     "fallback": item_provenance.get("fallback"),
+                    "voxel_count": qc.get("voxel_count"),
+                    "volume_ml": qc.get("volume_ml"),
+                    "component_count": qc.get("component_count"),
+                    "z_first": qc.get("z_first"),
+                    "z_last": qc.get("z_last"),
+                    "mask_sha1": qc.get("mask_sha1"),
+                    "shape": json.dumps(qc.get("shape")),
+                    "spacing": json.dumps(qc.get("spacing")),
+                    "orientation": json.dumps(qc.get("orientation")),
+                    "affine": json.dumps(qc.get("affine")),
+                    "provenance": json.dumps(generated["provenance"], sort_keys=True),
                 }
             )
-            continue
-        anatomy_limits = dict(limits.get(anatomy) or {})
-        qc = mask_qc(
-            path,
-            image_path,
-            minimum_volume_ml=anatomy_limits.get("minimum"),
-            maximum_volume_ml=anatomy_limits.get("maximum"),
-        )
-        rows.append(
-            {
-                "patient_id": patient_id,
-                "study_id": study_id,
-                "split": row.get("split"),
-                "image_path": str(image_path),
-                "anatomy": anatomy,
-                "status": qc["status"],
-                "reason": qc["reason"],
-                "mask_path": str(path),
-                "source_model": (
-                    "LungMask"
-                    if anatomy == "lung_lungmask"
-                    else item_provenance.get("source_model", "TotalSegmentator")
-                ),
-                "source_task": json.dumps(item_provenance.get("source_task", task)),
-                "source_classes": json.dumps(item_provenance.get("source_classes", [])),
-                "postprocessing": item_provenance.get("postprocessing", "binarize(value>0)"),
-                "parameters": json.dumps(item_provenance.get("parameters", {}), sort_keys=True),
-                "is_approximation": bool(item_provenance.get("is_approximation", False)),
-                "fallback": item_provenance.get("fallback"),
-                "voxel_count": qc.get("voxel_count"),
-                "volume_ml": qc.get("volume_ml"),
-                "component_count": qc.get("component_count"),
-                "shape": json.dumps(qc.get("shape")),
-                "spacing": json.dumps(qc.get("spacing")),
-                "orientation": json.dumps(qc.get("orientation")),
-                "affine": json.dumps(qc.get("affine")),
-                "provenance": json.dumps(generated["provenance"], sort_keys=True),
-            }
-        )
+        _assign_duplicates(rows)
+        return rows
 
+    lungmask_config = dict(segmentation_config.get("lungmask") or {})
+    lungmask_enabled = bool(lungmask_config.get("enabled", True))
+    if preview:
+        # Written before LungMask so an interrupted study still leaves a reviewable image.
+        early_rows = build_rows(
+            {"lung_lungmask": "pending: LungMask not run yet"} if lungmask_enabled else None
+        )
+        _write_study_preview(
+            early_rows,
+            image_path=image_path,
+            run_dir=run_dir,
+            patient_id=patient_id,
+            study_id=study_id,
+            segmentation_config=segmentation_config,
+            note="LungMask pending" if lungmask_enabled else "",
+            pe_present=pe_present,
+            progress=progress,
+        )
+    if lungmask_enabled:
+        try:
+            lungmask = LungMaskRunner(
+                executable=str(lungmask_config.get("executable") or "lungmask"),
+                checkpoint=Path(str(lungmask_config.get("checkpoint") or "")).resolve(),
+                model_name=str(lungmask_config.get("model_name") or "R231"),
+                force_cpu=bool(lungmask_config.get("force_cpu", False)),
+            )
+            path = study_root / "lung_lungmask.nii.gz"
+            lungmask.run(image_path, path, gpu_id=gpu_id, log=progress)
+            generated["masks"]["lung_lungmask"] = path
+        except Exception as exc:  # noqa: BLE001 - independent QC model may be unavailable
+            generated["errors"]["lungmask"] = f"{type(exc).__name__}: {exc}"
+            if progress:
+                progress(f"mask=lung_lungmask unavailable reason={type(exc).__name__}: {exc}")
+
+    rows = build_rows()
     lookup = {item["anatomy"]: item for item in rows}
     first = lookup["lung"].get("mask_path")
     second = lookup["lung_lungmask"].get("mask_path")
@@ -255,39 +382,19 @@ def _process_study(
                 )
 
     if preview:
-        preview_anatomies = {
-            str(value)
-            for value in segmentation_config.get(
-                "preview_anatomies", ("lung", "strict_heart", "pa_tree")
-            )
-        }
-        preview_slices = int(segmentation_config.get("preview_slices_per_mask", 2))
-        if preview_slices not in {1, 2, 3}:
-            raise ValueError("segmentation.preview_slices_per_mask must be 1, 2, or 3")
-        study_previews = run_dir / "previews" / patient_id / study_id / "segmentation"
+        preview_png = _write_study_preview(
+            rows,
+            image_path=image_path,
+            run_dir=run_dir,
+            patient_id=patient_id,
+            study_id=study_id,
+            segmentation_config=segmentation_config,
+            note="",
+            pe_present=pe_present,
+            progress=progress,
+        )
         for item in rows:
-            if item.get("mask_path") and item["anatomy"] in preview_anatomies:
-                anatomy_name = str(item["anatomy"])
-                preview_paths = write_overlay_previews(
-                    image_path,
-                    Path(str(item["mask_path"])),
-                    study_previews / anatomy_name,
-                    study_id=study_id,
-                    patient_id=patient_id,
-                    anatomy=anatomy_name,
-                    source=str(item["source_model"]),
-                    status=str(item["status"]),
-                    maximum_slices=preview_slices,
-                    voxel_count=int(item.get("voxel_count") or 0),
-                    physical_volume_mm3=(
-                        float(item["volume_ml"]) * 1000.0
-                        if item.get("volume_ml") is not None else None
-                    ),
-                    overlay_color="orange",
-                    window_width=float(segmentation_config.get("preview_window_width", 700.0)),
-                    window_level=float(segmentation_config.get("preview_window_level", 100.0)),
-                )
-                item["preview_paths"] = json.dumps([str(path) for path in preview_paths])
+            item["preview_png"] = preview_png
     atomic_write_json(
         state_path,
         {
@@ -299,9 +406,10 @@ def _process_study(
     )
     if progress:
         available = sum(bool(item.get("mask_path")) for item in rows)
+        empty = sum(bool(item.get("mask_path")) and not int(item.get("voxel_count") or 0) for item in rows)
         progress(
             f"segmentation study={study_id} patient={patient_id} "
-            f"status=completed masks={available}/{len(rows)}"
+            f"status=completed masks={available}/{len(rows)} empty={empty}"
         )
     return rows
 
@@ -370,6 +478,10 @@ def generate_pseudo_anatomy(
                 )
     results.sort(key=lambda item: (str(item["study_id"]), str(item["anatomy"])))
     counts = Counter((str(item["anatomy"]), str(item["status"])) for item in results)
+    partial_studies = sorted({
+        str(item["study_id"]) for item in results
+        if item["anatomy"] != "lung_lungmask" and item["status"] in {"FAIL", "UNAVAILABLE"}
+    })
     cross = [
         float(item["cross_model_dice"])
         for item in results
@@ -386,8 +498,21 @@ def generate_pseudo_anatomy(
             "requested": len(selected),
             "processed": len(selected) - len(failures),
             "failed": len(failures),
+            "partially_failed": len(partial_studies),
+            "partial_failure_study_ids": partial_studies,
         },
         "failures": failures,
+        # Masks that exist but contain no voxel, and voxel-identical mask pairs (study/anatomy).
+        "empty_masks": [
+            f"{item['study_id']}/{item['anatomy']}"
+            for item in results
+            if item.get("mask_path") and not int(item.get("voxel_count") or 0)
+        ],
+        "duplicate_masks": sorted(
+            f"{item['study_id']}/{item['anatomy']}={item['duplicate_of']}"
+            for item in results
+            if item.get("duplicate_of")
+        ),
         "anatomy": {
             name: {status: counts[(name, status)] for status in ("PASS", "SUSPICIOUS", "FAIL", "UNAVAILABLE")}
             for name in ANATOMIES

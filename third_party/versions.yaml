@@ -52,6 +52,35 @@ components:
       CONTRAST_HU_STD is defined but never applied, because _normalize_raw only subtracts
       the mean. PENet cannot consume this project's volumes/*.npy cache (1 channel, 1.5 mm
       isotropic, 128^3), so the zero-shot tool reads the raw release NIfTI instead.
+  radar:
+    status: staged
+    repo_path: third_party/repos/damo-radar
+    repo_url: https://github.com/alibaba-damo-academy/damo-radar.git
+    commit: 0dbf0ece209b77d722588e5e7943014d3db48f7f
+    license: CC BY-NC-SA 4.0 (research, non-commercial)
+    weight_source: https://huggingface.co/radar-generalist (download_scripts/download_checkpoints.py)
+    expected_weight: third_party/repos/damo-radar/ckpt/checkpoint_radar_pretrain.pth
+    checksum_sha256: 5e8b1b50b92162fcafcf8231e51ffbe9d1be2be52ccff4f967e4beb71e4499f4
+    environment: separate conda env from the repo requirements.txt (transformers==4.25, timm==0.4.12)
+    runner: tools/tasks/zeroshot_radar.py -> tools/tasks/zeroshot_radar_worker.py (RADAR env)
+    input_contract:
+      source: RADAR_inference/inference_demo.py
+      orientation: LAS as stored (INSPECT and the demo case); others reoriented to LAS
+      resample_mm: [1.0, 1.0, 5.0]
+      clip_hu: [-300.0, 400.0]
+      normalize: per-volume min-max, crop the non-zero box, pad to 96x256x384
+      window: {roi: [96, 256, 384], overlap: 0.25}
+      organ: 肺动脉 (pulmonary artery), located by RADAR's own 36-organ segmentation head
+      score: softmax([negative, positive] similarity / temperature)[positive]
+    note: >-
+      Abdominal-CT generalist with no PE finding among its 146 shipped ones, so the PE arm
+      scores the pulmonary-artery organ token against radar.prompts (configs/runs/01_foundation/
+      radar_zero_shot.yaml). The prompt convention was checked by re-encoding: every shipped
+      negative matches the training default caption "normal." (cosine 0.98), and shipped
+      positives are unnormalised means of unit sentence embeddings (norm ~0.77). The checkpoint
+      loads with only BERT's masked-LM head (cls.predictions, unused for embeddings) missing.
+      Smoke check on smoke_30: RADAR segments the main and left pulmonary artery on CTPA; a
+      chest-abdomen-pelvis series without a pulmonary artery in view is skipped, not scored.
   ct_clip:
     status: repo_ready_weight_missing_adapter_pending
     repo_path: third_party/repos/CT-CLIP
@@ -123,7 +152,10 @@ components:
     auto_model_class: AutoModelForImageTextToText
     tokenizer_class: AutoTokenizer
     weight_files: [model-00001-of-00002.safetensors, model-00002-of-00002.safetensors]
-    checksum_sha256: null
+    shard_sha256:
+      model-00001-of-00002.safetensors: 5e4c75b0ef1fb009caee567ab244f9e354e915fda748d1b76179cc453a39b4b5
+      model-00002-of-00002.safetensors: 958e39df78c35ddb812fbcb8b5e7f46e07f1b153c1589f2d3f0b41c3b0748d30
     note: >-
-      Gated Health AI Developer Foundations licence. Per-shard SHA-256 is unrecorded.
-      transformers>=4.57 is required for the gemma3 model type declared in config.json.
+      Gated Health AI Developer Foundations licence. Both shard hashes match the pinned
+      Hugging Face download metadata. transformers>=4.57
+      is required for the gemma3 model type declared in config.json.

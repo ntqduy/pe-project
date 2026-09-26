@@ -206,7 +206,8 @@ Ba native labels chính xác:
 
 Missing/censored để trống và mask loss. Mỗi binary head dùng BCE-with-logits; multitask tổng
 loss theo weight cấu hình. Hiện chưa áp class weight mặc định. Fine-tuning downstream mặc
-định LoRA (`attn`, `projection`, rank 8, alpha 16, dropout 0.05); optimizer chỉ nhận
+định LoRA (`attn`, `projection`, rank 8, alpha 16, dropout 0.05; CT-FM dùng LoRA conv trên
+`layers.3.blocks`/`layers.4.blocks` khai báo trong registry); optimizer chỉ nhận
 trainable parameters.
 
 Diagnosis matrix tối thiểu:

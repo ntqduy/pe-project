@@ -144,6 +144,15 @@ class ProjectPaths:
                 return resolved_root
         return self.dataset_root(str(data.get("mode") or "full"), data.get("profile"))
 
+    def dataset_cache_root(self, profile: str) -> Path:
+        """Persistent CT/clinical cache, separate from the small label dataset."""
+        if self.derived_root is None:
+            raise PathConfigurationError("dataset cache requires PE_DERIVED_ROOT")
+        name = str(profile).strip()
+        if not name or name in {".", ".."} or Path(name).name != name:
+            raise PathConfigurationError(f"invalid dataset profile: {profile!r}")
+        return self.derived_root / "cache" / name
+
     def code_asset(self, value: Any) -> Path | None:
         """Resolve a repository-local model/config asset independently of the shell CWD."""
         if value is None or str(value).strip() == "":

@@ -107,21 +107,25 @@ def matched_random_control(
             continue
         sampled.append(offset)
 
+    # A translated ROI is valid iff every shifted voxel lies in ``candidate`` (= inside the
+    # body and outside the dilated exclusion), which is exactly the old three whole-volume
+    # checks. Testing only the ROI's own voxels avoids building a 512x512xZ array per
+    # attempt; a small spread subset is tried first so most rejections are cheap.
     tested = 0
-    control: np.ndarray | None = None
     chosen_offset: tuple[int, int, int] | None = None
+    probe = coordinates[:: max(1, len(coordinates) // 2048)]
     for offset in sampled:
         tested += 1
-        proposal = _translated(target_binary, offset)
-        if np.any(proposal & ~body_binary) or np.any(proposal & excluded):
+        shift = np.asarray(offset, dtype=int)
+        if not candidate[tuple((probe + shift).T)].all():
             continue
-        if not np.all(proposal <= candidate):
+        if not candidate[tuple((coordinates + shift).T)].all():
             continue
-        control = proposal
         chosen_offset = offset
         break
-    if control is None or chosen_offset is None:
+    if chosen_offset is None:
         raise ValueError("no_valid_control_location")
+    control = _translated(target_binary, chosen_offset)
 
     actual_voxels = int(control.sum())
     if require_exact_voxel_match and actual_voxels != target_voxels:

@@ -7,9 +7,8 @@
 #   ACTION=preflight bash scripts/run_preprocessing.sh # check paths and contracts only
 #   OVERWRITE=1 bash scripts/run_preprocessing.sh      # rebuild over an existing profile
 #
-# Writes <derived>/datasets/<profile>/: manifests/*.csv, the CT cache volumes/*.npy with
-# geometry and patch sidecars, clinical/* (EHR + sPESI), data_quality.{md,json}, audit/*
-# and dataset.json. It only ever reads the raw release.
+# Writes manifests/*.csv, data_quality.md, dataset.json and logs.txt in the dataset.
+# CT and clinical caches live under <derived>/cache/<profile>/.
 #
 # Runtime for full_inspect is hours, not minutes: every eligible study is header-checked,
 # then resampled, cropped and cached. Rehearse on PROFILE=smoke_30 first.
@@ -31,6 +30,13 @@ case "$ACTION" in
   *) printf 'error: ACTION must be run, dry, preflight, plan or show (got %s)\n' "$ACTION" >&2; exit 2 ;;
 esac
 
+if [[ "$ACTION" == "run" || "$ACTION" == "preflight" ]]; then
+  mountpoint -q "$PE_CLOUD_ROOT" || {
+    printf 'error: output storage is not mounted at %s; refusing to write locally\n' "$PE_CLOUD_ROOT" >&2
+    exit 2
+  }
+fi
+
 # The storage bucket must already be mounted; the helper only supplies default paths.
 RAW_ROOT="${PE_RAW_INSPECT_ROOT:-$PE_CLOUD_ROOT/data/Stanford_INSPECT_dataset}"
 if [[ ! -d "$RAW_ROOT/CT/full" ]]; then
@@ -50,8 +56,8 @@ dataset_complete() {
   local required
   for required in \
     dataset.json \
-    data_quality.json \
-    audit/split_audit.json \
+    data_quality.md \
+    manifests/exclusions.csv \
     manifests/ctpa.csv \
     manifests/diagnosis.csv \
     manifests/prognosis.csv \
@@ -59,6 +65,9 @@ dataset_complete() {
     manifests/prognosis_pe_positive.csv; do
     [[ -s "$DATASET_ROOT/$required" ]] || return 1
   done
+  [[ -d "$DERIVED_ROOT/cache/$PROFILE/volumes" ]] || return 1
+  [[ -f "$DERIVED_ROOT/cache/$PROFILE/clinical/ehr_profiles.json" ]] || return 1
+  [[ -f "$DERIVED_ROOT/cache/$PROFILE/clinical/spesi_status.json" ]] || return 1
   return 0
 }
 
@@ -88,6 +97,9 @@ if [[ "$ACTION" == "run" || "$ACTION" == "preflight" ]]; then
 
   if [[ -d "$DATASET_ROOT" && -n "$(find "$DATASET_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" && -z "${OVERWRITE:-}" ]]; then
     printf 'error: dataset profile exists but is incomplete or was built with a different scope: %s\n' "$DATASET_ROOT" >&2
+    if [[ -d "$DATASET_ROOT/volumes" || -d "$DATASET_ROOT/clinical" || -d "$DATASET_ROOT/ct_fm_frozen" ]]; then
+      printf '       migrate old layout: %s tools/data/migrate_dataset_layout.py --dataset-root %s --apply\n' "$PYTHON" "$DATASET_ROOT" >&2
+    fi
     printf '       inspect/remove only the incomplete profile, or use OVERWRITE=1 to rebuild it\n' >&2
     exit 2
   fi
@@ -100,7 +112,14 @@ declare -a cmd=("$PYTHON" "$PROJECT_ROOT/run.py" "$ACTION" "data.dataset.$PROFIL
 [[ -n "${OVERWRITE:-}" ]] && cmd+=(--overwrite)
 [[ -n "${GPUS:-}" ]] && cmd+=(--gpus "$GPUS")
 
-printf '==> stage 0  [profile=%s action=%s]\n' "$PROFILE" "$ACTION"
-printf '    raw      %s\n' "$RAW_ROOT"
-printf '    derived  %s\n' "${PE_DERIVED_ROOT:-$PE_CLOUD_ROOT/data/derived}/datasets/$PROFILE"
-exec "${cmd[@]}"
+if [[ "$ACTION" == "run" ]]; then
+  mkdir -p "$DATASET_ROOT"
+  {
+    printf '\n==> stage 0  [profile=%s action=%s time=%s]\n' "$PROFILE" "$ACTION" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '    raw      %s\n' "$RAW_ROOT"
+    printf '    derived  %s\n' "$DATASET_ROOT"
+    "${cmd[@]}"
+  } 2>&1 | tee -a "$DATASET_ROOT/logs.txt"
+else
+  exec "${cmd[@]}"
+fi

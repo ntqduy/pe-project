@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -17,12 +18,46 @@ def combine_masks(masks: Iterable[np.ndarray]) -> np.ndarray:
 
 
 def load_nifti(path: str | Path) -> tuple[np.ndarray, Any]:
+    image = load_image(path)
+    return np.asarray(image.dataobj), image
+
+
+def load_image(path: str | Path) -> Any:
+    """Open a NIfTI image without reading its voxels (header, shape and affine only)."""
     try:
         import nibabel as nib
     except ModuleNotFoundError as exc:
         raise RuntimeError("nibabel is required for NIfTI mask processing") from exc
-    image = nib.load(str(path))
-    return np.asarray(image.dataobj), image
+    return nib.load(str(path))
+
+
+def superior_extent(binary: np.ndarray, affine: Any) -> tuple[int, int] | None:
+    """First/last occupied slice on the inferior-superior axis, counted from the inferior end.
+
+    The same convention as the LAS-reoriented previews, so QC rows and preview titles
+    report the same slice numbers whatever the on-disk orientation is.
+    """
+    import nibabel as nib
+
+    mask = np.asarray(binary, dtype=bool)
+    codes = tuple(nib.aff2axcodes(affine))
+    axis = next((index for index, code in enumerate(codes) if code in {"S", "I"}), 2)
+    occupied = np.flatnonzero(mask.any(axis=tuple(index for index in range(3) if index != axis)))
+    if not occupied.size:
+        return None
+    first, last = int(occupied[0]), int(occupied[-1])
+    if codes[axis] == "I":
+        size = mask.shape[axis]
+        first, last = size - 1 - last, size - 1 - first
+    return first, last
+
+
+def mask_digest(binary: np.ndarray) -> str:
+    """Content hash of a binary mask; equal digests mean voxel-identical masks."""
+    mask = np.asarray(binary, dtype=bool)
+    digest = hashlib.sha1(str(mask.shape).encode("ascii"))
+    digest.update(np.packbits(mask, axis=None).tobytes())
+    return digest.hexdigest()
 
 
 def save_binary_mask(mask: np.ndarray, reference: Any, destination: str | Path) -> Path:
@@ -81,7 +116,8 @@ def mask_qc(
         raise RuntimeError("SciPy is required for mask connected-component QC") from exc
     try:
         mask, mask_image = load_nifti(mask_path)
-        _, volume_image = load_nifti(volume_path)
+        # Geometry needs only the header; decompressing the CT for every mask is wasted I/O.
+        volume_image = load_image(volume_path)
     except Exception as exc:  # noqa: BLE001 - unreadable/corrupt images are QC FAIL results
         return {"status": "FAIL", "reason": f"unreadable: {type(exc).__name__}: {exc}"}
     unique = set(np.unique(mask).tolist())
@@ -95,6 +131,7 @@ def mask_qc(
     spacing = tuple(float(value) for value in mask_image.header.get_zooms()[:3])
     volume_ml = float(voxels * np.prod(spacing) / 1000.0)
     components = int(ndimage.label(binary)[1]) if voxels else 0
+    extent = superior_extent(binary, mask_image.affine) if voxels else None
     status = "PASS"
     reasons: list[str] = []
     if voxels == 0:
@@ -113,4 +150,7 @@ def mask_qc(
         "voxel_count": voxels,
         "volume_ml": volume_ml,
         "component_count": components,
+        "z_first": extent[0] if extent else None,
+        "z_last": extent[1] if extent else None,
+        "mask_sha1": mask_digest(binary),
     }

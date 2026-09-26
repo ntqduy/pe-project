@@ -83,6 +83,41 @@ def verify_writable_directory(directory: Path) -> None:
         probe.unlink(missing_ok=True)
 
 
+# Stages trained by tools/tasks/train_task.py and scored by tools/tasks/evaluate.py.
+TASK_TRAINING_STAGES = frozenset({"diagnosis", "prognosis", "contour", "roi_student"})
+
+
+def task_epoch_bundle(config: Mapping[str, Any]) -> str | None:
+    """``epoch_<E>`` of a trained task run, keyed by its configured budget ``training.epochs``.
+
+    Each budget is its own self-contained run folder (resolved_config.yaml, result.json,
+    checkpoint/, ...), so EPOCHS=1 and EPOCHS=30 of one experiment sit side by side and only
+    repeating a budget is an output collision. Test-only, frozen-checkpoint and zero-shot
+    (released PENet) runs never train, so they keep the plain run folder.
+    """
+    experiment = dict(config.get("experiment") or {})
+    task = dict(config.get("task") or {})
+    stage = str(experiment.get("stage") or "")
+    if stage == "ablation":
+        stage = str(task.get("base_stage") or "")
+    if stage not in TASK_TRAINING_STAGES or experiment.get("family") == "remove_roi":
+        return None
+    if task.get("architecture") == "external_zero_shot":
+        return None
+    external = dict(config.get("external_evaluation") or {})
+    if external.get("test_only") or external.get("prohibit_training"):
+        return None
+    return f"epoch_{int((config.get('training') or {}).get('epochs', 1))}"
+
+
+def run_output_id(config: Mapping[str, Any]) -> str:
+    """Output identifier of one run: ``<id>``, or ``<id>/epoch_<E>`` for a trained task."""
+    experiment = dict(config.get("experiment") or {})
+    output_id = str(experiment.get("output_id") or experiment.get("id") or "")
+    bundle = task_epoch_bundle(config)
+    return f"{output_id}/{bundle}" if bundle else output_id
+
+
 class OutputManager:
     def __init__(self, paths: ProjectPaths):
         self.paths = paths

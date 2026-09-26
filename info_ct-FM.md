@@ -99,51 +99,98 @@ Use preflight without starting a long build:
 PROFILE=full_inspect ACTION=preflight bash scripts/run_preprocessing.sh
 ```
 
-## 3. CT-FM-specific cache and QC
+## 3. CT-FM feature cache and QC
 
-The task does not feed raw NIfTI directly to CT-FM. The existing official-split manifests
-are adapted into a CT-FM cache by:
-
-```text
-tools/data/build_ctfm_cache.py
-```
-
-The cache contract currently records:
+The frozen CT-FM runs do not feed raw NIfTI or a squeezed volume to CT-FM during training.
+`tools/data/build_ctfm_cache.py` applies the public CT-FM weights (SHA-256 checked) **once
+per study**, at the upstream feature-extraction contract
+(`third_party/repos/CT-FM/scripts/feature_extractor.py`):
 
 ```text
 orientation       SPL
-resample spacing  [3.0, 1.0, 1.0] mm
-HU clipping       [-1024, 2048]
-normalization     minmax
-target shape      [24, 128, 128]
-dtype             float32
+resample spacing  [3.0, 1.0, 1.0] mm (trilinear)
+HU clipping       [-1024, 2048] -> [0, 1]
+body crop         largest > 0 HU component
+canvas            120 x 384 x 384 voxels = 360 x 384 x 384 mm (centre crop / air pad)
+patches           non-overlapping 24 x 128 x 128 (5 x 3 x 3 = 45 per study)
+stored tensor     float16 [513, 10, 24, 24]: 512 deepest CT-FM channels stitched from all
+                  patches + 1 channel = fraction of each cell inside the body box
 ```
 
-The cache builder reads all existing source manifests, preprocesses each study, then calls
-`validate_cache_entry()` before including the study in a CT-FM manifest. A failed volume is
-not reassigned to another split. It is recorded and excluded from the CT-FM-derived manifest.
+The previous cache squeezed the whole chest into one 24 x 128 x 128 tensor, i.e. ~12 x 1.9 x
+2.6 mm voxels instead of the 3 x 1 x 1 mm CT-FM was pretrained on. Training reads the
+cached tensors through `model.backbone=ct_fm_features`: the encoder only splits them. Its
+`global_embedding` is the mean over cells inside the body (padding excluded), and
+`extract_anatomy_features` uses it as the global branch, so canvas padding never enters the
+model. Every pooled branch is then z-scored per channel with a centre/scale fit on the train
+split and stored in the checkpoint (`organ_adapter.standardize_inputs`, see
+`docs/05_diagnosis_training.md` "CT-FM frozen: pooling và chuẩn hoá feature"). ROI masks
+for the anatomy arms are put on the same feature grid by world coordinates (fraction of
+each cell covered). Consequences: CT-FM stays frozen (no fine-tuning/LoRA of CT-FM) and
+image-space ROI counterfactuals are refused for these runs (§3.1 covers the runs that need them). Previews rebuild the CT canvas
+from the raw NIfTI for the five preview patients.
 
-The CT-QC artifacts are deliberately separate from diagnosis/prognosis clinical metrics:
+A failed study is not reassigned to another split; it is recorded and dropped from the
+CT-FM manifests only. The builder is resumable: studies whose features match the current
+contract (fingerprint of spec + implementation + weight checksum) are reused.
 
 ```text
-derived/datasets/<PROFILE>/ct_fm_frozen/
-├── manifests/
-├── volumes/
-├── dataset.json                    # CT contract and aggregate QC
-├── preprocessing_failures.csv      # study-level preprocessing/validation failures
-└── dropped_rows.csv                # source rows excluded because their CT failed
+derived/datasets/<PROFILE>/manifests/ct_fm/      diagnosis / prognosis*.csv + README.txt:
+                                                 the base manifests with image_path ->
+                                                 the study's feature file (failed rows dropped)
+derived/cache/<PROFILE>/ct_fm/
+├── features/<study_id>.npy (+ .metadata.json)   tensor + spec, canvas geometry, feature-grid affine
+├── aligned_masks/                                ROI masks on the feature grid (built on first use)
+├── dataset.json                                  contract and aggregate QC
+├── preprocessing_failures.csv                    only when studies fail
+└── dropped_rows.csv                              only when rows are dropped
 ```
 
-`ct_fm_frozen/dataset.json` contains cache coverage, failure/drop counts, output shape and
-spacing distributions, dtype counts, crop-fraction summary, and the preprocessing
-fingerprint. These are preprocessing QC, not task performance metrics.
+`dataset.json` holds cache coverage, failure/drop counts, tensor shapes, how many studies
+were centre-cropped to the canvas and the body-coverage summary. These are preprocessing
+QC, not task performance metrics.
 
-To force regeneration after changing the cache implementation:
+Studies whose contract fingerprint changed are recomputed automatically. To force every
+study to be recomputed anyway (`OVERWRITE=1` only replaces the run's outputs, not the cache):
 
 ```bash
-PROFILE=smoke_30 OVERWRITE=1 ACTION=prepare \
+PROFILE=smoke_30 REBUILD_CACHE=1 ACTION=prepare \
   bash scripts/run_ctfm_diagnosis.sh
 ```
+
+### 3.1 Image-space CT-FM (`model.backbone=ct_fm`)
+
+The fine-tuned runs (LoRA diagnosis/prognosis matrices, ROI students, counterfactuals, DAPT,
+alignment) need CT-FM to see an image, so they cannot use the feature cache. They read the
+shared volume cache (`cache/<PROFILE>/volumes`, 128^3, RAS, [-1000, 1000] HU min-max) and the
+encoder converts each batch to the CT-FM contract before the first convolution
+(`source/components/encoders/image/ct_fm.py`, `factory_kwargs.input_orientation` /
+`input_hu_range` in `configs/components/backbones.yaml`):
+
+```text
+orientation   RAS [x, y, z] -> SPL [z, -y, -x] (checked equal to nibabel reorientation);
+              every pyramid level is turned back to RAS, so ROI masks still line up
+intensity     v -> (2000 v - 1000 + 1024) / 3072, i.e. CT-FM's [-1024, 2048] scaling;
+              HU above 1000 was clipped by the cache and cannot be recovered
+spacing       NOT converted: ~2.4 x 2.4 x 2.0 mm instead of 3 x 1 x 1 mm
+```
+
+The dataset checks every volume's sidecar (`orientation`, `hu_range`, `normalization`)
+against these values and stops on a mismatch; `preprocessing.window` is refused for these
+runs because it would rescale intensities the encoder already converts. The weights still
+load strictly (161/161 tensors): the conversion adds no parameters.
+
+LoRA: SegResEncoder has only convolutions, so `peft.target_modules` (`attn`, `projection`,
+transformer names) matches nothing. The registry entry sets
+`lora_target_modules: [layers.3.blocks, layers.4.blocks]`, which takes precedence: 16 Conv3d
+layers get a rank-8 conv update (same kernel/stride as the frozen conv, 1x1 back, zero
+init), 1.38 M trainable parameters. `peft_report` records `target_source: backbone`.
+
+Feeding these runs at the true 3 x 1 x 1 mm contract would need a second image cache and
+sliding-window training. Measured on the L4 (bf16, 45 patches of 24 x 128 x 128 per study):
+0.42 s/study per epoch for LoRA forward+backward versus 0.06 s/study for the current 128^3
+input (~7x), plus a 120 x 384 x 384 int16 volume per study (35 MB, ~0.8 TB for 23,248
+studies, versus 8 MB now). Not implemented.
 
 ## 4. Diagnosis: CT-FM frozen + MLP
 
@@ -228,7 +275,7 @@ target         pe_present
 The official split is read from:
 
 ```text
-ct_fm_frozen/manifests/diagnosis.csv
+manifests/ct_fm/diagnosis.csv
 ```
 
 Training uses the train and validation portions only. Test is not used for optimization,
@@ -322,27 +369,28 @@ outputs/<family>/<RUN_ID>/epoch_<epochs_run>/
 ├── checkpoint/
 │   ├── best.ckpt                 # validation-selected checkpoint
 │   └── last.ckpt                 # state ở epoch cuối, kể cả khi early stopping
-├── logs.txt                      # terminal stream của wrapper + run log
-├── result.csv                   # một dòng train, validation, test cho mỗi target
-├── training_curves.pdf           # train/val loss và train/val AUROC
+├── logs.txt                      # log terminal: train rồi evaluate (ghi nối tiếp)
+├── result.csv                    # metric từng split (train, validation, test) cho mỗi target
+├── predictions.csv               # y_true / y_prob / y_pred từng ca, mọi split
+├── training_curves.png           # loss + AUROC train/val theo epoch, vạch best.ckpt
 └── preview/
-    ├── *_axial_feature_activation.png   # mean absolute activation, axial middle slice
-    ├── *_axial_gradcam.png              # target-specific axial heatmap
-    ├── *_coronal_feature_activation.png # mean absolute activation, vertical coronal slice
-    ├── *_coronal_gradcam.png            # target-specific vertical coronal heatmap
-    ├── README.txt                       # preview contract và lỗi từng sample nếu có
-    └── summary.json              # số sample đã ghi và số lỗi
+    ├── NN_<patient>_<study>_<TP|TN|FP|FN>.html  # viewer Grad-CAM: mọi slice input, CT | CT + CAM
+    └── NN_<patient>_<study>_<TP|TN|FP|FN>.png   # header + montage 8 slice CAM cao nhất
 ```
 
 Root chỉ giữ `resolved_config.yaml` và `result.json`; các bản sao checkpoint, log, metrics,
-environment và file QC trung gian được dọn sau khi run hoàn tất. Với CT-FM frozen, nếu
-gradient backbone không khả dụng thì ảnh Grad-CAM dùng tên
-`*_axial_feature_activation_max.png` và `*_coronal_feature_activation_max.png`.
+environment và file QC trung gian được dọn sau khi run hoàn tất. Preview dựng lại canvas CT
+120×384×384 (3×1×1 mm, SPL) từ NIfTI gốc theo sidecar feature, hiển thị phía trước ở trên, trái
+bệnh nhân bên phải ảnh, và vẽ Grad-CAM của logit target chính tại feature map CT-FM
+512×10×24×24 (mỗi ô 36×16×16 mm). CAM được chuẩn hóa một lần cho cả volume; slice gốc NIfTI
+được tính theo chuỗi preprocessing. Nếu không có gradient hoặc CAM toàn 0/NaN, preview ghi rõ
+và không vẽ heatmap, không thay bằng feature activation.
 
 Preview mặc định lấy 5 patient đầu tiên của validation manifest để kiểm tra định tính;
 không dùng test để tạo heatmap và không làm thay đổi split. Với model prognosis chỉ có
-clinical branch, preview sẽ được đánh dấu `skipped`; CT-FM image branch thì có cả activation
-map và Grad-CAM theo target chính.
+clinical branch, preview sẽ được đánh dấu `skipped`. Cách đọc, kiểm tra căn chỉnh và giới hạn:
+`docs/05_diagnosis_training.md`, mục "Preview Grad-CAM"; tạo lại preview cho run đã evaluate:
+`python tools/tasks/gradcam_preview.py --run-dir <run>`.
 
 ## 7. Task metrics, CI, and patient bootstrap
 
@@ -387,32 +435,37 @@ outputs/prognosis/<RUN_ID>/
     ├── checkpoint/{best.ckpt,last.ckpt}
     ├── logs.txt
     ├── result.csv
-    ├── training_curves.pdf
+    ├── predictions.csv
+    ├── training_curves.png
     └── preview/
 ```
 
-`epoch_<epochs_run>/result.csv` là bảng wide-format; mỗi dòng là một split/target:
+`epoch_<epochs_run>/result.csv` có một dòng cho mỗi (target, split), cùng cột cho mọi run
+(kể cả zero-shot PENet) để ghép và so sánh; mô tả cột, `threshold`, `threshold_rule` và cột
+`note` nằm trong `docs/09_output_reference.md`:
 
 ```text
 split=train                    point metrics, không bootstrap CI
 split=validation               point metrics dùng threshold chọn trên validation
-split=test                     point metrics + patient-bootstrap CI
+split=test                     point metrics + patient-bootstrap CI (AUROC, AUPRC)
 ```
 
-Với prognosis, `final_metric` được ghi cho toàn bộ target có trong config, hiện gồm:
+Với prognosis, `result.csv` có dòng cho toàn bộ target trong config, hiện gồm:
 `1_month_mortality`, `6_month_mortality`, `12_month_mortality`, `1_month_readmission`,
-`6_month_readmission`, `12_month_readmission`, `12_month_PH`. Mỗi dòng giữ `cohort`, `target`,
-`split`, `metric`, `value`, `ci_low`, `ci_high`, `valid_replicates`. Vì vậy hai run
-`prognosis_all_patient.csv` và `prognosis_pe_positive.csv` được phân biệt rõ bằng `cohort` và
-output ID; không gộp bệnh nhân PE vào cohort all-patient.
+`6_month_readmission`, `12_month_readmission`, `12_month_PH`, cộng thêm hai cột
+`calibration_intercept`, `calibration_slope`. Cột `experiment` (output ID) phân biệt hai run
+`prognosis_all_patient.csv` và `prognosis_pe_positive.csv`; `cohort` nằm trong `result.json`.
+Không gộp bệnh nhân PE vào cohort all-patient.
 
-`metrics.json` contains task metrics and their `ci_low`, `ci_high`, and
-`valid_replicates`. It does not contain CT preprocessing QC. CT-QC remains in the separate
-CT-FM cache artifacts described above.
+`result.json` chứa metric của mọi split, `ci_low`, `ci_high`, `valid_replicates` của mọi
+metric, và số ca dương/âm (`<split>_positives`, `<split>_negatives`). Nó không chứa CT
+preprocessing QC; CT-QC nằm trong artifact của CT-FM cache ở trên.
 
-For a one-epoch smoke run, CI can be unavailable when the test subset has fewer than two
-patients or lacks both outcome classes. That is expected for a technical rehearsal; use the
-full official test split for the scientific result.
+Với smoke run (vd. `smoke_30`: train chỉ 1/10 ca PE dương, test 1/10), nhiều ô trong
+`result.csv` sẽ trống và `note` ghi lý do (1 lớp, <2 bệnh nhân, không có dự đoán âm, ...).
+Đó là giới hạn của dữ liệu smoke, không phải lỗi tính toán; dùng official test split đầy đủ
+cho kết quả khoa học. Calibration slope/intercept chỉ được tính khi mỗi lớp có ít nhất
+`evaluation.calibration_min_events` (mặc định 10) ca và hai lớp không bị tách hoàn toàn.
 
 ## 8. Recommended order before the full experiment
 

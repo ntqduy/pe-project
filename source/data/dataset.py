@@ -18,6 +18,17 @@ class VolumeLoadError(RuntimeError):
     pass
 
 
+def _contract_value_matches(found: Any, expected: Any) -> bool:
+    if isinstance(expected, (list, tuple)):
+        if not isinstance(found, (list, tuple)) or len(found) != len(expected):
+            return False
+        try:
+            return all(math.isclose(float(a), float(b)) for a, b in zip(found, expected, strict=True))
+        except (TypeError, ValueError):
+            return False
+    return str(found).strip().upper() == str(expected).strip().upper()
+
+
 def load_volume(path: Path) -> Tensor:
     suffixes = "".join(path.suffixes).lower()
     if suffixes.endswith((".pt", ".pth")):
@@ -100,8 +111,13 @@ class CTPADataset(Dataset[dict[str, Any]]):
         silver_path: str | Path | None = None,
         silver_targets: Sequence[str] = (),
         drop_rows_without_labels: bool = False,
+        input_contract: Mapping[str, Any] | None = None,
+        preload: bool = False,
     ):
         self.manifest = Path(manifest)
+        # Sidecar fields every input volume must match (e.g. orientation / hu_range for an
+        # encoder that converts the cache to its own pre-training contract).
+        self.input_contract = dict(input_contract or {})
         self.data_root = Path(data_root)
         self.label_columns = tuple(label_columns)
         source_rows = [row for row in read_rows(self.manifest) if str(row.get("split")) == split]
@@ -195,6 +211,39 @@ class CTPADataset(Dataset[dict[str, Any]]):
                             "configure an explicit report-selection step before training"
                         )
                     self.silver_lookup[key] = numeric
+        # data.preload_inputs: small per-study inputs (pooled CT-FM features, ~2 KB) are read
+        # once and kept in RAM; DataLoader workers fork afterwards and inherit them instead of
+        # re-reading every file from the bucket each epoch.
+        self.memory: dict[str, Tensor] = {}
+        self.preload_report: dict[str, Any] = {"enabled": False}
+        if preload:
+            self.preload_report = self.preload_inputs()
+
+    def preload_inputs(self, threads: int = 16, max_fraction_of_free_ram: float = 0.25) -> dict[str, Any]:
+        """Load every row's input tensor into ``self.memory``; skipped when it would not fit."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        from source.utils.workers import available_memory_gb
+
+        paths = list(dict.fromkeys(str(self._resolve(row[self.image_column])) for row in self.rows))
+        if not paths:
+            return {"enabled": True, "loaded": 0}
+        first = load_volume(Path(paths[0]))
+        estimate_gb = first.numel() * first.element_size() * len(paths) / 1024**3
+        free = available_memory_gb()
+        if free is not None and estimate_gb > max_fraction_of_free_ram * free:
+            return {
+                "enabled": True,
+                "loaded": 0,
+                "skipped": f"{len(paths)} inputs ~{estimate_gb:.1f} GB exceed "
+                           f"{max_fraction_of_free_ram:.0%} of {free:.1f} GB free RAM; read per item",
+            }
+        # Reading from gcsfuse is latency-bound, so threads rather than processes.
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            for path, volume in zip(paths[1:], pool.map(lambda path: load_volume(Path(path)), paths[1:])):
+                self.memory[path] = volume
+        self.memory[paths[0]] = first
+        return {"enabled": True, "loaded": len(self.memory), "estimated_gb": round(estimate_gb, 4)}
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -203,10 +252,79 @@ class CTPADataset(Dataset[dict[str, Any]]):
         path = Path(str(raw))
         return path if path.is_absolute() else self.data_root / path
 
+    def _grid_for(self, image_path: Path) -> Any:
+        """Grid of a cached model input from its sidecar (None for raw inputs)."""
+        from source.imaging.grid import model_grid, read_sidecar
+
+        cache = self.__dict__.setdefault("_grid_cache", {})
+        key = str(image_path)
+        if key not in cache:
+            cache[key] = model_grid(read_sidecar(image_path))
+        return cache[key]
+
+    def _check_input_contract(self, image_path: Path) -> None:
+        if not self.input_contract:
+            return
+        checked = self.__dict__.setdefault("_contract_checked", set())
+        key = str(image_path)
+        if key in checked:
+            return
+        from source.imaging.grid import read_sidecar
+
+        metadata = read_sidecar(image_path)
+        if metadata is None:
+            raise VolumeLoadError(
+                f"{image_path} has no cache sidecar; the encoder needs inputs with "
+                f"{self.input_contract} (build them with the shared volume cache)"
+            )
+        mismatched = {
+            field: (metadata.get(field), expected)
+            for field, expected in self.input_contract.items()
+            if not _contract_value_matches(metadata.get(field), expected)
+        }
+        if mismatched:
+            details = ", ".join(f"{field}={found!r} (expected {expected!r})" for field, (found, expected) in mismatched.items())
+            raise VolumeLoadError(f"{image_path} does not match the encoder input contract: {details}")
+        checked.add(key)
+
+    def _load_mask(self, mask_path: Path, image_path: Path, volume: Tensor) -> Tensor:
+        """A region mask on the same voxel grid as ``volume``.
+
+        Masks are stored in the original CT geometry while cached inputs are reoriented,
+        resampled and cropped; interpolating one onto the other by array shape alone would
+        misplace every region. When the input's sidecar describes its grid, the mask is
+        mapped by world coordinates (cached once on disk next to the input cache).
+        """
+        grid = self._grid_for(image_path) if "".join(mask_path.suffixes).lower().endswith((".nii", ".nii.gz")) else None
+        if grid is not None:
+            from source.imaging.grid import aligned_mask
+
+            array = aligned_mask(mask_path, grid, image_path.parent.parent / "aligned_masks")
+            mask = torch.from_numpy(array).float()
+        else:
+            mask = load_volume(mask_path)
+        mask = mask.unsqueeze(0) if mask.ndim == 3 else mask
+        if tuple(mask.shape[-3:]) != tuple(volume.shape[-3:]) and not self.__dict__.get("_mask_warned"):
+            import warnings
+
+            self.__dict__["_mask_warned"] = True
+            warnings.warn(
+                f"mask {mask_path.name} shape {tuple(mask.shape[-3:])} differs from the input grid "
+                f"{tuple(volume.shape[-3:])} and no sidecar grid is available; it will only be "
+                "resized by array shape",
+                stacklevel=2,
+            )
+        return mask
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
         image_path = self._resolve(row[self.image_column])
-        volume = load_volume(image_path)
+        self._check_input_contract(image_path)
+        cached = self.memory.get(str(image_path)) if self.memory else None
+        if cached is None:
+            volume = load_volume(image_path)
+        else:
+            volume = cached.clone() if self.transform else cached   # never let a transform edit the cache
         if volume.ndim == 3:
             volume = volume.unsqueeze(0)
         if volume.ndim != 4:
@@ -215,14 +333,12 @@ class CTPADataset(Dataset[dict[str, Any]]):
             volume = self.transform(volume)
         masks: dict[str, Tensor] = {}
         for region, column in self.mask_columns.items():
-            mask = load_volume(self._resolve(row[column]))
-            masks[region] = mask.unsqueeze(0) if mask.ndim == 3 else mask
+            masks[region] = self._load_mask(self._resolve(row[column]), image_path, volume)
         for region in self.roi_mask_ids:
             key = (str(row["patient_id"]), str(row["study_id"]), region)
             if key not in self.roi_lookup:
                 raise VolumeLoadError(f"required ROI mask is unavailable: {key}")
-            mask = load_volume(self._resolve(self.roi_lookup[key]))
-            masks[region] = mask.unsqueeze(0) if mask.ndim == 3 else mask
+            masks[region] = self._load_mask(self._resolve(self.roi_lookup[key]), image_path, volume)
         labels = torch.tensor([_float(row, name) for name in self.label_columns], dtype=torch.float32)
         item: dict[str, Any] = {
             "patient_id": str(row["patient_id"]),

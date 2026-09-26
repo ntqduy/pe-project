@@ -20,7 +20,7 @@ from source.data.manifests import (
 )
 from source.data.paths import PathConfigurationError, ProjectPaths
 from source.engine.checkpoint import CheckpointError, inspect_checkpoint
-from source.engine.experiment import OutputManager, verify_writable_directory
+from source.engine.experiment import OutputManager, run_output_id, verify_writable_directory
 
 
 @dataclass(frozen=True)
@@ -686,7 +686,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 payload = json.loads(segmentation_result.read_text(encoding="utf-8"))
                 experiment = dict(payload.get("experiment") or {})
                 valid_stage = experiment.get("stage") == "segmentation"
-                completed = str(experiment.get("status", "")).startswith("completed")
+                completed = experiment.get("status") == "completed"
                 valid = valid_stage and completed
                 detail = f"stage={experiment.get('stage')} status={experiment.get('status')}"
             except (OSError, json.JSONDecodeError, TypeError) as exc:
@@ -905,7 +905,9 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 )
             )
             ehr_profile = str(data_config.get("ehr_profile") or "").strip()
-            profiles_path = paths.dataset_root_for(config) / "clinical" / "ehr_profiles.json"
+            profiles_path = paths.dataset_cache_root(str(data_config.get("profile") or paths.dataset_root_for(config).name)) / "clinical" / "ehr_profiles.json"
+            if not profiles_path.is_file():
+                profiles_path = paths.dataset_root_for(config) / "clinical" / "ehr_profiles.json"
             if not ehr_profile:
                 checks.append(
                     Check(
@@ -994,7 +996,9 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     f"manifest_columns={count} encoder_input_dim={expected}",
                 )
             )
-            status_path = paths.dataset_root_for(config) / "clinical" / "spesi_status.json"
+            status_path = paths.dataset_cache_root(str(data_config.get("profile") or paths.dataset_root_for(config).name)) / "clinical" / "spesi_status.json"
+            if not status_path.is_file():
+                status_path = paths.dataset_root_for(config) / "clinical" / "spesi_status.json"
             try:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
@@ -1223,16 +1227,17 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
     elif paths.output_root is not None:
         experiment = dict(config.get("experiment") or {})
         family = str(experiment.get("family") or experiment.get("stage"))
-        experiment_id = str(
-            (config.get("experiment") or {}).get("output_id")
-            or (config.get("experiment") or {}).get("id")
-            or ""
-        )
+        # A trained task run is keyed per epoch budget (<id>/epoch_<E>), so only repeating
+        # the same training.epochs collides; other budgets of the same experiment coexist.
+        output_id = run_output_id(config)
         try:
             manager = OutputManager(paths)
-            state = manager.inspect_collision(family, experiment_id)
+            state = manager.inspect_collision(family, output_id)
             collision_ok = state is None or bool(config.get("resume")) or bool(config.get("overwrite"))
-            checks.append(Check("OUTPUT", "collision", "PASS" if collision_ok else "FAIL", state or "clear"))
+            detail = "clear" if state is None else f"{state}: {manager.run_dir(family, output_id)}"
+            if not collision_ok:
+                detail += " already exists; pass --overwrite to replace only this run"
+            checks.append(Check("OUTPUT", "collision", "PASS" if collision_ok else "FAIL", detail))
         except (KeyError, ValueError, PathConfigurationError) as exc:
             checks.append(Check("OUTPUT", "collision", "FAIL", str(exc)))
     return PreflightReport(tuple(checks), manifest_payload, source_checkpoint_payload)

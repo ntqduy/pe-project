@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 import time
 import uuid
@@ -14,6 +15,7 @@ from torch import Tensor, nn
 from source.distributed.setup import DistributedContext
 from source.engine.checkpoint import save_checkpoint_atomic
 from source.utils.logger import RunLogger
+from source.utils.progress import PROGRESS_EVERY_SEC, format_duration, with_progress
 
 
 def move_to_device(value: Any, device: torch.device) -> Any:
@@ -72,6 +74,11 @@ class Trainer:
         self.amp_enabled = context.device.type == "cuda" and precision in {"bf16", "fp16"}
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled and precision == "fp16")
         self.logger = RunLogger(run_dir / "logs" / "run.log", echo=context.is_main) if context.is_main else None
+        self._epochs = 0      # set by fit(); only used to label progress lines
+
+    @property
+    def _progress_log(self) -> Callable[[str], None] | None:
+        return self.logger.log if self.logger is not None else None
 
     def _reduce_mean(self, value: float) -> float:
         tensor = torch.tensor(value, device=self.context.device, dtype=torch.float64)
@@ -120,7 +127,11 @@ class Trainer:
         metric_totals: dict[str, float] = {}
         metric_occurrences: dict[str, int] = {}
         self.optimizer.zero_grad(set_to_none=True)
-        for index, batch in enumerate(loader):
+        progress = with_progress(
+            loader, self._progress_log, f"epoch {epoch}/{self._epochs or '?'} train",
+            extra=lambda: f" loss={total / max(batches, 1):.4f}",
+        )
+        for index, batch in enumerate(progress):
             batch = move_to_device(batch, self.context.device)
             with torch.autocast(self.context.device.type, dtype=self.autocast_dtype, enabled=self.amp_enabled):
                 raw_loss, step_metrics = self._unpack_loss(self.loss_step(self.model, batch))
@@ -141,13 +152,13 @@ class Trainer:
         )
 
     @torch.no_grad()
-    def validation_loss(self, loader: Any) -> tuple[float, dict[str, float]]:
+    def validation_loss(self, loader: Any, label: str = "validation") -> tuple[float, dict[str, float]]:
         self.model.eval()
         total = 0.0
         batches = 0
         metric_totals: dict[str, float] = {}
         metric_occurrences: dict[str, int] = {}
-        for batch in loader:
+        for batch in with_progress(loader, self._progress_log, label):
             batch = move_to_device(batch, self.context.device)
             with torch.autocast(self.context.device.type, dtype=self.autocast_dtype, enabled=self.amp_enabled):
                 loss, step_metrics = self._unpack_loss(self.loss_step(self.model, batch))
@@ -173,6 +184,52 @@ class Trainer:
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
 
+    @staticmethod
+    def _epoch_line(
+        epoch: int,
+        epochs: int,
+        row: Mapping[str, Any],
+        epoch_metrics: Mapping[str, Any],
+        improved: bool,
+        metric_fn: Any,
+    ) -> str:
+        """One readable log line per epoch: losses, per-target train/val AUROC, best marker."""
+        line = (
+            f"epoch={epoch}/{epochs} train_loss={float(row['train_loss']):.6f} "
+            f"val_loss={float(row['val_loss']):.6f}"
+        )
+        if metric_fn is not None:
+            # With the default selection the metric is just -val_loss; print it only when custom.
+            line += f" selection_metric={float(row['primary_val_metric']):.6f}"
+        line += f" lr={float(row['lr']):.6g} time_sec={float(row['epoch_time_sec']):.2f}"
+        targets = [
+            name.removeprefix("train_").removesuffix("_auroc")
+            for name in epoch_metrics
+            if name.startswith("train_") and name.endswith("_auroc") and name != "train_auroc"
+        ]
+        if not targets and ("train_auroc" in epoch_metrics or "val_auroc" in epoch_metrics):
+            targets = [""]
+
+        def auroc(value: Any) -> str:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return "nan"
+            return f"{number:.4f}" if math.isfinite(number) else "nan"
+
+        if targets:
+            parts = []
+            for target in targets:
+                prefix = f"_{target}" if target else ""
+                parts.append(
+                    f"{target or 'primary'}={auroc(epoch_metrics.get(f'train{prefix}_auroc'))}"
+                    f"/{auroc(epoch_metrics.get(f'val{prefix}_auroc'))}"
+                )
+            line += " auroc(train/val): " + " ".join(parts)
+        if improved:
+            line += " | saved best.ckpt"
+        return line
+
     def fit(
         self,
         train_loader: Any,
@@ -190,11 +247,14 @@ class Trainer:
         stopped_early = False
         epochs_run = 0
         started = time.perf_counter()
+        self._epochs = int(epochs)
         for epoch in range(1, int(epochs) + 1):
             epochs_run = epoch
             epoch_started = time.perf_counter()
             train_loss, train_metrics = self.train_epoch(train_loader, epoch)
-            val_loss, validation_metrics = self.validation_loss(validation_loader)
+            val_loss, validation_metrics = self.validation_loss(
+                validation_loader, label=f"epoch {epoch}/{int(epochs)} validation"
+            )
             primary = metric_fn(self.model, validation_loader, self.context) if metric_fn else -val_loss
             epoch_metrics = (
                 dict(epoch_metrics_fn(self.model, train_loader, validation_loader, self.context))
@@ -224,20 +284,14 @@ class Trainer:
             history.append(row)
             if self.context.is_main:
                 self._write_history(history)
-                self.logger.log(
-                    f"epoch={epoch} train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
-                    f"primary={primary:.6f} lr={row['lr']:.6g} time_sec={row['epoch_time_sec']:.2f}"
-                    + (
-                        " auc="
-                        + " ".join(
-                            f"{name}={float(value):.4f}"
-                            for name, value in epoch_metrics.items()
-                            if name.endswith("auroc")
-                        )
-                        if any(name.endswith("auroc") for name in epoch_metrics)
-                        else ""
+                self.logger.log(self._epoch_line(epoch, int(epochs), row, epoch_metrics, improved, metric_fn))
+                per_epoch = (time.perf_counter() - started) / epoch
+                if epoch < int(epochs) and per_epoch >= PROGRESS_EVERY_SEC:    # silent on short smoke epochs
+                    self.logger.log(
+                        f"run progress: {epoch}/{int(epochs)} epochs in {format_duration(time.perf_counter() - started)}, "
+                        f"{format_duration(per_epoch)}/epoch, at most ~{format_duration(per_epoch * (int(epochs) - epoch))} "
+                        f"left (early stopping patience {self.early_stopping_patience})"
                     )
-                )
                 if improved:
                     lineage = {**self.lineage, "epoch": epoch, "validation_metric": primary}
                     save_checkpoint_atomic(

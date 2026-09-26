@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -36,7 +37,7 @@ from source.utils.qc import qc_row
 from tools._common import import_symbol, select_patient_rows, write_csv_atomic
 
 # Tracks source/silver/schema.SCHEMA_VERSION so incompatible cached rows are recomputed.
-STATE_SCHEMA_VERSION = 4
+STATE_SCHEMA_VERSION = 5
 
 
 def _provider(
@@ -153,7 +154,44 @@ def _output_rows(
     return label_rows, confidence_rows
 
 
-def _cached_report(path: Path, report_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+def _generator_signature(generator: SilverGenerator) -> dict[str, Any]:
+    """What a cached report was produced with; a change means the report is re-labelled."""
+    def provider_signature(extractor: Any) -> dict[str, Any] | None:
+        if extractor is None:
+            return None
+        model_id = str(extractor.provider.model_id)
+        model_path = Path(model_id)
+        files = []
+        if model_path.is_dir():
+            for pattern in ("config.json", "model.safetensors.index.json", "*.safetensors"):
+                for path in sorted(model_path.glob(pattern)):
+                    stat = path.stat()
+                    files.append((path.name, stat.st_size, stat.st_mtime_ns))
+        return {"model_id": model_id, "retries": extractor.retries, "files": files}
+
+    return {
+        "method": generator.method,
+        "prompt_version": generator.prompt_version,
+        "rule_rescue": generator.rule_rescue,
+        "pe_consistency": generator.pe_consistency,
+        "medgemma_confidence_threshold": generator.medgemma_confidence_threshold,
+        "medgemma": provider_signature(generator.medgemma),
+        "falcon": provider_signature(generator.falcon),
+    }
+
+
+def _report_signature(report: Mapping[str, Any]) -> str:
+    fields = {key: str(report.get(key) or "") for key in
+              ("patient_id", "study_id", "report_id", "report_text", "split")}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _cached_report(
+    path: Path,
+    report_id: str,
+    signature: Mapping[str, Any] | None = None,
+    input_signature: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
     if not path.is_file():
         return None
     try:
@@ -161,6 +199,10 @@ def _cached_report(path: Path, report_id: str) -> tuple[list[dict[str, Any]], li
     except (OSError, json.JSONDecodeError):
         return None
     if payload.get("schema_version") != STATE_SCHEMA_VERSION:
+        return None
+    if signature is not None and payload.get("generator") != dict(signature):
+        return None
+    if input_signature is not None and payload.get("input_signature") != input_signature:
         return None
     rows = payload.get("rows")
     audits = payload.get("audits")
@@ -170,6 +212,11 @@ def _cached_report(path: Path, report_id: str) -> tuple[list[dict[str, Any]], li
         return None
     if any(str(row.get("report_id")) != report_id for row in rows):
         return None
+    # Technical failures may clear on a later run, including rows temporarily rescued
+    # by a deterministic rule; never freeze those answers in the resume cache.
+    if any(row.get("status") == "no_result" or
+           "after_medgemma_failure" in str(row.get("reason") or "") for row in rows):
+        return None
     return [dict(row) for row in rows], [dict(row) for row in audits]
 
 
@@ -177,10 +224,13 @@ def _generate_report(
     generator: SilverGenerator,
     report: Mapping[str, Any],
     run_dir: Path,
+    signature: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     report_id = str(report.get("report_id") or "")
     state_path = _state_path(run_dir, report_id)
-    cached = _cached_report(state_path, report_id)
+    signature = dict(signature) if signature is not None else _generator_signature(generator)
+    input_signature = _report_signature(report)
+    cached = _cached_report(state_path, report_id, signature, input_signature)
     if cached is not None:
         return cached
     labels, audits = generator.generate_report_with_audit(report)
@@ -193,6 +243,8 @@ def _generate_report(
             "report_id": report_id,
             "report_hash": report_hash(report_id),
             "method": generator.method,
+            "generator": signature,
+            "input_signature": input_signature,
             "rows": rows,
             "audits": audit_rows,
         },
@@ -294,7 +346,11 @@ def main() -> int:
             falcon = FalconExtractor(provider, model_id)
         if "medgemma" in stages:
             provider, model_id = _provider(silver_config, "medgemma", paths, local_rank=local_rank)
-            medgemma = MedGemmaExtractor(provider, model_id)
+            medgemma = MedGemmaExtractor(
+                provider,
+                model_id,
+                retries=int((silver_config.get("medgemma") or {}).get("retries", 1)),
+            )
         generator = SilverGenerator(
             method,
             falcon=falcon,
@@ -308,9 +364,19 @@ def main() -> int:
             ),
             prompt_version=str(silver_config.get("prompt_version") or "v1"),
             run_id=f"{experiment_id}_{uuid.uuid4().hex[:12]}",
+            rule_rescue=bool(silver_config.get("rule_rescue", False)),
+            pe_consistency=bool(silver_config.get("pe_consistency", False)),
         )
+        if logger is not None:
+            logger.log(
+                f"reports={len(reports)} targets/report={len(TARGETS)} "
+                f"prompt_version={generator.prompt_version} rule_rescue={generator.rule_rescue} "
+                f"pe_consistency={generator.pe_consistency} "
+                f"medgemma_threshold={generator.medgemma_confidence_threshold}"
+            )
+        generator_signature = _generator_signature(generator)
         local_pairs = [
-            _generate_report(generator, report, run_dir)
+            _generate_report(generator, report, run_dir, generator_signature)
             for report in reports[context.rank :: context.world_size]
         ]
         local_labels = [row for rows, _ in local_pairs for row in rows]

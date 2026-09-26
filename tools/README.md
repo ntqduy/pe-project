@@ -20,7 +20,7 @@ tools/
 ├── build_rois/build_rois.py          ROI1-ROI8 from a stored segmentation run
 ├── silver_labels/generate_silver_labels.py
 ├── pretrain_model/{materialize_foundation,train_dapt,train_alignment,train_silver_encoder}.py
-├── tasks/{train_task,evaluate,counterfactual}.py
+├── tasks/{train_task,evaluate,counterfactual,gradcam_preview}.py
 └── data/{build_dataset,create_split}.py
 ```
 
@@ -126,8 +126,9 @@ masks**. It writes `counterfactual_predictions.parquet`, paired bootstrap metric
 `result.json`. It never calls segmentation and has no optimizer.
 
 `tasks/evaluate.py` also accepts `--patient-id` or `--max-cases` for smoke inference on a real
-checkpoint. Smoke artifacts go to `RUN/smoke/<scope-hash>/` and never overwrite the full
-`predictions.parquet` / `result.json`.
+checkpoint. Smoke artifacts (`result.csv`, `predictions.csv`, `logs.txt`, `result.json`) go to
+`RUN/smoke/<scope-hash>/` and never overwrite the full-test files in `RUN/epoch_<N>/` and
+`RUN/result.json`.
 
 `tasks/evaluate.py --restrict-to <csv>` limits evaluation to one shared list of
 `patient_id[,study_id]`, so every arm of a comparison is scored on identical cases. Stage 0
@@ -138,6 +139,13 @@ clinical baseline -- no model, no training -- with the same threshold rule, metr
 bootstrap and output layout as `evaluate.py`. `--transform` selects `platt` (default,
 calibrated on validation only), `minmax`, or `raw_sigmoid` (INSPECT's choice). Combine it
 with `--restrict-to` when the baseline is not computable for every case.
+
+`tasks/gradcam_preview.py --run-dir <run>` rebuilds `epoch_<N>/preview/` (Grad-CAM `.html`
+viewer + `.png` summary per study) for an already evaluated diagnosis/prognosis run. It reads the
+run's `resolved_config.yaml`, `best.ckpt`, the validation threshold stored in `result.json` (never
+re-selected) and the validation probabilities in `predictions.csv`; `--output` writes elsewhere,
+`--method gradcam` switches from the default element-wise form to classic Grad-CAM. Source the
+storage roots first (`source scripts/use_gcs_storage.sh`). Details: `docs/05_diagnosis_training.md`.
 
 ROI students and distilled students use `tasks/train_task.py`. A KD run additionally writes
 `distillation_validation_predictions.parquet` with teacher and student logits and the GT / KD /

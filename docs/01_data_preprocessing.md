@@ -8,20 +8,24 @@ Tạo một dataset profile thống nhất cho mọi stage downstream. Code chí
 
 1. Đọc dữ liệu INSPECT read-only từ `raw_inspect`.
 2. Join study/patient/split và giữ official split.
-3. Loại patient trong governance exclusion registry.
-4. Lọc eligibility: thiếu file, acquisition không hợp lệ.
-5. Kiểm tra CT integrity: file đọc được, số lát tối thiểu, QC volume.
-6. Adjudicate label ở cấp patient.
-7. Sampling theo patient nếu profile yêu cầu.
+3. Nếu profile bật `sampling.before_eligibility`, lấy mẫu patient theo seed từ metadata/nhãn ứng viên.
+4. Loại patient trong governance exclusion registry.
+5. Lọc eligibility: thiếu file, acquisition không hợp lệ.
+6. Kiểm tra CT integrity: file đọc được, số lát tối thiểu, QC volume.
+7. Adjudicate label ở cấp patient; profile lấy mẫu sau eligibility sẽ sampling tại đây.
 8. Kiểm tra leakage và giữ lại toàn bộ study của patient được chọn.
 9. Nếu bật preprocessing: chuẩn hóa CT và ghi cache volume.
 10. Tạo manifest, clinical artifacts, audit và provenance.
 
+Riêng `smoke_30` lấy 30 candidate (10 mỗi official split) trước eligibility và integrity để
+tránh quét CT toàn cohort; vì vậy dataset cuối có thể ít hơn 30 patient. `test_500_sample`
+vẫn lấy 500 patient sau eligibility để giữ định nghĩa cohort rehearsal hiện tại.
+
 ## Input/output
 
 - Input: `${PE_RAW_INSPECT_ROOT}/CT/{full,sample}` hoặc `paths.raw_inspect`.
-- Output: `${PE_DERIVED_ROOT}/datasets/<profile>/`.
-- File quan trọng: `manifests/ctpa.csv`, `diagnosis.csv`, `prognosis.csv`, `paired_reports.csv`, `clinical/*`, `audit/*`, `data_quality.md/json`, `dataset.json`.
+- Output: `${PE_DERIVED_ROOT}/datasets/<profile>/` (cache CT/EHR: `${PE_DERIVED_ROOT}/cache/<profile>/`).
+- File quan trọng: `manifests/*.csv` (ID, split, nhãn theo task), `manifests/exclusions.csv` (ID bị loại), `data_quality.md` (số missing theo task), `dataset.json` và `logs.txt`.
 
 ## Chạy
 

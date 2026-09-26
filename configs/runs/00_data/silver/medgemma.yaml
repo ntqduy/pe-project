@@ -1,4 +1,4 @@
-# data.silver.medgemma — MedGemma only, no rules.
+# data.silver.medgemma — MedGemma first, with explicit rule rescue.
 #
 # Question: what report-derived supervision can a single medical LLM extract?
 # Text-only: the report string is the sole input; no CT volume reaches MedGemma.
@@ -22,6 +22,7 @@ experiment:
   name: data.silver.medgemma
   stage: silver
   family: silver
+  variant_stamp: false
 data:
   mode: full
 seed: 42

@@ -4,6 +4,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +13,8 @@ from typing import Any
 
 import numpy as np
 
-from source.imaging.nifti import combine_masks, load_nifti, same_geometry, save_binary_mask
+from source.imaging.morphology import boundary_shell, physical_dilation
+from source.imaging.nifti import combine_masks, load_image, load_nifti, same_geometry, save_binary_mask
 
 
 class SegmentationIntegrationError(RuntimeError):
@@ -39,6 +42,25 @@ TASK_CLASSES = {
     "lung_vessels": ("lung_airways", "lung_arteries", "lung_veins"),
     "body": ("body_trunc", "body_extremities"),
 }
+# The five lobes come out of the same ``total`` run that builds ``lung``. They are kept, with
+# both lungs, because radiology reports localize a PE by side and lobe (INSPECT impressions:
+# side in ~88%, lobe in ~62% of PE-positive reports).
+LUNG_LOBES = tuple(name for name in TASK_CLASSES["total"] if name.startswith("lung_"))
+LUNG_SIDES = {
+    "lung_left": tuple(name for name in LUNG_LOBES if name.endswith("_left")),
+    "lung_right": tuple(name for name in LUNG_LOBES if name.endswith("_right")),
+}
+# Directories written by the previous output layout inside masks/<patient>/<study>/.
+# ``tasks`` held raw TotalSegmentator output, ``canonical`` the project masks.
+LEGACY_STUDY_DIRECTORIES = ("tasks", "canonical")
+# Dataset IDs from the pinned TotalSegmentator map_tasks_config.py. Check the actual
+# nnU-Net checkpoint tree before running, so an empty directory cannot trigger downloads.
+TASK_WEIGHT_IDS = {
+    "trunk_cavities": (343,),
+    "heartchambers_highres": (301,),
+    "lung_vessels": (117,),
+    "body": (299,),
+}
 
 
 @dataclass(frozen=True)
@@ -50,6 +72,16 @@ class TotalSegmentatorRunner:
     body_wall_thickness_mm: float = 15.0
     hilar_proximity_mm: float = 12.0
     extra_arguments: tuple[str, ...] = ()
+    # Raw per-task TotalSegmentator output is an intermediate. It is written to a local
+    # temporary directory (system temp when None) and deleted after the masks are built,
+    # so it never reaches the persistent output tree.
+    scratch_directory: Path | None = None
+    # TotalSegmentator defaults to 6 saving processes of several GB each; on a 16 GB VM the
+    # kernel OOM-kills them and nnU-Net then waits forever for the dead workers.
+    resample_threads: int = 1
+    saving_threads: int = 1
+    # A task that exceeds this is killed (with its worker processes) and recorded as failed.
+    task_timeout_sec: float | None = 3600.0
 
     def verify(self) -> str:
         resolved = shutil.which(self.executable)
@@ -66,7 +98,30 @@ class TotalSegmentatorRunner:
             raise SegmentationIntegrationError(
                 f"TotalSegmentator weights directory is unavailable: {self.weights_directory}"
             )
+        self._verify_weights()
         return resolved
+
+    def _verify_weights(self) -> None:
+        assert self.weights_directory is not None
+        required = {**TASK_WEIGHT_IDS, "total": (297,) if self.fast else (291, 292, 293, 294, 295)}
+        missing = []
+        for task, dataset_ids in required.items():
+            for dataset_id in dataset_ids:
+                candidates = self.weights_directory.glob(f"Dataset{dataset_id}_*")
+                complete = any(
+                    (model_dir / "plans.json").is_file()
+                    and (model_dir / "dataset.json").is_file()
+                    and (model_dir / "fold_0" / "checkpoint_final.pth").is_file()
+                    and (model_dir / "fold_0" / "checkpoint_final.pth").stat().st_size > 1_000_000
+                    for dataset_dir in candidates if dataset_dir.is_dir()
+                    for model_dir in dataset_dir.iterdir() if model_dir.is_dir()
+                )
+                if not complete:
+                    missing.append(f"{task}:Dataset{dataset_id}")
+        if missing:
+            raise SegmentationIntegrationError(
+                "TotalSegmentator weights are incomplete: " + ", ".join(missing)
+            )
 
     def _verify_registry(self) -> None:
         if self.repository is None or not self.repository.is_dir():
@@ -100,6 +155,10 @@ class TotalSegmentatorRunner:
             "--report",
             str(output_directory / "run_report.json"),
             "--quiet",
+            "--nr_thr_resamp",
+            str(max(1, int(self.resample_threads))),
+            "--nr_thr_saving",
+            str(max(1, int(self.saving_threads))),
         ]
         if task == "total":
             command += ["--roi_subset", *TASK_CLASSES[task]]
@@ -110,29 +169,54 @@ class TotalSegmentatorRunner:
     def _run_task(
         self,
         input_path: Path,
-        root: Path,
+        task_root: Path,
         task: str,
         device: str,
         log: Callable[[str], None] | None,
     ) -> tuple[Path, str | None]:
-        destination = root / "tasks" / task
+        destination = task_root / task
         destination.mkdir(parents=True, exist_ok=True)
         environment = dict(os.environ)
         environment["TOTALSEG_WEIGHTS_PATH"] = str(self.weights_directory.resolve())
         command = self._command(input_path, destination, task, device)
         if log:
             log(f"TotalSegmentator task={task} command={subprocess.list2cmdline(command)}")
-        result = subprocess.run(
+        started = time.perf_counter()
+        process = subprocess.Popen(
             command,
-            check=False,
             text=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=environment,
+            start_new_session=True,  # own process group, so a timeout also kills its workers
         )
+        try:
+            stdout, stderr = process.communicate(timeout=self.task_timeout_sec)
+        except subprocess.TimeoutExpired:
+            import signal
+
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate()
+            message = (
+                f"timeout after {self.task_timeout_sec:.0f} s (a worker may have been OOM-killed); "
+                "task killed"
+            )
+            if log:
+                log(f"TotalSegmentator task={task} {message}")
+            return destination, message
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         if log and result.stdout.strip():
             log(f"TotalSegmentator task={task} stdout:\n{result.stdout.strip()}")
         if log and result.stderr.strip():
             log(f"TotalSegmentator task={task} stderr:\n{result.stderr.strip()}")
+        if log:
+            log(
+                f"TotalSegmentator task={task} exit_code={result.returncode} "
+                f"elapsed_sec={time.perf_counter() - started:.1f}"
+            )
         if result.returncode:
             detail = result.stderr.strip() or result.stdout.strip() or f"exit_code={result.returncode}"
             return destination, detail[-2000:]
@@ -146,25 +230,66 @@ class TotalSegmentatorRunner:
         device: str,
         log: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        """Run every TotalSegmentator task and write the project masks.
+
+        Masks are written directly as ``output_directory/<anatomy>.nii.gz``. Raw task
+        output lives only in a temporary scratch directory for the duration of this call.
+        """
         if not input_path.is_file():
             raise FileNotFoundError(input_path)
         output_directory.mkdir(parents=True, exist_ok=True)
+        scratch_parent = None
+        if self.scratch_directory is not None:
+            self.scratch_directory.mkdir(parents=True, exist_ok=True)
+            scratch_parent = str(self.scratch_directory)
+        with tempfile.TemporaryDirectory(prefix="totalseg_", dir=scratch_parent) as scratch:
+            result = self._run_in_scratch(input_path, output_directory, Path(scratch), device, log)
+        # A completed study never keeps the old nested layout (tasks/ + canonical/) beside
+        # the flat masks. This runs only after every new mask has been written.
+        for name in LEGACY_STUDY_DIRECTORIES:
+            legacy = output_directory / name
+            if legacy.is_dir():
+                shutil.rmtree(legacy, ignore_errors=True)
+        return result
+
+    def _run_in_scratch(
+        self,
+        input_path: Path,
+        output_directory: Path,
+        scratch: Path,
+        device: str,
+        log: Callable[[str], None] | None,
+    ) -> dict[str, Any]:
         task_roots: dict[str, Path] = {}
         errors: dict[str, str] = {}
         for task in TASK_CLASSES:
-            task_roots[task], error = self._run_task(
-                input_path, output_directory, task, device, log
-            )
+            task_roots[task], error = self._run_task(input_path, scratch, task, device, log)
             if error:
                 errors[task] = error
 
-        _, reference = load_nifti(input_path)
-        canonical = output_directory / "canonical"
+        # Header only: the masks inherit the CT geometry, the voxels are not needed here.
+        reference = load_image(input_path)
+        spacing = tuple(float(value) for value in reference.header.get_zooms()[:3])
         paths: dict[str, Path] = {}
         mask_provenance: dict[str, dict[str, Any]] = {}
 
         def source(task: str, name: str) -> Path:
             return task_roots[task] / f"{name}.nii.gz"
+
+        def destination(name: str) -> Path:
+            return output_directory / f"{name}.nii.gz"
+
+        def written(name: str, started: float, mask: np.ndarray) -> None:
+            if log:
+                log(
+                    f"mask={name} written voxels={int(np.count_nonzero(mask))} "
+                    f"elapsed_sec={time.perf_counter() - started:.1f}"
+                )
+
+        def failed(name: str, message: str) -> None:
+            errors[name] = message
+            if log:
+                log(f"mask={name} unavailable reason={message}")
 
         def record(
             name: str,
@@ -187,19 +312,22 @@ class TotalSegmentatorRunner:
             }
 
         def save_one(name: str, task: str, source_name: str) -> None:
+            started = time.perf_counter()
             candidate = source(task, source_name)
             if candidate.is_file():
                 array, image = load_nifti(candidate)
                 if not same_geometry(image, reference):
                     errors[task] = f"output geometry mismatch for {source_name}"
                     return
-                paths[name] = save_binary_mask(array > 0, reference, canonical / f"{name}.nii.gz")
+                mask = array > 0
+                paths[name] = save_binary_mask(mask, reference, destination(name))
                 record(
                     name,
                     task=task,
                     source_names=[source_name],
                     postprocessing="binarize(value>0)",
                 )
+                written(name, started, mask)
 
         def loaded(names: list[tuple[str, str]]) -> list[np.ndarray] | None:
             values: list[np.ndarray] = []
@@ -222,12 +350,12 @@ class TotalSegmentatorRunner:
             approximation: bool = False,
             parameters: dict[str, Any] | None = None,
         ) -> bool:
+            started = time.perf_counter()
             values = loaded(names)
             if values is None:
                 return False
-            paths[name] = save_binary_mask(
-                np.logical_or.reduce(values), reference, canonical / f"{name}.nii.gz"
-            )
+            mask = np.logical_or.reduce(values)
+            paths[name] = save_binary_mask(mask, reference, destination(name))
             record(
                 name,
                 task=sorted({task for task, _ in names}),
@@ -236,28 +364,44 @@ class TotalSegmentatorRunner:
                 approximation=approximation,
                 parameters=parameters,
             )
+            written(name, started, mask)
             return True
-
-        def ellipsoid(radius_mm: float) -> np.ndarray:
-            spacing = np.asarray(reference.header.get_zooms()[:3], dtype=float)
-            radii = np.maximum(1, np.ceil(float(radius_mm) / spacing).astype(int))
-            grids = np.ogrid[tuple(slice(-int(value), int(value) + 1) for value in radii)]
-            distance = sum((grid * spacing[index] / float(radius_mm)) ** 2 for index, grid in enumerate(grids))
-            return np.asarray(distance <= 1.0, dtype=bool)
 
         lung_parts = [source("total", name) for name in TASK_CLASSES["total"] if name.startswith("lung_")]
         if all(path.is_file() for path in lung_parts):
+            started = time.perf_counter()
             loaded_lungs = [load_nifti(path) for path in lung_parts]
             if all(same_geometry(image, reference) for _, image in loaded_lungs):
-                paths["lung"] = save_binary_mask(
-                    combine_masks(array for array, _ in loaded_lungs), reference, canonical / "lung.nii.gz"
-                )
+                lung = combine_masks(array for array, _ in loaded_lungs)
+                paths["lung"] = save_binary_mask(lung, reference, destination("lung"))
                 record(
                     "lung",
                     task="total",
                     source_names=[path.stem.removesuffix(".nii") for path in lung_parts],
                     postprocessing="binary UNION of five lung lobes",
                 )
+                written("lung", started, lung)
+                # Lobes and sides reuse the arrays already loaded for `lung`: no extra read.
+                lobes = {
+                    path.stem.removesuffix(".nii"): np.asarray(array) > 0
+                    for path, (array, _) in zip(lung_parts, loaded_lungs)
+                }
+                for name in LUNG_LOBES:
+                    started = time.perf_counter()
+                    paths[name] = save_binary_mask(lobes[name], reference, destination(name))
+                    record(name, task="total", source_names=[name], postprocessing="binarize(value>0)")
+                    written(name, started, lobes[name])
+                for side, members in LUNG_SIDES.items():
+                    started = time.perf_counter()
+                    mask = np.logical_or.reduce([lobes[name] for name in members])
+                    paths[side] = save_binary_mask(mask, reference, destination(side))
+                    record(
+                        side,
+                        task="total",
+                        source_names=list(members),
+                        postprocessing=f"binary UNION of the {side.removeprefix('lung_')} lung lobes",
+                    )
+                    written(side, started, mask)
             else:
                 errors["total"] = "output geometry mismatch for one or more lung lobes"
         save_one("heart", "total", "heart")
@@ -286,10 +430,10 @@ class TotalSegmentatorRunner:
             chamber_sources,
             postprocessing="binary UNION of myocardium and four cardiac chambers; excludes PA/aorta classes",
         ) and "heart" in paths:
+            started = time.perf_counter()
             heart, _ = load_nifti(paths["heart"])
-            paths["strict_heart"] = save_binary_mask(
-                heart > 0, reference, canonical / "strict_heart.nii.gz"
-            )
+            strict_heart = heart > 0
+            paths["strict_heart"] = save_binary_mask(strict_heart, reference, destination("strict_heart"))
             record(
                 "strict_heart",
                 task="total",
@@ -298,6 +442,7 @@ class TotalSegmentatorRunner:
                 approximation=True,
                 fallback="generic heart used because complete high-resolution chamber set was unavailable",
             )
+            written("strict_heart", started, strict_heart)
         save_union(
             "lung_vessels",
             [("lung_vessels", "lung_arteries"), ("lung_vessels", "lung_veins")],
@@ -316,56 +461,52 @@ class TotalSegmentatorRunner:
             postprocessing="binary UNION of body trunk and extremities",
         )
 
+        # Derived shells/neighbourhoods use an exact physical-distance transform processed in
+        # z-slabs. scipy binary_erosion/dilation with a 12-15 mm ball would allocate a
+        # 5-15 GB offset table on a 512x512 CTPA and is O(voxels x ball size).
         if "body" in paths:
+            started = time.perf_counter()
             try:
-                from scipy import ndimage
-
                 body, _ = load_nifti(paths["body"])
-                structure = ellipsoid(self.body_wall_thickness_mm)
-                eroded = ndimage.binary_erosion(body.astype(bool), structure=structure, border_value=0)
-                wall = body.astype(bool) & ~eroded
-                paths["body_wall"] = save_binary_mask(
-                    wall, reference, canonical / "body_wall.nii.gz"
-                )
+                wall = boundary_shell(body > 0, spacing, self.body_wall_thickness_mm)
+                paths["body_wall"] = save_binary_mask(wall, reference, destination("body_wall"))
                 record(
                     "body_wall",
                     task="derived",
                     source_names=["body"],
-                    postprocessing="body MINUS physical-space binary erosion",
+                    postprocessing="body voxels within wall_thickness_mm of the body surface (exact EDT)",
                     approximation=True,
                     parameters={"wall_thickness_mm": self.body_wall_thickness_mm},
                 )
-            except (ModuleNotFoundError, ValueError) as exc:
-                errors["body_wall"] = f"{type(exc).__name__}: {exc}"
+                written("body_wall", started, wall)
+            except (ModuleNotFoundError, ValueError, MemoryError) as exc:
+                failed("body_wall", f"{type(exc).__name__}: {exc}")
 
         if all(name in paths for name in ("central_pa", "lung_vessels", "mediastinum")):
+            started = time.perf_counter()
             try:
-                from scipy import ndimage
-
                 central_pa, _ = load_nifti(paths["central_pa"])
                 lung_vessels, _ = load_nifti(paths["lung_vessels"])
                 mediastinum, _ = load_nifti(paths["mediastinum"])
-                neighbourhood = ndimage.binary_dilation(
-                    mediastinum.astype(bool) | central_pa.astype(bool),
-                    structure=ellipsoid(self.hilar_proximity_mm),
+                neighbourhood = physical_dilation(
+                    (mediastinum > 0) | (central_pa > 0), spacing, self.hilar_proximity_mm
                 )
-                hilar = central_pa.astype(bool) | (lung_vessels.astype(bool) & neighbourhood)
-                paths["hilar_vessels"] = save_binary_mask(
-                    hilar, reference, canonical / "hilar_vessels.nii.gz"
-                )
+                hilar = (central_pa > 0) | ((lung_vessels > 0) & neighbourhood)
+                paths["hilar_vessels"] = save_binary_mask(hilar, reference, destination("hilar_vessels"))
                 record(
                     "hilar_vessels",
                     task="derived",
                     source_names=["central_pa", "lung_vessels", "mediastinum"],
                     postprocessing=(
-                        "central_pa UNION (lung_vessels INTERSECT physical-space dilation of "
-                        "mediastinum/central_pa)"
+                        "central_pa UNION (lung_vessels within proximity_mm of "
+                        "mediastinum/central_pa; exact EDT)"
                     ),
                     approximation=True,
                     parameters={"proximity_mm": self.hilar_proximity_mm},
                 )
-            except (ModuleNotFoundError, ValueError) as exc:
-                errors["hilar_vessels"] = f"{type(exc).__name__}: {exc}"
+                written("hilar_vessels", started, hilar)
+            except (ModuleNotFoundError, ValueError, MemoryError) as exc:
+                failed("hilar_vessels", f"{type(exc).__name__}: {exc}")
         provenance = {
             "backend": "totalsegmentator",
             "tasks": {task: list(classes) for task, classes in TASK_CLASSES.items()},
@@ -373,15 +514,15 @@ class TotalSegmentatorRunner:
             "masks": mask_provenance,
             "scientific_scope": {
                 "central_pa": "TotalSegmentator pulmonary_artery class; approximate central-PA mask, not ground truth",
-                "pa_tree": "union of central and intrapulmonary artery models; boundaries may be discontinuous",
+                "pa_tree": (
+                    "union of central and intrapulmonary artery models; boundaries may be discontinuous. "
+                    "When lung_arteries already contains the central PA the union equals lung_arteries "
+                    "(qc_summary.csv duplicate_of)"
+                ),
                 "hilar_vessels": "proximity-derived approximation; not a validated hilar-vessel annotation",
                 "body_wall": "morphological shell used only as a negative-control candidate region",
             },
         }
-        # Raw task outputs are only intermediates used to build the canonical masks above.
-        # Their provenance is already embedded in every manifest row, so retaining them
-        # would roughly duplicate the per-study mask tree and make review unnecessarily hard.
-        shutil.rmtree(output_directory / "tasks", ignore_errors=True)
         return {
             "masks": paths,
             "errors": errors,

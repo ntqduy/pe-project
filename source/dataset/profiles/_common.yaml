@@ -31,7 +31,7 @@ eligibility:
     # Noise removal. Thresholds are configuration, not constants: these defaults come
     # from the /mnt/pe_study readiness buckets (num_slices <=1, SliceThickness >3mm,
     # PixelSpacing >1mm were the review buckets) widened to the acquisition limits that
-    # are indefensible rather than merely unusual. Every drop lands in audit/exclusions.csv.
+    # are indefensible rather than merely unusual. Every drop lands in manifests/exclusions.csv.
     minimum_slices: 2
     maximum_slices: null
     minimum_slice_thickness_mm: null
@@ -125,7 +125,7 @@ preprocessing:
   patch_overlap: 0.5
 
 # Validate every written or reused cache entry before it reaches a manifest. The detailed
-# findings are under audit/cache_qc.json; the aggregate count appears in data_quality.md.
+# failures stay in dataset.json; aggregate counts appear in data_quality.md.
 cache_qc:
   enabled: true
   limit: null

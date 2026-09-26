@@ -129,6 +129,79 @@ def _validate_confidence(confidence: Any) -> float | None:
     return numeric
 
 
+_TRUE_WORDS = {"true", "yes", "y", "present", "positive", "seen", "identified", "reported", "1"}
+_FALSE_WORDS = {"false", "no", "n", "absent", "negative", "none", "not present", "not seen", "0"}
+_NULL_WORDS = {
+    "", "null", "none_reported", "unknown", "not mentioned", "not_mentioned", "not stated",
+    "not reported", "uncertain", "indeterminate", "n/a", "na", "nan",
+}
+# A qualitative grade or side can only describe a finding that is present, so a binary
+# answer such as "small" or "bilateral" means true (e.g. "SMALL BILATERAL PLEURAL EFFUSIONS").
+_PRESENCE_WORDS = (
+    "trace", "tiny", "minimal", "small", "mild", "moderate", "large", "severe", "massive",
+    "bilateral", "left", "right", "loculated", "extensive", "diffuse", "multiple",
+)
+_ACUITY_ALIASES = {
+    "acute_on_chronic": "acute_on_chronic", "acute_and_chronic": "acute_on_chronic",
+    "acute": "acute", "subacute": "acute", "chronic": "chronic",
+    "uncertain": "uncertain", "indeterminate": "uncertain", "age_indeterminate": "uncertain",
+    "indeterminate_age": "uncertain", "indeterminate_acuity": "uncertain",
+}
+
+
+def normalize_target_value(target: str, value: Any) -> tuple[bool | str | float | None, str | None]:
+    """Coerce a model's near-miss answer to the target type before strict validation.
+
+    Returns ``(value, note)``; ``note`` names the coercion (None when the value was already
+    well-typed). Values that cannot be mapped unambiguously are returned unchanged so that
+    ``validate_target_value`` still rejects them.
+    """
+    spec = target_spec(target)
+    if value is None:
+        return None, None
+    if spec.kind == "binary":
+        if type(value) is bool:
+            return value, None
+        if isinstance(value, Real) and float(value) in (0.0, 1.0):
+            return bool(value), f"numeric_{value}_as_boolean"
+        if isinstance(value, str):
+            text = " ".join(value.strip().lower().replace("_", " ").split())
+            if text in _NULL_WORDS or text.replace(" ", "_") in _NULL_WORDS:
+                return None, f"text_{value!r}_as_null"
+            if text in _TRUE_WORDS:
+                return True, f"text_{value!r}_as_true"
+            if text in _FALSE_WORDS:
+                return False, f"text_{value!r}_as_false"
+            words = set(text.replace(",", " ").replace("-", " ").split())
+            if words & set(_PRESENCE_WORDS) and not words & {"no", "not", "without", "absent", "none"}:
+                return True, f"grade_{value!r}_as_true"
+        return value, None
+    if spec.kind == "categorical":
+        if isinstance(value, str):
+            if value in spec.values:
+                return value, None
+            key = "_".join(value.strip().lower().replace("-", " ").split())
+            # Category names first: "indeterminate" is a valid acuity, not a missing value.
+            mapped = _ACUITY_ALIASES.get(key) if spec.name == "acuity" else None
+            if mapped is None and key in spec.values:
+                mapped = key
+            if mapped is not None:
+                return mapped, f"text_{value!r}_as_{mapped}"
+            if key in _NULL_WORDS or key.replace("_", " ") in _NULL_WORDS:
+                return None, f"text_{value!r}_as_null"
+        return value, None
+    # continuous
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _NULL_WORDS:
+            return None, f"text_{value!r}_as_null"
+        try:
+            return float(text), f"text_{value!r}_as_number"
+        except ValueError:
+            return value, None
+    return value, None
+
+
 def validate_target_value(target: str, value: Any) -> bool | str | float | None:
     spec = target_spec(target)
     if value is None:

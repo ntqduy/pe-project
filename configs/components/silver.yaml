@@ -1,14 +1,14 @@
 # Silver-label generation methods.
 # Select a fragment with: path/to/silver.yaml#<preset>
 #
-# MedGemma is the only silver method this project generates with: one model stage, no
-# regex prefilter and no second model to adjudicate against, so every accepted label is
-# MedGemma's and a low-confidence answer abstains rather than guessing.
+# MedGemma is the silver labeller: it answers every target first, and a low-confidence
+# answer abstains rather than guessing. With rule_rescue the explicit regex extractor only
+# backs it up (veto on explicit contradiction, value when MedGemma abstains or fails);
+# accepted rows name their source (medgemma or rule).
 # Logic: source/silver/generator.py.
 #
-# The regex extractor (source/silver/rules.py, RULE_VERSION pe_rules_v2) is still used --
-# analysis/run_eda.py reports how many targets it could settle on its own -- it just no
-# longer produces labels.
+# The regex extractor is source/silver/rules.py (RULE_VERSION pe_rules_v2);
+# analysis/run_eda.py also reports how many targets it could settle on its own.
 _presets_:
 
   # ---- shared pieces; not runnable on their own ----
@@ -16,8 +16,17 @@ _presets_:
   reports_input:
     silver:
       # Written by data.dataset.<profile> as CSV; read_rows also accepts .parquet/.jsonl.
-      reports: reports.csv
-      prompt_version: v1
+      reports: manifests/reports.csv
+      # v2: explicit true/false/null rules, "no PE" rules out every PE location, JSON example,
+      # verbatim evidence. Changing it re-labels cached reports on the next run.
+      prompt_version: v2
+      # The regex extractor (source/silver/rules.py) backs MedGemma up: it vetoes a confident
+      # MedGemma value it explicitly contradicts, and supplies the value when MedGemma
+      # abstains/fails but the report states the finding (rows with source=rule).
+      rule_rescue: true
+      # PE hierarchy per report: pe_present=false makes every PE location false (and
+      # withdraws acuity); a location "false" without a pe_present decision abstains.
+      pe_consistency: true
       # Provider confidence is confidence in the returned class/value, not a calibrated
       # probability of PE. Every model decision is threshold-gated; validation calibration
       # metadata must be supplied before reporting clinical performance.
@@ -48,6 +57,9 @@ _presets_:
           device_map: auto
           torch_dtype: bfloat16
           local_files_only: true
+          max_new_tokens: 384
+        # One corrective re-ask when an answer is not usable JSON / not a legal value.
+        retries: 1
 
   # ---- the one generation method ----
 

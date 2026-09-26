@@ -17,6 +17,7 @@ NIfTI the manifest points at.
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ CONTRAST_HU_MEAN = 0.15897
 NUM_SLICES = 32
 RESIZE_SHAPE = (224, 224)
 CROP_SHAPE = (208, 208)
+PENET_WEIGHT_SHA256 = "891276e2fb085735f0cc39fab0bc9c0cd5ab0ae4ef9aa245e3b17b1d526bc52b"
 
 PENET_CONTRACT: dict[str, Any] = {
     "slices_per_window": NUM_SLICES,
@@ -42,6 +44,8 @@ PENET_CONTRACT: dict[str, Any] = {
     "divide_by_std": False,
     "pad_value_hu": AIR_HU_VAL,
     "input_channels": 1,                  # the model expands 1 -> 3 internally
+    # DICOM pixel_array layout: rows anterior->posterior, columns patient right->left.
+    "inplane_orientation": "rows_A_to_P__cols_R_to_L",
     "series_aggregation": "max_sigmoid_over_windows",
 }
 
@@ -59,6 +63,12 @@ def load_penet(checkpoint: str | Path, repo: str | Path) -> tuple[Any, dict[str,
     checkpoint, repo = Path(checkpoint), Path(repo)
     if not checkpoint.is_file():
         raise PenetError(f"PENet checkpoint not found: {checkpoint}")
+    digest = hashlib.sha256()
+    with checkpoint.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    if digest.hexdigest() != PENET_WEIGHT_SHA256:
+        raise PenetError(f"PENet checkpoint SHA-256 mismatch: {checkpoint}")
     if not (repo / "models" / "penet_classifier.py").is_file():
         raise PenetError(f"PENet repository not found: {repo}")
     # The released archive pickles objects from the repository's own `util` package, which
@@ -86,6 +96,7 @@ def load_penet(checkpoint: str | Path, repo: str | Path) -> tuple[Any, dict[str,
         "checkpoint_info": {k: float(v) if hasattr(v, "__float__") else v
                             for k, v in dict(payload.get("ckpt_info") or {}).items()},
         "tensors": len(state),
+        "weight_sha256": PENET_WEIGHT_SHA256,
     }
 
 
@@ -111,8 +122,12 @@ def read_series_hu(path: str | Path, slice_order: str = "superior_to_inferior") 
     data = np.asanyarray(image.dataobj, dtype=np.float32)
     if data.ndim != 3:
         raise PenetError(f"expected a 3-D CT, got {data.shape}")
-    # Canonical RAS is (L->R, P->A, I->S); PENet reads axial slices stacked along axis 0.
-    volume = np.transpose(data, (2, 1, 0))
+    # Canonical RAS arrays are (x: ->Right, y: ->Anterior, z: ->Superior). PENet was trained
+    # on stacked DICOM pixel_arrays (scripts/create_hdf5.py -> util.dcm_to_raw, no reorient),
+    # whose rows run anterior->posterior and columns patient right->left (LPS). Its training
+    # used horizontal flips but never vertical ones (do_vflip=False), so an upside-down slice
+    # is out of distribution: reverse both in-plane axes to reproduce the DICOM layout.
+    volume = np.transpose(data, (2, 1, 0))[:, ::-1, ::-1]
     if slice_order == "superior_to_inferior":
         volume = volume[::-1]
     elif slice_order != "inferior_to_superior":

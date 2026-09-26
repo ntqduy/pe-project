@@ -7,12 +7,13 @@ _base_: [_common.yaml]
 profile:
   name: smoke_30
   description: >-
-    Thirty eligible patients: ten sampled independently from each official split. This
-    makes every split, manifest type, CT cache write and leakage guard observable at low
-    cost before the 500-patient rehearsal or full build.
-  scope: technical smoke cohort (30 patients; 10 per official split)
+    Thirty candidate patients: ten sampled independently from each official split before
+    eligibility and CT checks. The final cohort may be smaller when selected studies fail
+    those checks. This keeps the smoke run cheap before the 500-patient rehearsal or full build.
+  scope: technical smoke cohort (30 sampled candidates; 10 per official split)
 sampling:
   enabled: true
+  before_eligibility: true
   seed: 20260703
   total_patients: null
   per_split:

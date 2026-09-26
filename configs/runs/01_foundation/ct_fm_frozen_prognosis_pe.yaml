@@ -9,4 +9,4 @@ experiment:
 
 data:
   cohort: pe_positive_only
-  manifest: ct_fm_frozen/manifests/prognosis_pe_positive.csv
+  manifest: manifests/ct_fm/prognosis_pe_positive.csv

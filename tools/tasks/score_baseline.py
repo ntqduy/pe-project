@@ -12,7 +12,7 @@ CT-FM arm.
     python tools/tasks/score_baseline.py \
       --config configs/runs/04_prognosis/modality/spesi.yaml \
       --score-column spesi --allow-full \
-      --restrict-to <dataset>/clinical/spesi_evaluable.csv
+      --restrict-to <derived>/cache/<profile>/clinical/spesi_evaluable.csv
 """
 from __future__ import annotations
 

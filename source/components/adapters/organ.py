@@ -7,6 +7,8 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
+from .standardization import PooledFeatureStandardizer
+
 
 class BottleneckMLPAdapter(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.1):
@@ -111,6 +113,7 @@ class OrganAdapterBank(nn.Module):
         rank: int = 8,
         alpha: float = 16.0,
         enabled: bool = True,
+        standardize_inputs: bool = False,
     ):
         super().__init__()
         self.regions = tuple(dict.fromkeys(str(region) for region in regions))
@@ -139,6 +142,12 @@ class OrganAdapterBank(nn.Module):
                 for name in names
             }
         )
+        # Per-branch z-score of the pooled inputs, fit on the train split before training
+        # (tools/tasks/train_task.py). Only built when enabled, so checkpoints of runs without
+        # it keep loading strictly.
+        self.input_standardizer = (
+            PooledFeatureStandardizer(names, input_dim) if standardize_inputs else None
+        )
 
     @classmethod
     def from_config(
@@ -163,6 +172,7 @@ class OrganAdapterBank(nn.Module):
             rank=int(options.get("rank", 8)),
             alpha=float(options.get("alpha", 16.0)),
             enabled=bool(options.get("enabled", True)),
+            standardize_inputs=bool(options.get("standardize_inputs", False)),
         )
 
     def forward(
@@ -173,6 +183,8 @@ class OrganAdapterBank(nn.Module):
         missing = [name for name in self.feature_names if name not in features]
         if missing:
             raise KeyError(f"missing organ features: {missing}")
+        if self.input_standardizer is not None:
+            features = self.input_standardizer(features)
         adapted: dict[str, Tensor] = {}
         present: dict[str, Tensor] = {}
         for name in self.feature_names:

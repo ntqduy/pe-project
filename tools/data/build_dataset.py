@@ -74,7 +74,15 @@ def main() -> int:
         check_files=False if args.metadata_only else None,
     )
     print(json.dumps(payload["cohort"] | {"output": payload["output_root"]}, indent=2))
-    print(f"exclusions: {payload['eligibility']['excluded_by_rule']}")
+    sampling = payload.get("sampling") or {}
+    if sampling.get("enabled"):
+        order = "yes" if sampling.get("before_eligibility") else "no"
+        print(
+            f"sampling: seed={sampling['seed']} "
+            f"selected_candidates={sampling['selected_patients']} "
+            f"before_eligibility={order}"
+        )
+    print(f"exclusions: {payload['exclusions']['by_rule']}")
     print(f"split patients: {payload['split_audit']['split_patients']}")
     return 0
 

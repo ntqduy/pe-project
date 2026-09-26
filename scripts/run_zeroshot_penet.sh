@@ -5,7 +5,7 @@
 #   bash scripts/run_zeroshot_penet.sh                       # full test split
 #   MAX_CASES=50 bash scripts/run_zeroshot_penet.sh          # quick look
 #   PROFILE=smoke_30 bash scripts/run_zeroshot_penet.sh
-#   RESTRICT_TO=<dataset>/clinical/spesi_evaluable.csv bash scripts/run_zeroshot_penet.sh
+#   RESTRICT_TO=<derived>/cache/<profile>/clinical/spesi_evaluable.csv bash scripts/run_zeroshot_penet.sh
 #
 # Nothing is trained. The weights are loaded and applied, so this is the external
 # reference an in-house imaging arm has to beat. Contract and the two repository

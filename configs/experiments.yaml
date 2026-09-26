@@ -56,7 +56,7 @@ experiments:
       - what: The read-only Stanford INSPECT release (checked by preflight, not by plan)
     produces:
       - the same manifest, audit and CT-cache layout as every dataset profile
-      - data_quality.md/json for a small all-split cohort
+      - data_quality.md with task labels, missingness and QC
     status: ready
 
   data.dataset.full_inspect:
@@ -74,8 +74,8 @@ experiments:
       - what: The read-only Stanford INSPECT release (checked by preflight, not by plan)
     produces:
       - ctpa/diagnosis/prognosis/paired_reports/reports manifests
-      - data_quality.md/json (compact cohort and QC summary)
-      - audit/ (detailed exclusions, integrity, split and cache-QC findings)
+      - data_quality.md (cohort, task labels, missingness and QC)
+      - audit/exclusions.csv (patient-linked exclusions)
       - dataset.json (provenance + preprocessing hash)
       - preprocessed volume cache
     status: ready
@@ -714,6 +714,29 @@ experiments:
     produces: [the external zero-shot reference every in-house imaging arm must beat]
     status: blocked
     blockers: ["Needs a built dataset profile; PENet weights and repository are staged."]
+
+  diag.zeroshot.radar:
+    config: configs/runs/01_foundation/radar_zero_shot.yaml
+    group: FOUNDATION
+    description: Released RADAR (abdominal-CT generalist) probed for PE, no training
+    question: Does a CT vision-language generalist recognise PE on CTPA without adaptation?
+    representation: none (external pretrained, pulmonary-artery organ token vs text pair)
+    task: diagnosis
+    modalities: [image]
+    anatomy: false
+    supervision: none
+    fusion: none
+    runner: tools/tasks/zeroshot_radar.py
+    requires:
+      - what: Diagnosis manifest with pe_present
+        experiment: data.dataset.full_inspect
+        path_key: data.manifest
+      - what: Raw release NIfTI under <PE_RAW_INSPECT_ROOT>/CT/full/CTPA
+        path_key: radar.release_root
+      - what: RADAR checkpoint (repository cloned; its requirements.txt built as a separate conda env)
+        path_key: radar.checkpoint
+    produces: [an out-of-scope zero-shot reference; RADAR ships no PE finding, so radar.prompts defines the arm]
+    status: ready
 
   diag.baseline.penet_style:
     config: configs/runs/03_diagnosis/baseline/penet_style.yaml

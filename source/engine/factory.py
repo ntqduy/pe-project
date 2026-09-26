@@ -78,9 +78,12 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
             auxiliary_default_source=str(task.get("auxiliary_default_source", "native")),
         )
     elif stage == "prognosis":
-        from source.concepts.schema import enabled_concept_specs
+        concept_config = dict(config.get("concept_bottleneck") or {})
+        concepts = {}
+        if concept_config.get("enabled"):
+            from source.concepts.schema import enabled_concept_specs
 
-        concepts = enabled_concept_specs(config.get("concept_bottleneck"))
+            concepts = enabled_concept_specs(concept_config)
         if concepts:
             from source.tasks.prognosis.concept_model import ConceptBottleneckPrognosisModel
 

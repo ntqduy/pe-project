@@ -70,16 +70,29 @@ def differentiable_zero(logits: Mapping[str, Tensor]) -> Tensor:
     return sum((value.sum() * 0 for value in values), values[0].new_zeros(()))
 
 
+def _single_target_values(prediction: Tensor, truth: Tensor) -> Tensor:
+    """Normalize one-logit-per-row predictions without squeezing away a batch of size one."""
+    if prediction.ndim == truth.ndim + 1 and prediction.shape[-1] == 1:
+        prediction = prediction.squeeze(-1)
+    if prediction.shape != truth.shape:
+        raise ValueError(
+            "single-target prediction shape must match target shape after removing a trailing "
+            f"singleton dimension; got prediction={tuple(prediction.shape)} "
+            f"target={tuple(truth.shape)}"
+        )
+    return prediction
+
+
 def masked_target_loss(prediction: Tensor, truth: Tensor, valid: Tensor, spec: TargetSpec) -> Tensor:
     selected = valid.bool() & torch.isfinite(truth.float())
     if not bool(selected.any()):
         return prediction.sum() * 0
     if spec.kind == "binary":
-        values = prediction.squeeze(-1)[selected]
+        values = _single_target_values(prediction, truth)[selected]
         return functional.binary_cross_entropy_with_logits(values, truth.float()[selected], reduction="none")
     if spec.kind == "multiclass":
         return functional.cross_entropy(prediction[selected], truth.long()[selected], reduction="none")
-    values = prediction.squeeze(-1)[selected]
+    values = _single_target_values(prediction, truth)[selected]
     target = truth.float()[selected]
     if spec.loss in {None, "smooth_l1", "huber"}:
         return functional.smooth_l1_loss(values, target, reduction="none")

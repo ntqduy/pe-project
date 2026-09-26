@@ -42,10 +42,18 @@ def physical_ball(spacing: Sequence[float], radius_mm: float) -> np.ndarray:
 
 
 def dilate_mask(mask: np.ndarray, spacing: Sequence[float], margin_mm: float) -> np.ndarray:
+    """Physical-space dilation by ``margin_mm`` (same voxels as ``physical_ball`` dilation).
+
+    Uses the exact slab-wise distance transform: scipy binary_dilation with a 5 mm ball
+    (~1 700 structure voxels) costs minutes per call on a 512x512 CTPA.
+    """
+    from source.imaging.morphology import physical_dilation
+
     binary = np.asarray(mask, dtype=bool)
     if margin_mm == 0:
         return binary.copy()
-    return ndimage.binary_dilation(binary, structure=physical_ball(spacing, margin_mm))
+    physical_ball(spacing, margin_mm)  # same argument validation as before
+    return physical_dilation(binary, spacing, float(margin_mm))
 
 
 def body_mask_from_hu(volume: np.ndarray, threshold_hu: float = -900.0) -> np.ndarray:

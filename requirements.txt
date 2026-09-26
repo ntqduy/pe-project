@@ -37,7 +37,7 @@ regex>=2024.5
 safetensors>=0.4,<1
 sentencepiece>=0.2,<1
 timm>=1.0,<2
-transformers>=4.44,<5
+transformers>=4.57,<5
 
 # Optional compatibility for running the cloned INSPECT and CT-FM reference scripts.
 # The pe-project task engine itself does not require the Lightning/W&B runner, but the

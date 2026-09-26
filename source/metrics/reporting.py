@@ -29,7 +29,7 @@ def stard_ai_checklist(config: Mapping[str, Any], result_evaluation: Mapping[str
             },
             "human_ai_comparison": {"status": "not applicable - no human reader arm in this pipeline"},
             "test_result_distribution": {
-                "status": "see predictions.parquet and bootstrap_metrics.parquet if paired"
+                "status": "see epoch_<N>/predictions.csv; paired deltas in result.evaluation.paired_vs_reference"
             },
             "diagnostic_accuracy": {
                 "status": "see result.evaluation.metrics",

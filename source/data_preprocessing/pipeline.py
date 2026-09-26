@@ -8,8 +8,8 @@ path the full run will take, so nothing is "pilot-only" or "full-only".
     build_dataset(profile, paths)
         -> <derived>/datasets/<profile>/
              manifests/{ctpa,diagnosis,prognosis,paired_reports,reports}.csv
-             data_quality.{md,json}  compact, de-identified readiness report
-             audit/                 detailed exclusion, integrity and cache-QC findings
+             data_quality.md        task label/missing counts and QC summary
+             manifests/exclusions.csv  patient-linked exclusions and reasons
              dataset.json          full provenance: profile, rules, sampling plan, hashes
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from .filters import apply_eligibility
 from .integrity import check_volumes, integrity_summary
 from .leakage import audit_split_integrity, load_excluded_patients, require_no_leakage
 from .manifests import build_manifests
-from .quality import build_data_quality, cohort_step, render_data_quality_markdown
+from .quality import build_data_quality, cohort_step, render_data_quality_markdown, summarize_task_labels
 from .sampling import sample_patients
 from .sources import InspectSource, StudyRecord
 from .spesi import SpesiBuildError, build_spesi_artifacts
@@ -122,6 +122,30 @@ def build_dataset(
     # samples survive each stage instead of leaving the reader to reconcile three reports.
     funnel = [cohort_step("release", "studies joined from the read-only INSPECT release", records)]
 
+    adjudication_columns = tuple(
+        (profile.get("adjudication") or {}).get("columns")
+        or ("pe_positive_nlp", "pe_acute", "pe_subsegmentalonly", "1_month_mortality")
+    )
+    sampling = dict(profile.get("sampling") or {})
+    sampling_plan = None
+    sample_before_eligibility = bool(sampling.get("before_eligibility", False))
+    if sample_before_eligibility and not bool(sampling.get("enabled")):
+        raise DatasetBuildError("sampling.before_eligibility requires sampling.enabled=true")
+    if sample_before_eligibility:
+        candidate_labels = patient_labels(records, adjudication_columns)
+        selected, sampling_plan = sample_patients(
+            candidate_labels,
+            seed=int(sampling.get("seed", 42)),
+            total_patients=sampling.get("total_patients"),
+            per_split=sampling.get("per_split"),
+            strata=tuple(sampling.get("strata") or adjudication_columns),
+            balance_column=sampling.get("balance_column"),
+            positive_fraction=sampling.get("positive_fraction"),
+        )
+        # Select patient IDs from release metadata first; all their studies travel together.
+        records = [record for record in records if record.patient_id in selected]
+        funnel.append(cohort_step("sampling", f"pre-eligibility patient sampling ({name})", records))
+
     governance = list((profile.get("governance") or {}).get("exclude_patients_from") or [])
     excluded_patients = load_excluded_patients(governance) if governance else set()
     if excluded_patients:
@@ -151,8 +175,8 @@ def build_dataset(
 
     integrity = dict(profile.get("integrity") or {})
     integrity_limit = integrity.get("limit")
-    if max_cases is not None:
-        integrity_limit = int(max_cases) if integrity_limit is None else min(int(integrity_limit), int(max_cases))
+    # The scope limit is applied after sampling. Limiting checks here would leave some
+    # selected studies unchecked while still putting them in the final manifest.
     usable, checks = check_volumes(
         eligible,
         level=str(integrity.get("level") or "path"),
@@ -166,16 +190,10 @@ def build_dataset(
 
     funnel.append(cohort_step("ct_integrity", "missing or unreadable CT volumes", usable))
 
-    adjudication_columns = tuple(
-        (profile.get("adjudication") or {}).get("columns")
-        or ("pe_positive_nlp", "pe_acute", "pe_subsegmentalonly", "1_month_mortality")
-    )
     labels = patient_labels(usable, adjudication_columns)
 
-    sampling = dict(profile.get("sampling") or {})
-    sampling_plan = None
     cohort: list[StudyRecord] = list(usable)
-    if bool(sampling.get("enabled")):
+    if bool(sampling.get("enabled")) and sampling_plan is None:
         selected, sampling_plan = sample_patients(
             labels,
             seed=int(sampling.get("seed", 42)),
@@ -209,6 +227,10 @@ def build_dataset(
     require_no_leakage(selected_audit)
 
     destination = Path(output_root) if output_root else dataset_output_root(paths, name)
+    if overwrite and any((destination / item).exists() for item in ("volumes", "clinical", "ct_fm_frozen", "audit", "data_quality.json")):
+        raise DatasetBuildError(
+            f"legacy dataset layout at {destination}; run tools/data/migrate_dataset_layout.py first"
+        )
     if destination.exists() and not overwrite and any(destination.iterdir()):
         existing = destination / "dataset.json"
         if existing.is_file():
@@ -225,7 +247,7 @@ def build_dataset(
         "spec": spec.as_dict(),
     }
     if preprocess:
-        cache_dir = destination / "volumes"
+        cache_dir = paths.dataset_cache_root(name) / "volumes"
         written, failures, cache_qc_failures = 0, [], []
         cache_qc = dict(profile.get("cache_qc") or {})
         cache_qc_enabled = bool(cache_qc.get("enabled", True))
@@ -277,7 +299,7 @@ def build_dataset(
     )
     require_no_leakage(audit)
 
-    clinical_dir = destination / "clinical"
+    clinical_dir = paths.dataset_cache_root(name) / "clinical"
     try:
         ehr_profiles = build_ehr_profiles(
             cohort,
@@ -443,29 +465,31 @@ def build_dataset(
         clinical_columns=clinical_columns,
     )
 
-    audit_dir = destination / "audit"
+    exclusions_path = destination / "manifests" / "exclusions.csv"
     _write_rows(
-        audit_dir / "exclusions.csv",
+        exclusions_path,
         ledger.entries,
         ["patient_id", "study_id", "impression_id", "split", "rule", "detail"],
     )
     integrity_payload = integrity_summary(checks)
-    _write_json(audit_dir / "integrity.json", integrity_payload)
-    _write_json(audit_dir / "split_audit.json", audit.as_dict())
-    _write_json(audit_dir / "cache_qc.json", dict(preprocessing_report.get("cache_qc") or {"enabled": False}))
 
     eligibility_payload = eligibility_report.as_dict()
-    eligibility_payload["excluded_studies"] = len(ledger.entries)
-    eligibility_payload["excluded_by_rule"] = ledger.counts()
+    exclusions_payload = {
+        "path": str(exclusions_path),
+        "total": len(ledger.entries),
+        "by_rule": ledger.counts(),
+    }
     sampling_payload = sampling_plan.as_dict() if sampling_plan else {"enabled": False}
     if sampling_plan:
         sampling_payload["enabled"] = True
+        sampling_payload["before_eligibility"] = sample_before_eligibility
 
     payload: dict[str, Any] = {
         "profile": dict(profile.get("profile") or {}),
         "source": source.provenance(),
         "scope": {"max_cases": max_cases, "allow_full": bool(allow_full)},
         "eligibility": eligibility_payload,
+        "exclusions": exclusions_payload,
         "governance": {"exclusion_sources": [str(item) for item in governance],
                        "excluded_patients": len(excluded_patients)},
         "integrity": {"level": str(integrity.get("level") or "path"), "limit": integrity_limit,
@@ -500,14 +524,13 @@ def build_dataset(
         spesi=spesi.metadata,
         modality_availability=modality_summary,
         cohort_funnel=[*funnel, cohort_step("final", "the cohort written to the manifests", cohort)],
+        task_labels=summarize_task_labels(manifest_summary),
     )
-    _write_json(destination / "data_quality.json", quality)
     quality_markdown = destination / "data_quality.md"
     _write_text(quality_markdown, render_data_quality_markdown(quality))
     payload["quality"] = {
-        "json": str(destination / "data_quality.json"),
         "markdown": str(quality_markdown),
-        "audit_dir": str(audit_dir),
+        "exclusions": str(exclusions_path),
     }
     _write_json(destination / "dataset.json", payload)
     return payload

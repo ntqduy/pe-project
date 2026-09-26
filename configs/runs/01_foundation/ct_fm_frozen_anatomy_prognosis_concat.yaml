@@ -14,8 +14,10 @@ experiment:
   family: prognosis
 
 data:
-  manifest: ct_fm_frozen/manifests/prognosis_all_patient.csv
+  manifest: manifests/ct_fm/prognosis_all_patient.csv
+  # Organ pooling needs the full grid and the masks, not the pooled copy the base config reads.
   file_column: image_path
+  preload_inputs: false
   cohort: all_comers
 
 task:

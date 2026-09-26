@@ -1,11 +1,12 @@
 """Compact, de-identified data-readiness reporting for derived INSPECT datasets.
 
-The dataset build retains detailed, patient-linked failure records under ``audit/`` for
+The dataset build retains patient-linked exclusions in ``manifests/exclusions.csv`` for
 debugging.  This module produces the small top-level report people should read first:
 cohort size, class distribution, data loss, cache health and clinical-data readiness.
 """
 from __future__ import annotations
 
+import csv
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -15,6 +16,49 @@ from .adjudication import normalize_binary
 from .sources import StudyRecord
 
 SPLITS = ("train", "validation", "test")
+
+
+def summarize_task_labels(manifests: Mapping[str, Any]) -> dict[str, Any]:
+    """Count usable, censored, and missing labels in each training manifest."""
+    definitions = dict(manifests.get("cohort_definitions") or {})
+    diagnosis_targets = [
+        *dict(definitions.get("label_map") or {}).values(),
+        *dict(definitions.get("diagnosis_label_aliases") or {}).keys(),
+    ]
+    outcomes = list(definitions.get("prognosis_outcomes") or ())
+    tasks = {
+        "diagnosis": (manifests.get("diagnosis"), diagnosis_targets),
+        "prognosis/legacy": (manifests.get("prognosis"), outcomes),
+    }
+    for name, artifact in dict(manifests.get("prognosis_cohorts") or {}).items():
+        tasks[f"prognosis/{name}"] = (artifact, outcomes)
+
+    summary: dict[str, Any] = {}
+    for task, (artifact, targets) in tasks.items():
+        if not isinstance(artifact, Mapping):
+            continue
+        path = Path(str(artifact["path"]))
+        counts = {target: Counter() for target in dict.fromkeys(str(x) for x in targets)}
+        missing_images = 0
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = 0
+            for row in reader:
+                rows += 1
+                missing_images += not bool((row.get("image_path") or "").strip())
+                for target, counter in counts.items():
+                    value = (row.get(target) or "").strip()
+                    if value in {"0", "1"}:
+                        counter[value] += 1
+                    elif (row.get(f"{target}_status") or "").upper() == "CENSORED":
+                        counter["censored"] += 1
+                    else:
+                        counter["missing"] += 1
+        summary[task] = {
+            "manifest": str(path), "rows": rows, "missing_images": missing_images,
+            "targets": {target: dict(counter) for target, counter in counts.items()},
+        }
+    return summary
 
 
 def cohort_step(step: str, what: str, records: Sequence[StudyRecord]) -> dict[str, Any]:
@@ -223,6 +267,7 @@ def build_data_quality(
     spesi: Mapping[str, Any] | None = None,
     modality_availability: Mapping[str, Any] | None = None,
     cohort_funnel: Sequence[Mapping[str, Any]] = (),
+    task_labels: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a compact, de-identified readiness report for one built profile."""
     cache_qc = dict(preprocessing.get("cache_qc") or {})
@@ -237,6 +282,7 @@ def build_data_quality(
         },
         "cohort_funnel": funnel_losses(cohort_funnel),
         "native_label_distribution": _label_distribution(records, adjudication_columns),
+        "task_labels": dict(task_labels or {}),
         "data_loss": {
             "eligibility": dict(eligibility),
             "integrity": dict(integrity),
@@ -245,7 +291,7 @@ def build_data_quality(
                 "written": preprocessing.get("written"),
                 "cached": preprocessing.get("cached"),
                 "failure_count": preprocessing.get("failure_count"),
-                # The full failure list contains study IDs and stays in audit/cache_qc.json.
+                # Per-study preprocessing failures remain in dataset.json.
                 "cache_qc": {
                     key: cache_qc.get(key)
                     for key in ("enabled", "checked", "passed", "failed", "skipped")
@@ -344,6 +390,25 @@ def render_data_quality_markdown(payload: Mapping[str, Any]) -> str:
             )
     else:
         lines.append("No native-label columns were configured.")
+
+    tasks = dict(payload.get("task_labels") or {})
+    if tasks:
+        lines.extend([
+            "", "## Training labels by task", "",
+            "Empty labels are masked during training; censored outcomes are counted separately.",
+            "", "| Task | Target | Rows | 0 | 1 | Censored | Missing | Missing image |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for task, detail in tasks.items():
+            detail = dict(detail)
+            for target, values in dict(detail.get("targets") or {}).items():
+                values = dict(values)
+                lines.append(
+                    f"| {task} | {target} | {detail.get('rows', 0)} | "
+                    f"{values.get('0', 0)} | {values.get('1', 0)} | "
+                    f"{values.get('censored', 0)} | {values.get('missing', 0)} | "
+                    f"{detail.get('missing_images', 0)} |"
+                )
 
     acquisition = dict(payload.get("ctpa_acquisition") or {})
     procedure_datetime = dict(acquisition.get("procedure_datetime") or {})
@@ -467,7 +532,7 @@ def render_data_quality_markdown(payload: Mapping[str, Any]) -> str:
             + _format_count_map(dict(split_audit.get("split_patients") or {}))
             + " patients by split.",
             "",
-            "Detailed patient-linked failures, if any, are in `audit/`; this report deliberately "
+            "Patient-linked exclusions, if any, are in `manifests/exclusions.csv`; this report "
             "contains aggregate counts only.",
             "",
         ]

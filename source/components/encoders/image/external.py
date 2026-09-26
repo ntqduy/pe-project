@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 from collections.abc import Callable, Mapping
@@ -125,6 +126,16 @@ def build_inspected_external(config: Mapping[str, Any], backbone_name: str) -> I
             f"{backbone_name} integration is incomplete ({', '.join(missing)}); "
             "inspect and pin the actual repository/checkpoint before use"
         )
+    expected_sha256 = str(config.get("weight_sha256") or "").strip().lower()
+    if load_pretrained and expected_sha256:
+        digest = hashlib.sha256()
+        with checkpoint.open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != expected_sha256:
+            raise ThirdPartyIntegrationError(
+                f"{backbone_name} checkpoint SHA-256 mismatch: {checkpoint}"
+            )
     sys.path.insert(0, str(repo.resolve()))
     try:
         factory = import_symbol(factory_path)
@@ -137,6 +148,7 @@ def build_inspected_external(config: Mapping[str, Any], backbone_name: str) -> I
     if not isinstance(model, nn.Module):
         raise ThirdPartyIntegrationError(f"{factory_path} did not return torch.nn.Module")
     wrapper = InspectedExternalEncoder(model, output_adapter, feature_dim, backbone_name)
+    wrapper.lora_target_modules = tuple(str(value) for value in (config.get("lora_target_modules") or ()))
     if load_pretrained:
         wrapper.load_pretrained_weights(str(checkpoint), strict=bool(config.get("strict_load", True)))
     return wrapper

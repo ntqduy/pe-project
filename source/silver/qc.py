@@ -42,7 +42,7 @@ def _issue(row: Mapping[str, Any]) -> str | None:
     reason = str(row.get("reason") or "")
     if status == "accepted":
         return "impossible_value" if _impossible_value(row) else None
-    if "disagree" in reason:
+    if "disagree" in reason or "rule_conflict" in reason:
         return "conflict"
     if status == "no_result":
         return "missing_field"

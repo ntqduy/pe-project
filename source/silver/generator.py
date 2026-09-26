@@ -9,8 +9,13 @@ from .audit import AuditRecord, evidence_from_outputs, utc_timestamp
 from .confidence import route_confidence
 from .falcon import FalconExtractor
 from .medgemma import MedGemmaExtractor
-from .rules import RULE_VERSION, apply_rule
-from .schema import TARGETS, SilverLabel
+from .providers import MAX_STORED_RAW_CHARS, ProviderResponseError
+from .rules import RULE_VERSION, RuleDecision, apply_rule
+from .schema import TARGETS, SilverLabel, target_spec
+
+# An explicit "no pulmonary embolism" rules out every PE location, so these targets are
+# false by implication even when the report does not name them one by one.
+PE_LOCATION_TARGETS = ("central", "lobar", "segmental", "subsegmental", "saddle")
 
 # A method name IS its source list, in cascade order. Reading the name tells you exactly
 # which extractors ran and in which order, so no separate SL00/SL01/SL02 legend is needed.
@@ -47,6 +52,8 @@ class SilverGenerator:
         agreement_confidence_threshold: float | None = None,
         prompt_version: str | None = None,
         run_id: str | None = None,
+        rule_rescue: bool = False,
+        pe_consistency: bool = False,
     ):
         normalized = str(method).strip().lower()
         if normalized not in SILVER_METHODS:
@@ -82,6 +89,13 @@ class SilverGenerator:
                 raise ValueError(f"{name} must be in [0, 1]")
         self.prompt_version = prompt_version
         self.run_id = run_id or uuid.uuid4().hex
+        # MedGemma stays the primary labeller. With rule_rescue the deterministic regex
+        # extractor (rules.py) (a) vetoes a confident MedGemma value it explicitly
+        # contradicts, and (b) supplies the value when MedGemma abstains or fails but the
+        # report states the finding explicitly. Rescued rows carry source="rule".
+        self.rule_rescue = bool(rule_rescue)
+        # Cross-target check on the PE hierarchy of one report (see _enforce_pe_consistency).
+        self.pe_consistency = bool(pe_consistency)
 
     def _identifiers(self, report: Mapping[str, Any]) -> dict[str, str]:
         values = {name: str(report.get(name) or "") for name in ("patient_id", "study_id", "report_id")}
@@ -109,6 +123,7 @@ class SilverGenerator:
                 labels.append(label)
                 audits.append(self._audit(label, {}))
             return labels, audits
+        raws: list[dict[str, Any]] = []
         for target in TARGETS:
             try:
                 label, raw = self._generate_target(identifiers, text, target)
@@ -119,14 +134,63 @@ class SilverGenerator:
                 )
                 raw = {}
             labels.append(label)
-            audits.append(self._audit(label, raw))
+            raws.append(raw)
+        if self.pe_consistency:
+            labels = self._enforce_pe_consistency(identifiers, labels)
+        audits = [self._audit(label, raw) for label, raw in zip(labels, raws, strict=True)]
         return labels, audits
+
+    def _enforce_pe_consistency(
+        self, identifiers: dict[str, str], labels: list[SilverLabel]
+    ) -> list[SilverLabel]:
+        """Make the PE location/acuity targets agree with pe_present within one report.
+
+        pe_present accepted false  -> every location is false (filled when not accepted);
+                                      a location accepted true or an acuity is withdrawn.
+        pe_present not accepted    -> a location "false" is unsupported: without knowing
+                                      whether there is a PE, "no lobar PE" is a guess.
+        pe_present accepted true   -> unchanged.
+        """
+        by_target = {label.target: index for index, label in enumerate(labels)}
+        pe = labels[by_target["pe_present"]]
+        pe_value = pe.value if pe.status == "accepted" else None
+
+        def replace(target: str, **changes: Any) -> None:
+            current = labels[by_target[target]]
+            fields = {**current.as_dict(), **changes}
+            labels[by_target[target]] = SilverLabel(**fields)
+
+        for target in PE_LOCATION_TARGETS:
+            current = labels[by_target[target]]
+            if pe_value is False:
+                if current.status == "accepted" and current.value is False:
+                    continue
+                if current.status == "accepted" and current.value is True:
+                    replace(target, value=None, status="abstained",
+                            reason="pe_consistency:location_true_but_pe_present_false")
+                    continue
+                replace(target, value=False, status="accepted", source="rule", provider="rule",
+                        model_id=None, confidence=None, rule_version=RULE_VERSION,
+                        reason="pe_consistency:implied_by_pe_present_false")
+            elif pe_value is None and current.status == "accepted" and current.value is False:
+                replace(target, value=None, status="abstained",
+                        reason="pe_consistency:location_false_without_pe_decision")
+        acuity = labels[by_target["acuity"]]
+        if pe_value is False and acuity.status == "accepted":
+            replace("acuity", value=None, status="abstained",
+                    reason="pe_consistency:acuity_without_pe")
+        return labels
 
     def _audit(self, label: SilverLabel, raw: Mapping[str, Any]) -> AuditRecord:
         rule_output = raw.get("rule_output")
         falcon_output = raw.get("falcon_output")
         medgemma_output = raw.get("medgemma_output")
         evidence_text, evidence_start, evidence_end = evidence_from_outputs(falcon_output, medgemma_output)
+        rule_evidence = (rule_output or {}).get("evidence") if label.source == "rule" else None
+        if isinstance(rule_evidence, Mapping):
+            evidence_text = rule_evidence.get("text")
+            evidence_start = rule_evidence.get("start")
+            evidence_end = rule_evidence.get("end")
         return AuditRecord(
             patient_id=label.patient_id,
             study_id=label.study_id,
@@ -193,38 +257,128 @@ class SilverGenerator:
             model_id=self.falcon.provider.model_id,
         )
 
+    def _rule_decision(self, text: str, target: str, raw: dict[str, Any]) -> RuleDecision:
+        """Explicit regex decision, or the PE-negative implication for location targets."""
+        decision = apply_rule(text, target)
+        if not decision.resolved and target in PE_LOCATION_TARGETS:
+            pe = apply_rule(text, "pe_present")
+            if pe.resolved and pe.value is False:
+                decision = RuleDecision(True, False, "implied_by_explicit_no_pe", pe.evidence)
+        raw["rule_output"] = decision.as_dict()
+        return decision
+
+    @staticmethod
+    def _same_value(target: str, first: Any, second: Any) -> bool:
+        if target_spec(target).kind == "continuous" and first is not None and second is not None:
+            return abs(float(first) - float(second)) <= 0.05
+        return first == second
+
+    def _rule_label(
+        self,
+        identifiers: dict[str, str],
+        target: str,
+        decision: RuleDecision,
+        *,
+        medgemma_value: Any,
+        why: str,
+    ) -> SilverLabel:
+        return SilverLabel(
+            **identifiers,
+            target=target,
+            value=decision.value,
+            status="accepted",
+            source="rule",
+            reason=f"rule_{decision.reason}_{why}",
+            rule_version=RULE_VERSION,
+            provider="rule",
+            medgemma_value=medgemma_value,
+        )
+
     def _medgemma_only(
         self, identifiers: dict[str, str], text: str, target: str, raw: dict[str, Any]
     ) -> SilverLabel:
-        prediction = self.medgemma.extract(text, target)
-        raw["medgemma_output"] = dict(prediction)
-        value = prediction.get("value")
-        if value is None or not route_confidence(
-            prediction, self.medgemma_confidence_threshold
-        ):
+        model_id = self.medgemma.provider.model_id
+        try:
+            prediction = self.medgemma.extract(text, target)
+        except ProviderResponseError as exc:
+            raw["medgemma_output"] = {
+                "error": str(exc),
+                "raw_response": (exc.raw_response or "")[:MAX_STORED_RAW_CHARS] or None,
+            }
+            if self.rule_rescue:
+                decision = self._rule_decision(text, target, raw)
+                if decision.resolved:
+                    return self._rule_label(
+                        identifiers, target, decision, medgemma_value=None, why="after_medgemma_failure"
+                    )
             return SilverLabel(
                 **identifiers,
                 target=target,
                 value=None,
-                status="abstained",
+                status="no_result",
+                source="medgemma",
+                reason=f"technical_failure:ProviderResponseError:{exc}",
+                provider="medgemma",
+                model_id=model_id,
+            )
+        raw["medgemma_output"] = dict(prediction)
+        value = prediction.get("value")
+        evidence_rejected = value is not None and prediction.get("evidence_valid") is False
+        confident = (
+            value is not None
+            and not evidence_rejected
+            and route_confidence(prediction, self.medgemma_confidence_threshold)
+        )
+        decision = self._rule_decision(text, target, raw) if self.rule_rescue else None
+        if confident:
+            if decision is not None and decision.resolved and not self._same_value(target, value, decision.value):
+                return SilverLabel(
+                    **identifiers,
+                    target=target,
+                    value=None,
+                    status="abstained",
+                    source="medgemma",
+                    confidence=self._numeric(prediction),
+                    reason=f"medgemma_rule_conflict:rule={decision.value!r}",
+                    medgemma_value=value,
+                    provider="medgemma",
+                    model_id=model_id,
+                )
+            return SilverLabel(
+                **identifiers,
+                target=target,
+                value=value,
+                status="accepted",
                 source="medgemma",
                 confidence=self._numeric(prediction),
-                reason="medgemma_uncertain_or_below_confidence_threshold",
+                reason=(
+                    "medgemma_confident_rule_agrees"
+                    if decision is not None and decision.resolved
+                    else "medgemma_confident"
+                ),
                 medgemma_value=value,
                 provider="medgemma",
-                model_id=self.medgemma.provider.model_id,
+                model_id=model_id,
+            )
+        if decision is not None and decision.resolved:
+            return self._rule_label(
+                identifiers, target, decision, medgemma_value=value, why="after_medgemma_abstained"
             )
         return SilverLabel(
             **identifiers,
             target=target,
-            value=value,
-            status="accepted",
+            value=None,
+            status="abstained",
             source="medgemma",
             confidence=self._numeric(prediction),
-            reason="medgemma_confident",
+            reason=(
+                "medgemma_evidence_not_in_report"
+                if evidence_rejected
+                else "medgemma_uncertain_or_below_confidence_threshold"
+            ),
             medgemma_value=value,
             provider="medgemma",
-            model_id=self.medgemma.provider.model_id,
+            model_id=model_id,
         )
 
     def _generate_target(
