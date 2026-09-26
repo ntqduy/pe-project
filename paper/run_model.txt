@@ -19,3 +19,7 @@ gcsfuse --implicit-dirs --only-dir pe-storage pe-study /mnt/pe-storage
 gcsfuse --implicit-dirs --only-dir Stanford_INSPECT_dataset pe-study /mnt/Stanford_INSPECT_dataset
 gcsfuse --implicit-dirs --only-dir paper1 pe-study /mnt/paper1
 mountpoint /mnt/pe-storage && nproc && nvidia-smi -L    # phải thấy 16 CPU và 1 L4
+
+
+cd /mnt/pe-project
+env -u GIT_ASKPASS -u SSH_ASKPASS -u VSCODE_GIT_ASKPASS_NODE -u VSCODE_GIT_ASKPASS_MAIN -u VSCODE_GIT_IPC_HANDLE GIT_TERMINAL_PROMPT=1 git -c credential.helper= push origin master
