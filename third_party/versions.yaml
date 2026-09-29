@@ -1,7 +1,8 @@
 schema_version: 2
 
-# Repositories are clean local clones. Their contents are intentionally ignored
-# by the parent project; this manifest is the reproducible source of truth.
+# Repositories are clean upstream clones, tracked as git submodules (.gitmodules): the
+# parent project stores each pinned commit, never the source. Weights stay ignored; this
+# manifest is the reproducible source of truth for them.
 components:
   ct_fm:
     status: staged

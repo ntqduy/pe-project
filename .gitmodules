@@ -1,0 +1,52 @@
+[submodule "third_party/repos/CT-CLIP"]
+	path = third_party/repos/CT-CLIP
+	url = https://github.com/ibrahimethemhamamci/CT-CLIP.git
+	ignore = untracked
+[submodule "third_party/repos/CT-FM"]
+	path = third_party/repos/CT-FM
+	url = https://github.com/project-lighter/CT-FM.git
+	ignore = untracked
+[submodule "third_party/repos/INSPECT_public"]
+	path = third_party/repos/INSPECT_public
+	url = https://github.com/som-shahlab/INSPECT_public.git
+	ignore = untracked
+[submodule "third_party/repos/NV-Reason-CT"]
+	path = third_party/repos/NV-Reason-CT
+	url = https://github.com/NVIDIA-Medtech/NV-Reason-CT.git
+	ignore = untracked
+[submodule "third_party/repos/TotalFM"]
+	path = third_party/repos/TotalFM
+	url = https://github.com/jichi-labo/TotalFM.git
+	ignore = untracked
+[submodule "third_party/repos/TotalSegmentator"]
+	path = third_party/repos/TotalSegmentator
+	url = https://github.com/wasserth/TotalSegmentator.git
+	ignore = untracked
+[submodule "third_party/repos/VMamba"]
+	path = third_party/repos/VMamba
+	url = https://github.com/MzeroMiko/VMamba.git
+	ignore = untracked
+[submodule "third_party/repos/damo-radar"]
+	path = third_party/repos/damo-radar
+	url = https://github.com/alibaba-damo-academy/damo-radar.git
+	ignore = untracked
+[submodule "third_party/repos/lungmask"]
+	path = third_party/repos/lungmask
+	url = https://github.com/JoHof/lungmask.git
+	ignore = untracked
+[submodule "third_party/repos/mamba_mae"]
+	path = third_party/repos/mamba_mae
+	url = https://github.com/WinstonHuTiger/mamba_mae.git
+	ignore = untracked
+[submodule "third_party/repos/nnMamba"]
+	path = third_party/repos/nnMamba
+	url = https://github.com/lhaof/nnMamba.git
+	ignore = untracked
+[submodule "third_party/repos/penet"]
+	path = third_party/repos/penet
+	url = https://github.com/marshuang80/penet.git
+	ignore = untracked
+[submodule "third_party/repos/pykan"]
+	path = third_party/repos/pykan
+	url = https://github.com/KindXiaoming/pykan.git
+	ignore = untracked

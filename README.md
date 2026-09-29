@@ -509,9 +509,9 @@ pip install -e third_party/repos/TotalSegmentator
 pip install -e third_party/repos/lungmask
 ```
 
-**Those two directories are currently empty**, as are `CT-FM`, `CT-CLIP` and `TotalFM`. Clone
-them at the commits pinned in [`third_party/versions.yaml`](third_party/versions.yaml) before
-the install lines above will do anything. The dataset build needs none of them — it uses only
+`third_party/repos/*` are git submodules pinned to upstream commits, so a fresh clone has them
+empty: run `git submodule update --init` (or clone with `--recurse-submodules`) before the
+install lines above will do anything. The dataset build needs none of them — it uses only
 `numpy`, `nibabel` and the standard library.
 
 Third-party sources and weights are managed per [third_party/README.md](third_party/README.md).
