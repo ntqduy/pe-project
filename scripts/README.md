@@ -6,33 +6,34 @@ logic remain in `source/` and `tools/`.
 
 ```text
 scripts/
-├── use_gcs_storage.sh        storage roots (PE_*); sourced by every script, see Storage
-├── run_preprocessing.sh      stage 0 end to end for one dataset profile
-├── run_segmentation.sh       TotalSegmentator + LungMask masks, contact-sheet previews, QC
-├── run_roi.sh                ROI1-ROI8 and matched random controls
-├── run_silver_labels.sh      report-derived accepted/abstained silver labels
-├── run_silver_adaptation.sh  optional silver-supervised encoder adaptation
-├── run_ctfm_diagnosis.sh     CT-FM frozen + trainable MLP for PE diagnosis
-├── run_ctfm_prognosis_all.sh CT-FM frozen + MLP prognosis on all eligible patients
-├── run_ctfm_prognosis_pe.sh  CT-FM frozen + MLP prognosis on PE-positive patients
-├── run_ctfm_frozen.sh        shared prepare/train/evaluate implementation
-├── run_ctfm_anatomy.sh       CT-FM frozen + organ adapters + concat/Soft-MoE proposal
-├── run_zeroshot_penet.sh     released PENet applied unchanged, no training
-├── run_zeroshot_radar.sh     released RADAR (abdominal-CT generalist) probed for PE, no training
-└── ana.sh                    EDA over a built dataset profile (see analysis/README.md)
+├── diagnosis/
+│   ├── run_ctfm_diagnosis.sh     CT-FM frozen + trainable MLP for PE diagnosis
+│   ├── run_zeroshot_penet.sh     released PENet applied unchanged, no training
+│   └── run_zeroshot_radar.sh     released RADAR (abdominal-CT generalist) probed for PE, no training
+├── prognosis/
+│   ├── run_ctfm_prognosis_all.sh CT-FM frozen + MLP prognosis on all eligible patients
+│   └── run_ctfm_prognosis_pe.sh  CT-FM frozen + MLP prognosis on PE-positive patients
+└── tool/
+    ├── use_gcs_storage.sh        storage roots (PE_*); sourced by every script, see Storage
+    ├── run_ctfm_frozen.sh        shared CT-FM prepare/train/evaluate behind the task wrappers
+    ├── run_preprocessing.sh      stage 0 end to end for one dataset profile
+    ├── run_segmentation.sh       TotalSegmentator + LungMask masks, contact-sheet previews, QC
+    ├── run_roi.sh                ROI1-ROI8 and matched random controls
+    ├── run_silver_labels.sh      report-derived accepted/abstained silver labels
+    └── eda.sh                    EDA over a built dataset profile (see analysis/README.md)
 ```
 
 Every script takes its settings from environment variables in front of the command
-(`PROFILE=smoke_30 GPUS=0 bash scripts/<name>.sh`). Common ones: `PROFILE`
-(`smoke_30` | `test_500_sample` | `full_inspect`, default `full_inspect`; `ana.sh` defaults
+(`PROFILE=smoke_30 GPUS=0 bash scripts/<folder>/<name>.sh`). Common ones: `PROFILE`
+(`smoke_30` | `test_500_sample` | `full_inspect`, default `full_inspect`; `eda.sh` defaults
 to `test_500_sample`), `ACTION`, `GPUS`, `OVERWRITE=1`, `PYTHON`.
 
 ## Building a dataset profile
 
 ```bash
-PROFILE=smoke_30 bash scripts/run_preprocessing.sh        # rehearse first
-ACTION=preflight bash scripts/run_preprocessing.sh        # check the full build
-bash scripts/run_preprocessing.sh                         # full_inspect, hours
+PROFILE=smoke_30 bash scripts/tool/run_preprocessing.sh        # rehearse first
+ACTION=preflight bash scripts/tool/run_preprocessing.sh        # check the full build
+bash scripts/tool/run_preprocessing.sh                         # full_inspect, hours
 ```
 
 `ACTION` picks `run`, `dry`, `preflight`, `plan` or `show`; `OVERWRITE=1` rebuilds over an
@@ -82,26 +83,17 @@ For the explicit CT-FM wrappers:
 
 ```bash
 # Technical rehearsal: existing small profile, one epoch, one GPU.
-PROFILE=smoke_30 EPOCHS=1 GPUS=0 bash scripts/run_ctfm_diagnosis.sh
+PROFILE=smoke_30 EPOCHS=1 GPUS=0 bash scripts/diagnosis/run_ctfm_diagnosis.sh
 
-# Full diagnosis: 50-epoch budget, early stop after 10 validation stalls, two GPUs.
-PROFILE=full_inspect EPOCHS=50 EARLY_STOPPING=10 GPUS=0,1 \
-  bash scripts/run_ctfm_diagnosis.sh
-
-# Proposal: same frozen public CT-FM, then train only organ adapters/fusion/head.
-TASK=diagnosis FUSION=concat PROFILE=full_inspect GPUS=0,1 \
-  bash scripts/run_ctfm_anatomy.sh
-TASK=diagnosis FUSION=moe PROFILE=full_inspect GPUS=0,1 \
-  bash scripts/run_ctfm_anatomy.sh
-TASK=prognosis COHORT=pe FUSION=concat PROFILE=full_inspect GPUS=0,1 \
-  bash scripts/run_ctfm_anatomy.sh
-TASK=prognosis COHORT=pe FUSION=moe PROFILE=full_inspect GPUS=0,1 \
-  bash scripts/run_ctfm_anatomy.sh
+# Full diagnosis: 100-epoch budget, early stop after 15 validation stalls, two GPUs
+# (the defaults; batch size 4 comes from the ct_fm_frozen_*.yaml configs, BATCH_SIZE=N overrides).
+PROFILE=full_inspect EPOCHS=100 EARLY_STOPPING=15 GPUS=0,1 \
+  bash scripts/diagnosis/run_ctfm_diagnosis.sh
 
 # Prognosis variants.
-PROFILE=full_inspect GPUS=0,1 bash scripts/run_ctfm_prognosis_all.sh
+PROFILE=full_inspect GPUS=0,1 bash scripts/prognosis/run_ctfm_prognosis_all.sh
 PROFILE=full_inspect TARGET=12_month_PH GPUS=0,1 \
-  bash scripts/run_ctfm_prognosis_pe.sh
+  bash scripts/prognosis/run_ctfm_prognosis_pe.sh
 ```
 
 `ACTION` for these wrappers is `prepare`, `train`, `evaluate`, `all`, `preflight`, or
@@ -171,14 +163,13 @@ recomputing CT-FM (train/evaluate refuse a manifest without `pooled_path` and sa
 ## Segmentation, ROI and silver labels
 
 ```bash
-PROFILE=smoke_30 MAX_CASES=1 GPUS=0 bash scripts/run_segmentation.sh   # one study first
-PROFILE=smoke_30 GPUS=0 bash scripts/run_segmentation.sh               # whole profile
-PROFILE=smoke_30 bash scripts/run_roi.sh                               # after segmentation
-PROFILE=smoke_30 GPUS=0 bash scripts/run_silver_labels.sh
-PROFILE=smoke_30 GPUS=0 bash scripts/run_silver_adaptation.sh          # optional
+PROFILE=smoke_30 MAX_CASES=1 GPUS=0 bash scripts/tool/run_segmentation.sh   # one study first
+PROFILE=smoke_30 GPUS=0 bash scripts/tool/run_segmentation.sh               # whole profile
+PROFILE=smoke_30 bash scripts/tool/run_roi.sh                               # after segmentation
+PROFILE=smoke_30 GPUS=0 bash scripts/tool/run_silver_labels.sh
 ```
 
-These accept `ACTION=run|preflight` (`run_silver_adaptation.sh` also `dry`), `OVERWRITE=1`,
+These accept `ACTION=run|preflight`, `OVERWRITE=1`,
 and one scope: `PATIENT_ID=<id>`, `MAX_CASES=N` (`MAX_REPORTS=N` for silver labels), or the
 whole manifest by default. Segmentation writes `masks/<patient>/<study>/<anatomy>.nii.gz`,
 one `previews/<patient>_<study>.png` per study and `qc_summary.csv`; see
@@ -192,28 +183,31 @@ starting it.
 
 ## Storage
 
-The pipeline writes only under `PE_CLOUD_ROOT`. Mount `gs://pe-study/pe-storage` at
-`/mnt/pe-storage` first — nothing in this repository mounts anything.
+The pipeline writes only under `PE_CLOUD_ROOT`, `/mnt/pe-project/outputs` by default
+(`configs/paths.yaml`, same layout as `gs://pe-study/pe-storage`). The only mount is the raw
+release: mount `gs://pe-study/Stanford_INSPECT_dataset` at `/mnt/Stanford_INSPECT_dataset`
+yourself with gcsfuse — nothing in this repository mounts anything.
+Back the outputs up to the bucket with `gcloud storage rsync --recursive /mnt/pe-project/outputs gs://pe-study/pe-storage` (never deletes).
 
-`scripts/use_gcs_storage.sh` sets the roots; values you have already exported win:
+`scripts/tool/use_gcs_storage.sh` sets the roots; values you have already exported win:
 
 | variable | default |
 |---|---|
-| `PE_CLOUD_ROOT` | `/mnt/pe-storage` |
+| `PE_CLOUD_ROOT` | `/mnt/pe-project/outputs` |
 | `PE_CLOUD_PROJECT_ROOT` | `$PE_CLOUD_ROOT/pe-project` (outputs go to `…/outputs`) |
 | `PE_RAW_INSPECT_ROOT` | `/mnt/Stanford_INSPECT_dataset` |
 | `PE_DERIVED_ROOT` | `$PE_CLOUD_ROOT/derived` |
 
-Every `scripts/*.sh` sources it. To have the same variables for direct `python run.py …`
+Every `scripts/*/*.sh` sources it. To have the same variables for direct `python run.py …`
 or `tools/…` calls without exporting them each time, install it into `~/.bashrc` once:
 
 ```bash
-bash scripts/use_gcs_storage.sh --install     # new terminals get the variables
-bash scripts/use_gcs_storage.sh --show        # current values + mount check
-bash scripts/use_gcs_storage.sh --uninstall   # remove the ~/.bashrc line
+bash scripts/tool/use_gcs_storage.sh --install     # new terminals get the variables
+bash scripts/tool/use_gcs_storage.sh --show        # current values + mount check
+bash scripts/tool/use_gcs_storage.sh --uninstall   # remove the ~/.bashrc line
 ```
 
-It warns when `/mnt/pe-storage` is not mounted or the raw release is missing.
+It warns when no dataset profile exists under `PE_DERIVED_ROOT` or the raw release is missing.
 `PE_LOCAL_CACHE_ROOT` (optional) moves the local code-side cache, default `<repo>/cache`.
 
 ## Zero-shot PENet
@@ -224,8 +218,8 @@ external baseline rather than another arm to train.
 ```bash
 pip install opencv-python-headless        # cv2.INTER_AREA slice resize, required
 
-CHECK_SLICE_ORDER=1 bash scripts/run_zeroshot_penet.sh   # run this first
-SLICE_ORDER=<winner> bash scripts/run_zeroshot_penet.sh  # then the full test split
+CHECK_SLICE_ORDER=1 bash scripts/diagnosis/run_zeroshot_penet.sh   # run this first
+SLICE_ORDER=<winner> bash scripts/diagnosis/run_zeroshot_penet.sh  # then the full test split
 ```
 
 Run the check first. A 3-D convolution is sensitive to slice order inside a window and
@@ -258,9 +252,9 @@ conda create -n radar python=3.10 && conda activate radar
 pip install -r third_party/repos/damo-radar/requirements.txt
 conda activate pe
 
-PROFILE=smoke_30 MAX_CASES=5 bash scripts/run_zeroshot_radar.sh   # quick look
-bash scripts/run_zeroshot_radar.sh                                # full validation + test
-RESUME=1 bash scripts/run_zeroshot_radar.sh                       # continue after an interruption
+PROFILE=smoke_30 MAX_CASES=5 bash scripts/diagnosis/run_zeroshot_radar.sh   # quick look
+bash scripts/diagnosis/run_zeroshot_radar.sh                                # full validation + test
+RESUME=1 bash scripts/diagnosis/run_zeroshot_radar.sh                       # continue after an interruption
 ```
 
 `PYTHON` (project env) selects studies and evaluates; `RADAR_PYTHON` (default

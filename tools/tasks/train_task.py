@@ -659,7 +659,8 @@ def main() -> int:
                     f"(selection: negative validation loss)"
                 )
                 run_logger.log(
-                    f"artifacts: {epoch_artifact_dir} (checkpoint/, preview/, training_curves.png); "
+                    f"artifacts: {epoch_artifact_dir} "
+                    "(checkpoint/, preview/, history.csv, training_curves.png); "
                     "result.csv and predictions.csv are written by the evaluation step"
                 )
             refresh_epoch_log(run_dir)

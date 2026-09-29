@@ -3,9 +3,9 @@
 # Silver labels are auxiliary supervision only; they are never used as test gold labels.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 ACTION="${ACTION:-run}"
 GPUS="${GPUS:-0}"

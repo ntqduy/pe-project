@@ -4,10 +4,10 @@ Mô tả dữ liệu **đã build**, để hiểu cohort trước khi train. Ch�
 sửa manifest, không tạo ra thứ gì training tiêu thụ — chạy lại lúc nào cũng được.
 
 ```bash
-bash scripts/ana.sh                                  # PROFILE=test_500_sample
-PROFILE=full_inspect bash scripts/ana.sh
-PROFILE=smoke_30 RULE_SAMPLE=0 bash scripts/ana.sh   # 0 = quét mọi report
-NO_FIGURES=1 bash scripts/ana.sh                     # chỉ số, không vẽ PNG
+bash scripts/tool/eda.sh                                  # PROFILE=test_500_sample
+PROFILE=full_inspect bash scripts/tool/eda.sh
+PROFILE=smoke_30 RULE_SAMPLE=0 bash scripts/tool/eda.sh   # 0 = quét mọi report
+NO_FIGURES=1 bash scripts/tool/eda.sh                     # chỉ số, không vẽ PNG
 ```
 
 Hoặc gọi thẳng:

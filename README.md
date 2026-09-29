@@ -26,10 +26,11 @@ checkpoint; `python run.py plan <experiment>` names the missing artifact for any
 ## Quick start
 
 ```bash
-# this workspace: bucket-backed derived data and outputs (mount gs://pe-study/pe-storage first)
-export PE_CLOUD_ROOT=/mnt/pe-storage
+# this workspace: these are already the defaults (configs/paths.yaml), exporting is optional;
+# mount the raw release first: gcsfuse --implicit-dirs --only-dir Stanford_INSPECT_dataset pe-study /mnt/Stanford_INSPECT_dataset
+export PE_CLOUD_ROOT=/mnt/pe-project/outputs
 export PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
-export PE_DERIVED_ROOT=/mnt/pe-storage/derived
+export PE_DERIVED_ROOT=/mnt/pe-project/outputs/derived
 export PE_LOCAL_CACHE_ROOT=/mnt/pe-project/cache
 
 python3 -m pip install -r requirements.txt && python3 -m pip install -e .
@@ -38,14 +39,18 @@ python3 run.py preflight data.dataset.smoke_30                         # 1. chec
 python run.py run data.dataset.smoke_30 # 2. technical smoke
 python run.py run data.dataset.test_500_sample --allow-full # 3. rehearsal
 python3 run.py plan diag.anatomy.concat                                 # 4. what is left
-PROFILE=smoke_30 bash scripts/ana.sh                                    # 5. describe the cohort
+PROFILE=smoke_30 bash scripts/tool/eda.sh                                    # 5. describe the cohort
 ```
 
-Everything the pipeline produces goes to `/mnt/pe-storage` — cohorts under
-`/mnt/pe-storage/derived/datasets/<profile>/`, runs under
-`/mnt/pe-storage/pe-project/outputs/`. Nothing is written into the source tree, and the raw
-release at `/mnt/Stanford_INSPECT_dataset` is only ever read. The full 500-sample and
-full-cohort recipes are in [Test → full](#test--full).
+Everything the pipeline produces goes to the git-ignored `/mnt/pe-project/outputs` on the VM
+disk — cohorts under `derived/datasets/<profile>/`, caches under `derived/cache/<profile>/`,
+runs under `pe-project/outputs/`, the same layout as `gs://pe-study/pe-storage`. The raw
+release at `/mnt/Stanford_INSPECT_dataset` (a gcsfuse mount) is only ever read. The full
+500-sample and full-cohort recipes are in [Test → full](#test--full).
+
+`gcloud storage rsync --recursive /mnt/pe-project/outputs gs://pe-study/pe-storage` backs the outputs up
+(swap the two paths to restore them on a fresh disk); the pipeline itself never reads the
+bucket, and until a backup new work exists only on the VM disk.
 
 ## The CLI
 
@@ -114,14 +119,13 @@ DX_anatomy_concat__ds_test_500_sample__bb_ct_clip__enc_silver  all three changed
                                                                     6 counterfactual
 ```
 
-Everything derived lives under `/mnt/pe-storage` in this workspace: cohorts under
-`/mnt/pe-storage/derived/datasets/<profile>/`, every run under
-`/mnt/pe-storage/pe-project/outputs/<stage>/<experiment.id>/`. The code stays local at
-`/mnt/pe-project` and the raw release stays read-only at `/mnt/Stanford_INSPECT_dataset`.
+Everything derived lives under `/mnt/pe-project/outputs` in this workspace: cohorts under
+`derived/datasets/<profile>/`, every run under `pe-project/outputs/<stage>/<experiment.id>/`.
+The raw release stays read-only at `/mnt/Stanford_INSPECT_dataset`.
 
 | stage | wrapper | reads | writes |
 |---|---|---|---|
-| **0 data preprocessing** | `scripts/run_preprocessing.sh` | the read-only INSPECT release | `derived/datasets/<profile>/`: task manifests, `data_quality.md`, `dataset.json`, `logs.txt`; CT/EHR caches in `derived/cache/<profile>/` |
+| **0 data preprocessing** | `scripts/tool/run_preprocessing.sh` | the read-only INSPECT release | `derived/datasets/<profile>/`: task manifests, `data_quality.md`, `dataset.json`, `logs.txt`; CT/EHR caches in `derived/cache/<profile>/` |
 | **1 segmentation** | `scripts/1_segmentation/totalsegmentator.sh`, then `roi.sh` | `manifests/ctpa.csv` | `outputs/segmentation/SEG_pseudo_anatomy/` (26 masks/study incl. lung lobes and sides + QC manifest), then `outputs/roi/ROI_anatomy_and_controls/` (ROI1–ROI8 + matched random controls) |
 | **2 silver label** | `scripts/2_silver_label/<method>.sh` | `manifests/reports.csv` | `outputs/silver_label/<method>/silver_labels.csv` + `silver_label_confidence.csv` + `logs/run.log` |
 | **3 shared encoder** | `scripts/3_shared_encoder/<n>_<stage>/*.sh` | `manifests/ctpa.csv`, `manifests/paired_reports.csv`, silver labels | `outputs/pretraining/{dapt,alignment,silver}/<id>/best.ckpt` with full lineage |
@@ -537,10 +541,10 @@ ${PE_CLOUD_ROOT}/data/derived/datasets/<profile> one directory per dataset profi
 ${PE_CLOUD_ROOT}/pe-project/outputs              all experiment outputs
 ```
 
-In this workspace, first mount `gs://pe-study/pe-storage` yourself at
-`/mnt/pe-storage`, then export `PE_CLOUD_ROOT=/mnt/pe-storage`. Nothing in the repo mounts
-anything; it keeps code local while resolving derived data to `/mnt/pe-storage/derived`
-and outputs to `/mnt/pe-storage/pe-project/outputs`.
+In this workspace `configs/paths.yaml` sets `PE_CLOUD_ROOT` to `/mnt/pe-project/outputs`, so
+derived data resolves to `/mnt/pe-project/outputs/derived` and outputs to
+`/mnt/pe-project/outputs/pe-project/outputs` without exporting anything. The only mount is the
+raw release, which you mount yourself with gcsfuse at `/mnt/Stanford_INSPECT_dataset`.
 
 ### Building a dataset
 
@@ -606,9 +610,9 @@ DATASET=full_inspect    ALLOW_ALL=1  ...    # the whole cohort
 ### The 500-sample test, end to end
 
 ```bash
-export PE_CLOUD_ROOT=/mnt/pe-storage
+export PE_CLOUD_ROOT=/mnt/pe-project/outputs
 export PE_RAW_INSPECT_ROOT=/mnt/Stanford_INSPECT_dataset
-export PE_DERIVED_ROOT=/mnt/pe-storage/derived
+export PE_DERIVED_ROOT=/mnt/pe-project/outputs/derived
 export PE_LOCAL_CACHE_ROOT=/mnt/pe-project/cache
 export DATASET=test_500_sample
 

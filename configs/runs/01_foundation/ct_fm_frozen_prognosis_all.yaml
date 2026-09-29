@@ -71,8 +71,12 @@ supervision:
   require_ehr: false
   require_spesi: false
 
-# Default full experiment budget. The task scripts can override both values for a smoke run.
+# Default full experiment budget. The task scripts can override epochs and patience for a
+# smoke run. batch_size 4 with no accumulation: one optimizer step per 4 studies in every
+# CT-FM frozen arm (runs up to epoch_50 used batch 1; diagnosis also accumulated 4 steps).
 training:
-  epochs: 50
-  early_stopping_patience: 10
+  epochs: 100
+  early_stopping_patience: 15
+  batch_size: 4
+  gradient_accumulation: 1
   record_epoch_auc: true

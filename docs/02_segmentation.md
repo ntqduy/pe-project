@@ -21,7 +21,7 @@ python run.py run data.segmentation --gpus 0,1 --allow-full
 Chỉ chạy TotalSegmentator, không chạy LungMask:
 
 ```bash
-LUNGMASK=0 PROFILE=smoke_30 GPUS=0 bash scripts/run_segmentation.sh
+LUNGMASK=0 PROFILE=smoke_30 GPUS=0 bash scripts/tool/run_segmentation.sh
 python run.py run data.segmentation --gpus 0 --allow-full --set segmentation.lungmask.enabled=false
 ```
 

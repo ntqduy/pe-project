@@ -2,17 +2,17 @@
 # Generate and QC pseudo-anatomy masks from the existing official-split CTPA manifest.
 # This stage never creates or changes train/validation/test assignments.
 #
-#   PROFILE=smoke_30 GPUS=0 bash scripts/run_segmentation.sh              # TotalSegmentator + LungMask
-#   LUNGMASK=0 PROFILE=smoke_30 GPUS=0 bash scripts/run_segmentation.sh   # TotalSegmentator only
+#   PROFILE=smoke_30 GPUS=0 bash scripts/tool/run_segmentation.sh              # TotalSegmentator + LungMask
+#   LUNGMASK=0 PROFILE=smoke_30 GPUS=0 bash scripts/tool/run_segmentation.sh   # TotalSegmentator only
 #
 # Every mask comes from TotalSegmentator either way; LungMask only adds lung_lungmask and the
 # lung cross-model Dice QC. Decide before a run starts: resuming it with the other setting is
 # refused because the resolved config no longer matches.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 ACTION="${ACTION:-run}"
 GPUS="${GPUS:-0}"

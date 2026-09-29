@@ -163,7 +163,7 @@ def _safe_extract_archive(archive: Path, cache_root: Path, namespace: str) -> tu
     """Extract the read-only parquet archive once into a local, reusable cache.
 
     The extracted raw event files are a cache rather than a derived dataset artifact:
-    profile-specific outputs remain under ``/mnt/pe-storage`` while we avoid copying a
+    profile-specific outputs remain under ``/mnt/pe-project/outputs/derived`` while we avoid copying a
     multi-gigabyte source archive into every smoke/500/full profile.
     """
     if not archive.is_file():

@@ -5,9 +5,9 @@ that step for an existing run: it loads the run's resolved config and checkpoint
 validation threshold recorded by evaluate in result.json (never re-selected here) and the
 validation probabilities in predictions.csv, then writes the same files as evaluate.
 
-    source scripts/use_gcs_storage.sh
+    source scripts/tool/use_gcs_storage.sh
     python tools/tasks/gradcam_preview.py \
-      --run-dir /mnt/pe-storage/pe-project/outputs/diagnosis/DX_ctfm_frozen__ds_smoke_30/epoch_30
+      --run-dir /mnt/pe-project/outputs/pe-project/outputs/diagnosis/DX_ctfm_frozen__ds_smoke_30/epoch_30
 
 --run-dir names one epoch_<E>/ bundle; given the run folder above it, the highest E is used.
 Output (default: <bundle>/preview/, replacing the previous preview files):

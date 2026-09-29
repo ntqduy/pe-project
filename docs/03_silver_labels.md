@@ -99,9 +99,9 @@ lung disease, fibrosis và emphysema. Chi tiết kiểu/range nằm ở
 ## Chạy và QC
 
 ```bash
-PROFILE=smoke_30 MAX_REPORTS=30 GPUS=0 bash scripts/run_silver_labels.sh      # thử 30 report
-OVERWRITE=1 PROFILE=smoke_30 MAX_REPORTS=30 GPUS=0 bash scripts/run_silver_labels.sh
-PROFILE=full_inspect GPUS=0,1 bash scripts/run_silver_labels.sh              # toàn bộ
+PROFILE=smoke_30 MAX_REPORTS=30 GPUS=0 bash scripts/tool/run_silver_labels.sh      # thử 30 report
+OVERWRITE=1 PROFILE=smoke_30 MAX_REPORTS=30 GPUS=0 bash scripts/tool/run_silver_labels.sh
+PROFILE=full_inspect GPUS=0,1 bash scripts/tool/run_silver_labels.sh              # toàn bộ
 ```
 
 Sau chạy, kiểm tra tỷ lệ abstention theo target/source, lọc `abstain_reason`, đọc evidence

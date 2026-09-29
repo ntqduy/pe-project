@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Stage 0 end to end: build one dataset profile from the read-only INSPECT release.
 #
-#   bash scripts/run_preprocessing.sh                  # full_inspect, the whole cohort
-#   PROFILE=smoke_30 bash scripts/run_preprocessing.sh # 30-patient technical rehearsal
-#   PROFILE=test_500_sample bash scripts/run_preprocessing.sh
-#   ACTION=preflight bash scripts/run_preprocessing.sh # check paths and contracts only
-#   OVERWRITE=1 bash scripts/run_preprocessing.sh      # rebuild over an existing profile
+#   bash scripts/tool/run_preprocessing.sh                  # full_inspect, the whole cohort
+#   PROFILE=smoke_30 bash scripts/tool/run_preprocessing.sh # 30-patient technical rehearsal
+#   PROFILE=test_500_sample bash scripts/tool/run_preprocessing.sh
+#   ACTION=preflight bash scripts/tool/run_preprocessing.sh # check paths and contracts only
+#   OVERWRITE=1 bash scripts/tool/run_preprocessing.sh      # rebuild over an existing profile
 #
 # Writes manifests/*.csv, data_quality.md, dataset.json and logs.txt in the dataset.
 # CT and clinical caches live under <derived>/cache/<profile>/.
@@ -14,9 +14,9 @@
 # then resampled, cropped and cached. Rehearse on PROFILE=smoke_30 first.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 ACTION="${ACTION:-run}"
 PYTHON="${PYTHON:-python3}"
@@ -31,13 +31,13 @@ case "$ACTION" in
 esac
 
 if [[ "$ACTION" == "run" || "$ACTION" == "preflight" ]]; then
-  mountpoint -q "$PE_CLOUD_ROOT" || {
-    printf 'error: output storage is not mounted at %s; refusing to write locally\n' "$PE_CLOUD_ROOT" >&2
+  [[ -d "$PE_CLOUD_ROOT" ]] || {
+    printf 'error: output root %s does not exist\n' "$PE_CLOUD_ROOT" >&2
     exit 2
   }
 fi
 
-# The storage bucket must already be mounted; the helper only supplies default paths.
+# The raw release must already be mounted (gcsfuse); the helper only supplies default paths.
 RAW_ROOT="${PE_RAW_INSPECT_ROOT:-$PE_CLOUD_ROOT/data/Stanford_INSPECT_dataset}"
 if [[ ! -d "$RAW_ROOT/CT/full" ]]; then
   printf 'error: raw release not found at %s/CT/full\n' "$RAW_ROOT" >&2

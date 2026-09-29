@@ -164,7 +164,7 @@ def write_training_artifacts(
 
     ``run_dir`` is the bundle itself (``<id>/epoch_<training.epochs>``, see
     ``source.engine.experiment.run_output_id``). It receives checkpoint/{best,last}.ckpt,
-    logs.txt, training_curves.png and preview/. result.csv and predictions.csv are added by
+    logs.txt, history.csv, training_curves.png and preview/. result.csv and predictions.csv are added by
     tools/tasks/evaluate.py, which is the only place task metrics are computed.
     """
     history = [dict(row) for row in training_result.get("history", [])]
@@ -189,6 +189,11 @@ def write_training_artifacts(
         shutil.copy2(run_log, destination / "logs.txt")
     else:
         (destination / "logs.txt").write_text("run.log was not created\n", encoding="utf-8")
+
+    history_csv = run_dir / "logs" / "history.csv"
+    if not history_csv.is_file():
+        raise FileNotFoundError(f"expected training history was not created: {history_csv}")
+    shutil.copy2(history_csv, destination / "history.csv")
 
     experiment_id = str(((config or {}).get("experiment") or {}).get("id") or run_dir.name)
     # The folder is named after the budget; say so when early stopping ended the run sooner.

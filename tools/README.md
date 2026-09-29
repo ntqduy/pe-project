@@ -145,7 +145,7 @@ viewer + `.png` summary per study) for an already evaluated diagnosis/prognosis 
 run's `resolved_config.yaml`, `best.ckpt`, the validation threshold stored in `result.json` (never
 re-selected) and the validation probabilities in `predictions.csv`; `--output` writes elsewhere,
 `--method gradcam` switches from the default element-wise form to classic Grad-CAM. Source the
-storage roots first (`source scripts/use_gcs_storage.sh`). Details: `docs/05_diagnosis_training.md`.
+storage roots first (`source scripts/tool/use_gcs_storage.sh`). Details: `docs/05_diagnosis_training.md`.
 
 ROI students and distilled students use `tasks/train_task.py`. A KD run additionally writes
 `distillation_validation_predictions.parquet` with teacher and student logits and the GT / KD /

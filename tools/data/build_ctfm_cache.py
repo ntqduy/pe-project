@@ -28,6 +28,11 @@ the per-epoch re-reading of every grid; previews and the anatomy arms still use 
 ``--workers auto`` (default) sizes the preprocessing pool from the CPUs and the RAM free at
 start (source/utils/workers.py); an explicit number is capped when memory cannot hold it.
 
+Re-running is cheap: when dataset.json records a finished build under the same fingerprint
+(every study cached, no failures or dropped rows) and the CT-FM manifests still hold the
+current source rows, the builder exits without touching a study. ``--verify`` re-checks every
+cached study instead; ``--overwrite`` recomputes them all.
+
 Outputs (profile = dataset directory name):
     <derived>/cache/<profile>/ct_fm/features/<study_id>.npy (+ .metadata.json)
     <derived>/cache/<profile>/ct_fm/pooled/<study_id>.npy
@@ -405,6 +410,54 @@ def _cached_entry(feature_path: Path, fingerprint: str) -> dict[str, Any] | None
     return payload
 
 
+def _cache_fingerprint(spec: PreprocessingSpec, weight_sha256: str) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {"spec": spec.fingerprint(), "implementation": FEATURE_IMPLEMENTATION, "weight": weight_sha256},
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _complete_cache(
+    output_root: Path,
+    output_manifest_dir: Path,
+    loaded: dict[str, list[dict[str, Any]]],
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    """dataset.json of a finished build that already covers ``loaded``, or None.
+
+    Re-checking every study reads its sidecar and grid header over the bucket mount (~5
+    studies/s, over an hour on full_inspect). A build that ended with every study cached, no
+    failures and no dropped rows, under the same fingerprint, and whose CT-FM manifests still
+    hold exactly the current source rows, has nothing left to do.
+    """
+    try:
+        payload = json.loads((output_root / "dataset.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    qc = payload.get("ct_qc") or {}
+    if (qc.get("cache_fingerprint") != fingerprint or payload.get("preprocessing_failures")
+            or payload.get("dropped_rows") or not qc.get("studies_cached")
+            or qc.get("studies_cached") != qc.get("studies_attempted")):
+        return None
+    rewritten = {"image_path", "raw_image_path", "pooled_path"}
+    for name, rows in loaded.items():
+        path = output_manifest_dir / MANIFESTS[name]
+        if not path.is_file():
+            return None
+        written = read_rows(path)
+        if len(written) != len(rows):
+            return None
+        for source, copy in zip(rows, written):
+            if not copy.get("pooled_path"):
+                return None
+            if ({key: value for key, value in source.items() if key not in rewritten}
+                    != {key: value for key, value in copy.items() if key not in rewritten}):
+                return None
+    return payload
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset-root", type=Path, required=True,
@@ -422,6 +475,8 @@ def main() -> int:
                         help="processes for NIfTI loading/resampling: auto (CPUs and free RAM) or a "
                              "number, capped when the free RAM cannot hold it")
     parser.add_argument("--overwrite", action="store_true", help="recompute every study")
+    parser.add_argument("--verify", action="store_true",
+                        help="check every cached study even when dataset.json says the cache is complete")
     parser.add_argument("--quiet", action="store_true",
                         help="print a compact summary; the full QC remains in dataset.json")
     args = parser.parse_args()
@@ -462,14 +517,25 @@ def main() -> int:
         loaded[name] = rows
 
     spec = _spec(canvas)  # type: ignore[arg-type]
+    # _load_ctfm refuses any weight but CTFM_WEIGHT_SHA256, so a finished build can be
+    # recognised before the model is loaded.
+    if not (args.overwrite or args.verify):
+        complete = _complete_cache(
+            output_root, output_manifest_dir, loaded, _cache_fingerprint(spec, CTFM_WEIGHT_SHA256)
+        )
+        if complete is not None:
+            qc = complete["ct_qc"]
+            print(
+                f"CT-FM feature cache already complete: studies={qc['studies_cached']}/"
+                f"{qc['studies_attempted']} failures=0 dropped_rows=0 output={output_root} "
+                f"manifests={output_manifest_dir} (skipped the per-study check; --verify re-checks "
+                "every study, --overwrite recomputes)",
+                flush=True,
+            )
+            return 0
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, weight_sha256 = _load_ctfm(code_root, device)
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            {"spec": spec.fingerprint(), "implementation": FEATURE_IMPLEMENTATION, "weight": weight_sha256},
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    fingerprint = _cache_fingerprint(spec, weight_sha256)
 
     study_ids = sorted({str(row["study_id"]) for rows in loaded.values() for row in rows})
     cache_rows: dict[str, dict[str, Any]] = {}

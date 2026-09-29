@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
 # Default storage roots for this project; values already exported take precedence.
 #
-#   source scripts/use_gcs_storage.sh            # current shell only (all run_*.sh do this)
-#   bash scripts/use_gcs_storage.sh --install    # add it to ~/.bashrc once: every new
+#   source scripts/tool/use_gcs_storage.sh            # current shell only (all run_*.sh do this)
+#   bash scripts/tool/use_gcs_storage.sh --install    # add it to ~/.bashrc once: every new
 #                                                # terminal then has the variables, so
 #                                                # `python run.py ...` works without exports
-#   bash scripts/use_gcs_storage.sh --show       # print the resolved values and checks
-#   bash scripts/use_gcs_storage.sh --uninstall  # remove the ~/.bashrc line again
+#   bash scripts/tool/use_gcs_storage.sh --show       # print the resolved values and checks
+#   bash scripts/tool/use_gcs_storage.sh --uninstall  # remove the ~/.bashrc line again
 #
 # Safe to source from ~/.bashrc: it never exits the shell and only prints warnings.
 
-export PE_CLOUD_ROOT="${PE_CLOUD_ROOT:-/mnt/pe-storage}"
+# Same defaults as configs/paths.yaml: everything the pipeline writes goes under
+# /mnt/pe-project/outputs (derived/ and pe-project/outputs/, the layout of
+# gs://pe-study/pe-storage), and the raw release is read from /mnt/Stanford_INSPECT_dataset.
+# Until 2026-09-27 the bucket was mounted at /mnt/pe-storage and used as the root; a shell
+# started before then still exports those values, so they are dropped here.
+if [[ "${PE_CLOUD_ROOT:-}" == "/mnt/pe-storage" ]]; then
+  unset PE_CLOUD_ROOT PE_DERIVED_ROOT PE_CLOUD_PROJECT_ROOT
+fi
+if [[ "${PE_CLOUD_PROJECT_ROOT:-}" == "/mnt/pe-project" ]]; then
+  unset PE_CLOUD_PROJECT_ROOT
+fi
+export PE_CLOUD_ROOT="${PE_CLOUD_ROOT:-/mnt/pe-project/outputs}"
 export PE_RAW_INSPECT_ROOT="${PE_RAW_INSPECT_ROOT:-/mnt/Stanford_INSPECT_dataset}"
 export PE_DERIVED_ROOT="${PE_DERIVED_ROOT:-${PE_CLOUD_ROOT}/derived}"
 export PE_CLOUD_PROJECT_ROOT="${PE_CLOUD_PROJECT_ROOT:-${PE_CLOUD_ROOT}/pe-project}"
 
 _pe_storage_check() {
-  # The bucket is mounted with gcsfuse; an unmounted /mnt/pe-storage is an empty local
-  # directory and outputs written there would silently stay on the VM disk.
-  if command -v mountpoint >/dev/null 2>&1 && ! mountpoint -q "$PE_CLOUD_ROOT"; then
-    printf 'warning: %s is not mounted (mount gs://pe-study/pe-storage first)\n' "$PE_CLOUD_ROOT" >&2
+  if [[ ! -d "$PE_DERIVED_ROOT/datasets" ]]; then
+    printf 'warning: no dataset profiles under %s/datasets\n' "$PE_DERIVED_ROOT" >&2
   fi
   if [[ ! -d "$PE_RAW_INSPECT_ROOT/CT/full" ]]; then
-    printf 'warning: raw INSPECT release not found at %s/CT/full\n' "$PE_RAW_INSPECT_ROOT" >&2
+    printf 'warning: raw INSPECT release not found at %s/CT/full; mount it with\n' "$PE_RAW_INSPECT_ROOT" >&2
+    printf '         gcsfuse --implicit-dirs --only-dir Stanford_INSPECT_dataset pe-study %s\n' "$PE_RAW_INSPECT_ROOT" >&2
   fi
 }
 

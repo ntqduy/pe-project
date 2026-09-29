@@ -2,12 +2,12 @@
 # Prepare, train, and evaluate CT-FM frozen + MLP runs without changing the official split.
 #
 # Examples:
-#   PROFILE=full_inspect ACTION=all bash scripts/run_ctfm_frozen.sh
-#   PROFILE=smoke_30 EPOCHS=1 ACTION=all bash scripts/run_ctfm_frozen.sh
-#   PROFILE=full_inspect TASK=prognosis COHORT=pe GPUS=0,1 bash scripts/run_ctfm_frozen.sh
-#   ACTION=preflight PROFILE=full_inspect TASK=diagnosis bash scripts/run_ctfm_frozen.sh
-#   WORKERS=12 NUM_WORKERS=12 bash scripts/run_ctfm_frozen.sh    # upper bounds, capped by free RAM
-#   FEATURE_INPUT=grid bash scripts/run_ctfm_frozen.sh             # read full grids, not pooled copies
+#   PROFILE=full_inspect ACTION=all bash scripts/tool/run_ctfm_frozen.sh
+#   PROFILE=smoke_30 EPOCHS=1 ACTION=all bash scripts/tool/run_ctfm_frozen.sh
+#   PROFILE=full_inspect TASK=prognosis COHORT=pe GPUS=0,1 bash scripts/tool/run_ctfm_frozen.sh
+#   ACTION=preflight PROFILE=full_inspect TASK=diagnosis bash scripts/tool/run_ctfm_frozen.sh
+#   WORKERS=12 NUM_WORKERS=12 bash scripts/tool/run_ctfm_frozen.sh    # upper bounds, capped by free RAM
+#   FEATURE_INPUT=grid bash scripts/tool/run_ctfm_frozen.sh             # read full grids, not pooled copies
 #
 # WORKERS (prepare's preprocessing processes) and NUM_WORKERS (train/evaluate DataLoader
 # workers) default to auto: sized from this machine's CPUs and free RAM, so one command fits a
@@ -15,13 +15,20 @@
 # memory lowered it. FEATURE_INPUT=pooled (default) trains on the pooled [513,1,1,1] copies
 # kept in RAM; grid reads the 5.9 MB grids every epoch (same predictions, far slower).
 #
+# Every stage skips work that is already done, so re-running a command picks up where the last
+# run stopped: prepare exits at once when the CT-FM cache is complete (VERIFY_CACHE=1 re-checks
+# every study, REBUILD_CACHE=1 recomputes them), train is skipped when epoch_<EPOCHS> already
+# holds a completed run with the same settings, and evaluate when that run already has its
+# test result.csv. A completed run made with other settings (e.g. another EARLY_STOPPING) is
+# an error rather than a silent skip. OVERWRITE=1 turns the skipping off and replaces the run.
+#
 # The base dataset manifests must already exist. This script never calls the dataset builder
 # and never creates a train/validation/test split.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 TASK="${TASK:-diagnosis}"
 COHORT="${COHORT:-all}"
@@ -29,8 +36,8 @@ TARGET="${TARGET:-}"
 ACTION="${ACTION:-all}"
 PYTHON="${PYTHON:-python3}"
 GPUS="${GPUS:-0}"
-EPOCHS="${EPOCHS:-50}"
-EARLY_STOPPING="${EARLY_STOPPING:-10}"
+EPOCHS="${EPOCHS:-100}"
+EARLY_STOPPING="${EARLY_STOPPING:-15}"
 NUM_WORKERS="${NUM_WORKERS:-auto}"
 WORKERS="${WORKERS:-auto}"
 FEATURE_INPUT="${FEATURE_INPUT:-pooled}"
@@ -131,13 +138,16 @@ fi
 
 if [[ "$ACTION" == "prepare" || "$ACTION" == "all" ]]; then
   # CT-FM features (upstream contract: SPL, 3x1x1 mm, 24x128x128 patches) are computed once
-  # per study into <derived>/cache/<profile>/ct_fm/ and manifests/ct_fm/*.csv. The builder is
-  # resumable: studies whose features match the current contract are reused, so re-running
-  # prepare is cheap. REBUILD_CACHE=1 recomputes every study; OVERWRITE=1 only replaces
+  # per study into <derived>/cache/<profile>/ct_fm/ and manifests/ct_fm/*.csv. A finished
+  # cache is recognised from its dataset.json in seconds; an unfinished one resumes, reusing
+  # every study whose features match the current contract. VERIFY_CACHE=1 re-checks every
+  # cached study (~5 studies/s over the bucket mount, over an hour on full_inspect).
+  # REBUILD_CACHE=1 recomputes every study; OVERWRITE=1 only replaces
   # this EPOCHS run's epoch_<EPOCHS>/ folder (on full_inspect a cache rebuild is ~20 h, not a
   # run reset). Other EPOCHS values of the same run are separate folders and never collide.
   PREPARE_ARGS=(--device "$([[ -n "$GPUS" ]] && echo "cuda:${GPUS%%,*}" || echo cpu)" --workers "$WORKERS")
   [[ -n "${REBUILD_CACHE:-}" ]] && PREPARE_ARGS+=(--overwrite)
+  [[ -n "${VERIFY_CACHE:-}" ]] && PREPARE_ARGS+=(--verify)
   "$PYTHON" "${PROJECT_ROOT}/tools/data/build_ctfm_cache.py" \
     --dataset-root "$DATASET_ROOT" \
     --raw-root "$RAW_ROOT" \
@@ -197,6 +207,23 @@ fi
 # run log and evaluation appends its section (thresholds, split counts, warnings, final test
 # block) to the same file. Every logged line is also echoed to this terminal.
 
+# The run's epoch_<EPOCHS>/ folder and how far it got (absent, incomplete, trained, evaluated,
+# or different: completed with other settings), resolved by tools/run_status.py exactly as
+# train_task.py and evaluate.py do.
+RUN_STATE=absent
+EPOCH_DIR=""
+RUN_DIFFERENCE=""
+if [[ "$ACTION" == "train" || "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
+  STATUS_LINE="$(cd "$PROJECT_ROOT" && "$PYTHON" tools/run_status.py "${TRAIN_ARGS[@]}")"
+  read -r RUN_STATE EPOCH_DIR RUN_DIFFERENCE <<< "$STATUS_LINE"
+  if [[ -z "${OVERWRITE:-}" && "$RUN_STATE" == "different" ]]; then
+    printf 'error: %s holds a completed run made with other settings (differs in: %s)\n' \
+      "$EPOCH_DIR" "$RUN_DIFFERENCE" >&2
+    printf '       rerun with the same settings to reuse it, or OVERWRITE=1 to replace it\n' >&2
+    exit 2
+  fi
+fi
+
 if [[ "$ACTION" == "train" || "$ACTION" == "all" ]]; then
   if [[ ! -f "${DATASET_ROOT}/${MANIFEST}" ]]; then
     printf 'error: CT-FM manifest not found: %s\n' "${DATASET_ROOT}/${MANIFEST}" >&2
@@ -204,9 +231,18 @@ if [[ "$ACTION" == "train" || "$ACTION" == "all" ]]; then
   fi
   require_feature_column
   cd "$PROJECT_ROOT"
-  # Use the launcher so GPUS=0,1 becomes a real torchrun/DDP job rather than a
-  # single process that merely records two device IDs in the config.
-  "$PYTHON" tools/launch.py --quiet "${TRAIN_ARGS[@]}"
+  if [[ -z "${OVERWRITE:-}" && ( "$RUN_STATE" == "trained" || "$RUN_STATE" == "evaluated" ) ]]; then
+    printf '==> train: skipped, %s already holds a completed run (OVERWRITE=1 retrains)\n' "$EPOCH_DIR"
+  elif [[ -z "${OVERWRITE:-}" && "$RUN_STATE" == "incomplete" ]]; then
+    # Task training cannot resume; say so here instead of failing inside the launcher.
+    printf 'error: %s holds an unfinished run; OVERWRITE=1 replaces it\n' "$EPOCH_DIR" >&2
+    exit 2
+  else
+    # Use the launcher so GPUS=0,1 becomes a real torchrun/DDP job rather than a
+    # single process that merely records two device IDs in the config.
+    "$PYTHON" tools/launch.py --quiet "${TRAIN_ARGS[@]}"
+    RUN_STATE=trained
+  fi
 fi
 
 if [[ "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
@@ -216,49 +252,37 @@ if [[ "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
   fi
   require_feature_column
   cd "$PROJECT_ROOT"
-  EVAL_ARGS=(
-    --evaluate
-    --config "$CONFIG"
-    --gpus "$GPUS"
-    --allow-full
-    --set "data.profile=${PROFILE}"
-    --set "data.manifest=${MANIFEST}"
-    --set "experiment.id=${RUN_ID}"
-    --set "training.epochs=${EPOCHS}"
-    --set "training.early_stopping_patience=${EARLY_STOPPING}"
-  )
-  EVAL_ARGS+=("${TARGET_ARGS[@]}" "${FEATURE_ARGS[@]}")
-  EVAL_ARGS+=(--set "compute.num_workers=${NUM_WORKERS}")
-  [[ -n "${OVERWRITE:-}" ]] && EVAL_ARGS+=(--overwrite)
-  "$PYTHON" tools/launch.py --quiet "${EVAL_ARGS[@]}"
+  if [[ -z "${OVERWRITE:-}" && "$RUN_STATE" == "evaluated" ]]; then
+    printf '==> evaluate: skipped, %s/result.csv already exists (OVERWRITE=1 re-evaluates)\n' "$EPOCH_DIR"
+  else
+    EVAL_ARGS=(
+      --evaluate
+      --config "$CONFIG"
+      --gpus "$GPUS"
+      --allow-full
+      --set "data.profile=${PROFILE}"
+      --set "data.manifest=${MANIFEST}"
+      --set "experiment.id=${RUN_ID}"
+      --set "training.epochs=${EPOCHS}"
+      --set "training.early_stopping_patience=${EARLY_STOPPING}"
+    )
+    EVAL_ARGS+=("${TARGET_ARGS[@]}" "${FEATURE_ARGS[@]}")
+    EVAL_ARGS+=(--set "compute.num_workers=${NUM_WORKERS}")
+    [[ -n "${OVERWRITE:-}" ]] && EVAL_ARGS+=(--overwrite)
+    "$PYTHON" tools/launch.py --quiet "${EVAL_ARGS[@]}"
+  fi
 fi
 
 if [[ "$ACTION" == "train" || "$ACTION" == "all" || "$ACTION" == "evaluate" ]]; then
-  if [[ -n "${PE_CLOUD_PROJECT_ROOT:-}" ]]; then
-    OUTPUT_ROOT="${PE_CLOUD_PROJECT_ROOT}/outputs"
-  elif [[ -n "${PE_CLOUD_ROOT:-}" ]]; then
-    OUTPUT_ROOT="${PE_CLOUD_ROOT}/pe-project/outputs"
-  else
-    OUTPUT_ROOT="<PE_CLOUD_PROJECT_ROOT>/outputs"
-  fi
-  FAMILY="diagnosis"
-  [[ "$TASK" == "prognosis" ]] && FAMILY="prognosis"
-  RUN_DIR="${OUTPUT_ROOT}/${FAMILY}/${RUN_ID}__ds_${PROFILE}"
-  if [[ ! -d "$RUN_DIR" ]]; then
-    RUN_DIR="$(find "${OUTPUT_ROOT}/${FAMILY}" -mindepth 1 -maxdepth 1 -type d -name "${RUN_ID}*" | sort | tail -n 1)"
-  fi
   printf '\n==> completed task=%s cohort=%s profile=%s\n' "$TASK" "$COHORT" "$PROFILE"
   printf '    epochs=%s early_stopping_patience=%s gpus=%s\n' "$EPOCHS" "$EARLY_STOPPING" "$GPUS"
   # Each EPOCHS budget is its own folder: <run>/epoch_<EPOCHS>/ (config and result.json too).
-  EPOCH_DIR="${RUN_DIR:+${RUN_DIR}/epoch_${EPOCHS}}"
-  printf '    output=%s\n' "${EPOCH_DIR:-$RUN_DIR}"
-  if [[ -n "$RUN_DIR" && -d "$RUN_DIR" ]]; then
-    if [[ -d "$EPOCH_DIR" ]]; then
-      printf '    result.csv=%s/result.csv (metrics per split)\n' "$EPOCH_DIR"
-      printf '    predictions.csv=%s/predictions.csv\n' "$EPOCH_DIR"
-      printf '    logs.txt=%s/logs.txt\n' "$EPOCH_DIR"
-      printf '    training_curves=%s/training_curves.png\n' "$EPOCH_DIR"
-      printf '    preview=%s/preview/\n' "$EPOCH_DIR"
-    fi
+  printf '    output=%s\n' "$EPOCH_DIR"
+  if [[ -d "$EPOCH_DIR" ]]; then
+    printf '    result.csv=%s/result.csv (metrics per split)\n' "$EPOCH_DIR"
+    printf '    predictions.csv=%s/predictions.csv\n' "$EPOCH_DIR"
+    printf '    logs.txt=%s/logs.txt\n' "$EPOCH_DIR"
+    printf '    training_curves=%s/training_curves.png\n' "$EPOCH_DIR"
+    printf '    preview=%s/preview/\n' "$EPOCH_DIR"
   fi
 fi

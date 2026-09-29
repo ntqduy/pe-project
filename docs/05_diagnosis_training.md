@@ -44,7 +44,9 @@ run có split hoặc cohort khác.
 
 `training.early_stopping_patience: 10` (mặc định cho mọi contract trong
 `configs/components/training.yaml`): dừng sau 10 epoch liên tiếp không cải thiện metric
-validation. Đặt `null` để chạy hết `training.epochs` như trước.
+validation. Đặt `null` để chạy hết `training.epochs` như trước. Các arm CT-FM frozen
+(`configs/runs/01_foundation/ct_fm_frozen_*.yaml`) ghi đè thành 100 epoch, patience 15,
+batch size 4 không accumulation.
 
 - `best.ckpt` luôn là epoch tốt nhất, không phải epoch cuối — dừng sớm không mất model.
 - Quyết định dừng tính từ giá trị đã reduce qua mọi rank, nên DDP không bị lệch ở barrier.
@@ -116,7 +118,7 @@ hạng trong volume và hướng A/P/R/L. Thiếu thông tin nào thì ghi N/A.
 Tạo lại preview cho một run đã evaluate, không chạy lại evaluate:
 
 ```bash
-source scripts/use_gcs_storage.sh
+source scripts/tool/use_gcs_storage.sh
 python tools/tasks/gradcam_preview.py --run-dir <output>/diagnosis/<RUN_ID>
 # --output <dir> để ghi chỗ khác; --method gradcam để dùng Grad-CAM gốc
 ```

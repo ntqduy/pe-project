@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Zero-shot RADAR: run the released DAMO abdominal-CT generalist over a built cohort, unchanged.
 #
-#   bash scripts/run_zeroshot_radar.sh                       # full validation + test splits
-#   MAX_CASES=20 PROFILE=smoke_30 bash scripts/run_zeroshot_radar.sh   # quick look
-#   RESUME=1 bash scripts/run_zeroshot_radar.sh              # continue an interrupted run
-#   RESTRICT_TO=<derived>/cache/<profile>/clinical/spesi_evaluable.csv bash scripts/run_zeroshot_radar.sh
+#   bash scripts/diagnosis/run_zeroshot_radar.sh                       # full validation + test splits
+#   MAX_CASES=20 PROFILE=smoke_30 bash scripts/diagnosis/run_zeroshot_radar.sh   # quick look
+#   RESUME=1 bash scripts/diagnosis/run_zeroshot_radar.sh              # continue an interrupted run
+#   RESTRICT_TO=<derived>/cache/<profile>/clinical/spesi_evaluable.csv bash scripts/diagnosis/run_zeroshot_radar.sh
 #
 # Nothing is trained. RADAR ships no PE finding, so the run scores RADAR's own pulmonary-
 # artery organ token against the text pair in configs/runs/01_foundation/radar_zero_shot.yaml
@@ -16,9 +16,9 @@
 # transformers==4.25) runs the model. It reads the raw release NIfTI, not volumes/*.npy.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=../tool/use_gcs_storage.sh
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 GPUS="${GPUS:-0}"
 PYTHON="${PYTHON:-python3}"

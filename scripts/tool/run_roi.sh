@@ -3,9 +3,9 @@
 # Existing patient split assignments are inherited from the source manifests and never moved.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 ACTION="${ACTION:-run}"
 PYTHON="${PYTHON:-python3}"
@@ -22,7 +22,7 @@ if [[ -z "${SEGMENTATION_RUN:-}" ]]; then
   if [[ ! -d "${PE_CLOUD_PROJECT_ROOT}/outputs/${SEGMENTATION_RUN}" ]]; then
     printf 'error: no segmentation run for PROFILE=%s at %s\n' "$PROFILE" \
       "${PE_CLOUD_PROJECT_ROOT}/outputs/${SEGMENTATION_RUN}" >&2
-    printf '       run: PROFILE=%s bash scripts/run_segmentation.sh  (or set SEGMENTATION_RUN=...)\n' "$PROFILE" >&2
+    printf '       run: PROFILE=%s bash scripts/tool/run_segmentation.sh  (or set SEGMENTATION_RUN=...)\n' "$PROFILE" >&2
     exit 2
   fi
 fi

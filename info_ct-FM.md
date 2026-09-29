@@ -370,6 +370,7 @@ outputs/<family>/<RUN_ID>/epoch_<epochs_run>/
 │   ├── best.ckpt                 # validation-selected checkpoint
 │   └── last.ckpt                 # state ở epoch cuối, kể cả khi early stopping
 ├── logs.txt                      # log terminal: train rồi evaluate (ghi nối tiếp)
+├── history.csv                   # metric train/validation theo từng epoch
 ├── result.csv                    # metric từng split (train, validation, test) cho mỗi target
 ├── predictions.csv               # y_true / y_prob / y_pred từng ca, mọi split
 ├── training_curves.png           # loss + AUROC train/val theo epoch, vạch best.ckpt

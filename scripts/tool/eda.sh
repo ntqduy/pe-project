@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Exploratory data analysis for one built dataset profile.
 #
-#   bash scripts/ana.sh                              # PROFILE=test_500_sample
-#   PROFILE=full_inspect bash scripts/ana.sh
-#   PROFILE=smoke_30 RULE_SAMPLE=0 bash scripts/ana.sh   # 0 = scan every report
-#   NO_FIGURES=1 bash scripts/ana.sh                 # numbers only, no PNG
+#   bash scripts/tool/eda.sh                              # PROFILE=test_500_sample
+#   PROFILE=full_inspect bash scripts/tool/eda.sh
+#   PROFILE=smoke_30 RULE_SAMPLE=0 bash scripts/tool/eda.sh   # 0 = scan every report
+#   NO_FIGURES=1 bash scripts/tool/eda.sh                 # numbers only, no PNG
 #
 # Environment (all optional):
 #   PROFILE       smoke_30 | test_500_sample | full_inspect   default: test_500_sample
@@ -18,9 +18,9 @@
 # training stage consumes, so it is safe to re-run at any time.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PYTHON="${PYTHON:-python}"
 
 declare -a args=(--profile "${PROFILE:-test_500_sample}" --rule-sample "${RULE_SAMPLE:-2000}")

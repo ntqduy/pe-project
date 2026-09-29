@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Zero-shot PENet: run the released CTPA PE classifier over a built cohort, unchanged.
 #
-#   CHECK_SLICE_ORDER=1 bash scripts/run_zeroshot_penet.sh   # do this FIRST, see below
-#   bash scripts/run_zeroshot_penet.sh                       # full test split
-#   MAX_CASES=50 bash scripts/run_zeroshot_penet.sh          # quick look
-#   PROFILE=smoke_30 bash scripts/run_zeroshot_penet.sh
-#   RESTRICT_TO=<derived>/cache/<profile>/clinical/spesi_evaluable.csv bash scripts/run_zeroshot_penet.sh
+#   CHECK_SLICE_ORDER=1 bash scripts/diagnosis/run_zeroshot_penet.sh   # do this FIRST, see below
+#   bash scripts/diagnosis/run_zeroshot_penet.sh                       # full test split
+#   MAX_CASES=50 bash scripts/diagnosis/run_zeroshot_penet.sh          # quick look
+#   PROFILE=smoke_30 bash scripts/diagnosis/run_zeroshot_penet.sh
+#   RESTRICT_TO=<derived>/cache/<profile>/clinical/spesi_evaluable.csv bash scripts/diagnosis/run_zeroshot_penet.sh
 #
 # Nothing is trained. The weights are loaded and applied, so this is the external
 # reference an in-house imaging arm has to beat. Contract and the two repository
@@ -15,9 +15,9 @@
 # original resolution and the shared cache is 1.5 mm isotropic fitted to 128^3.
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=use_gcs_storage.sh
-source "$PROJECT_ROOT/scripts/use_gcs_storage.sh"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=../tool/use_gcs_storage.sh
+source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
 PROFILE="${PROFILE:-full_inspect}"
 SLICE_ORDER="${SLICE_ORDER:-superior_to_inferior}"
 AGGREGATE="${AGGREGATE:-max}"
