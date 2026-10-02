@@ -39,11 +39,13 @@ def build_slice_mil_encoder(config: Mapping[str, Any], *, default_timm_name: str
                         slice_offset=int(mil.get("slice_offset", 1)), pooling=str(mil.get("pooling", "attention")),
                         attention_hidden=int(mil.get("attention_hidden", 128)), chunk_size=int(mil.get("chunk_size", 32)),
                         gradient_checkpointing=bool(mil.get("gradient_checkpointing", True)),
-                        normalize_mean=normalize_mean, normalize_std=normalize_std)
+                        normalize_mean=normalize_mean, normalize_std=normalize_std,
+                        selection=str(mil.get("slice_selection", "uniform")))
     label = "2.5D" if in_chans == 3 else "2D"
     encoder = BaselineEncoder(
         core, backbone.num_features, f"{display_name} {label} slice-MIL", intensity=intensity_from_config(intensity),
-        architecture_note=(f"Model {label} slice-MIL: {core.num_slices} uniformly spaced axial slices"
+        architecture_note=((f"Model {label} slice-MIL: {core.num_slices} uniformly spaced axial slices"
+                            if core.selection == "uniform" else f"Model {label} center-slice ablation: the middle axial slice")
                            + ("; each instance has three adjacent slices as channels" if in_chans == 3 else "")
                            + f"; 2-D backbone {timm_name} on {slice_size}x{slice_size}, pooled with {core.pooling} attention"),
         lora_target_modules=tuple(config.get("lora_target_modules") or default_lora_targets),

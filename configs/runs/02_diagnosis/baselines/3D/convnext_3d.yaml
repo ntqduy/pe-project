@@ -1,7 +1,7 @@
 # ConvNeXt-T 3D (ImageNet ConvNeXt-T inflated to 3D) + head.
 # Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
 # Contracts: backbone -> components/backbones.yaml#registry.convnext_3d, head/task/budget ->
-# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 4.
 _base_:
   - ../../../../paths.yaml
   - ../../../../compute/default.yaml
@@ -21,4 +21,4 @@ model:
 
 training:
   batch_size: 2
-  gradient_accumulation: 4
+  gradient_accumulation: 2

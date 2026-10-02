@@ -88,6 +88,7 @@ _presets_:
         slice_mode: 2d
         mil:
           num_slices: 32
+          slice_selection: uniform   # center = middle-slice ablation (exp04_slice_ablation)
           slice_size: 224
           slice_offset: 1
           pooling: attention
@@ -107,6 +108,7 @@ _presets_:
         slice_mode: 2d
         mil: &slice_mil
           num_slices: 32
+          slice_selection: uniform   # center = middle-slice ablation (exp04_slice_ablation)
           slice_size: 224
           slice_offset: 1
           pooling: attention

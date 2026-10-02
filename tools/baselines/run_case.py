@@ -5,7 +5,14 @@
     python tools/baselines/run_case.py --model vit_3d --head kan --gpus 1
     python tools/baselines/run_case.py --model swin_3d --fraction 25 --fold 2 --folds 5
     python tools/baselines/run_case.py --model convnext_2d --action preflight
-    python tools/baselines/run_case.py --model resnet18_3d --task prognosis --target 1_month_mortality
+    python tools/baselines/run_case.py --model resnet18_3d --task prognosis --label 1_month_mortality
+    python tools/baselines/run_case.py --model resnet18_2d --head kan --smoke   # synthetic data, CPU ok
+
+--smoke runs the whole case (train -> early stop -> evaluate -> result.csv, predictions.csv,
+visualize/) on the synthetic dataset of tools/baselines/smoke_data.py, with every project path
+under $PE_SMOKE_ROOT (default output/_smoke) so real outputs are never touched: 2 epochs,
+patience 1, 64^3 inputs, 4 slices of 64^2 for slice-MIL, random init (CT-FM: synthetic cached
+features), CPU when no GPU is visible. Only for checking the pipeline, never for numbers.
 
 One case = (task, model, head, training fraction, fold, seed, settings). It maps to exactly
 one output folder (tools/baselines/experiments.py), so any number of cases can run in parallel
@@ -33,6 +40,8 @@ if str(ROOT) not in sys.path:
 
 from tools.baselines.experiments import (  # noqa: E402
     EXPERIMENTS,
+    PROGNOSIS_LABELS,
+    check_label,
     config_path as model_config_path,
     run_tag,
     settings_stamp,
@@ -53,7 +62,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="training seed")
     parser.add_argument("--profile", default=os.environ.get("PROFILE", "full_inspect"))
     parser.add_argument("--task", default="diagnosis", choices=["diagnosis", "prognosis"])
-    parser.add_argument("--target", default="1_month_mortality", help="prognosis endpoint")
+    parser.add_argument("--label", default=None, choices=PROGNOSIS_LABELS,
+                        help="prognosis endpoint; required with --task prognosis, not allowed with diagnosis")
     parser.add_argument("--cohort", default="all", choices=sorted(PROGNOSIS_MANIFESTS), help="prognosis cohort")
     parser.add_argument("--gpus", default=os.environ.get("GPUS", "0"), help="'' for CPU, '0', '0,1' (DDP)")
     parser.add_argument("--action", default="all", choices=["all", "prepare", "train", "evaluate", "preflight", "dry"])
@@ -69,7 +79,46 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--variant", default="", help="tag suffix for cases with experiment-specific overrides")
     parser.add_argument("--set", dest="extra", action="append", default=[], metavar="KEY=VALUE")
-    return parser.parse_args(argv)
+    parser.add_argument("--smoke", action="store_true", help="end-to-end pipeline check on synthetic data (see above)")
+    parser.add_argument("--smoke-root", type=Path, default=None, help="default: $PE_SMOKE_ROOT or output/_smoke")
+    args = parser.parse_args(argv)
+    check_label(args.task, args.label)
+    if args.smoke:
+        from tools.baselines.smoke_data import PROFILE, default_root
+
+        args.smoke_root = Path(args.smoke_root or default_root())
+        args.profile = PROFILE
+        if args.num_workers == "auto":
+            args.num_workers = "0"
+        if args.gpus and not _cuda_available():
+            args.gpus = ""
+    return args
+
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+    except ModuleNotFoundError:
+        return False
+    return bool(torch.cuda.is_available())
+
+
+def smoke_overrides(args: argparse.Namespace) -> list[str]:
+    """Run settings of a --smoke case; applied after the run tag is fixed, so smoke runs keep
+    the default folder names (inside the smoke output root)."""
+    from tools.baselines.experiments import model_dimension
+
+    overrides = ["training.epochs=2", "training.early_stopping_patience=1",
+                 "evaluation.bootstrap_samples=200", "profiling.iterations=1"]
+    if model_dimension(args.model) in {"2D", "2.5D"}:
+        overrides += ["model.mil.num_slices=4", "model.mil.slice_size=64", "model.mil.chunk_size=8"]
+    if args.model.startswith("ctfm"):
+        # CT-FM cannot run from random init; the synthetic cache stands in for its features
+        # and this file for its checkpoint path (only checked for existence when frozen).
+        overrides.append(f"model.checkpoint={(args.smoke_root / 'dummy_ct_fm.safetensors').resolve().as_posix()}")
+    else:
+        overrides.append("model.pretrained.enabled=false")
+    return overrides
 
 
 def fraction_percent(value: str) -> int:
@@ -90,8 +139,12 @@ def fraction_percent(value: str) -> int:
 def base_overrides(args: argparse.Namespace) -> list[str]:
     """Task-level overrides (applied before the manifest is known)."""
     overrides = [f"data.profile={args.profile}"]
+    if getattr(args, "smoke", False):
+        from tools.baselines.smoke_data import path_overrides
+
+        overrides += path_overrides(args.smoke_root)
     if args.task == "prognosis":
-        target = args.target
+        target = args.label
         overrides += [
             "experiment.stage=prognosis",
             "experiment.family=prognosis",
@@ -149,7 +202,7 @@ def case_manifest(args: argparse.Namespace, config: dict, fraction: int) -> tupl
     if str(args.fold) == "official" and fraction == 100:
         return configured, None
     base = f"manifests/{PROGNOSIS_MANIFESTS[args.cohort]}" if args.task == "prognosis" else "manifests/diagnosis.csv"
-    label = args.target if args.task == "prognosis" else str(config["task"]["primary_target"])
+    label = args.label if args.task == "prognosis" else str(config["task"]["primary_target"])
     task_name = f"{args.task}_{args.cohort}" if args.task == "prognosis" else args.task
     root = ProjectPaths.resolve(config).dataset_root_for(config)
     splits = ExperimentSplits(root, task=task_name, label=label, base_manifest=base, folds=args.folds, seed=args.split_seed)
@@ -164,6 +217,13 @@ def run(command: list[str]) -> int:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.smoke:
+        from tools.baselines.smoke_data import write_dataset
+
+        write_dataset(args.smoke_root)
+        # These would win over the smoke root's paths.raw_inspect / paths.derived_data.
+        for name in ("PE_RAW_INSPECT_ROOT", "PE_DERIVED_ROOT"):
+            os.environ.pop(name, None)
     config_path = model_config_path(args.model)
     fraction = fraction_percent(args.fraction)
     from source.data.experiment_splits import fold_tag
@@ -173,7 +233,7 @@ def main(argv=None) -> int:
     config, settings = case_settings(args)
     manifest, split_report = case_manifest(args, config, fraction)
     prefix = "PR" if args.task == "prognosis" else "DX"
-    task_dir = task_directory(args.task, args.cohort, args.target)
+    task_dir = task_directory(args.task, args.cohort, args.label)
     tag = run_tag(args.model, args.head, fraction, args.variant, settings)
     overrides += [
         f"data.manifest={manifest}",
@@ -197,8 +257,12 @@ def main(argv=None) -> int:
         overrides.append("training.record_epoch_auc=false")
     if args.scratch:
         overrides.append("model.pretrained.enabled=false")
+    if args.smoke:
+        overrides += smoke_overrides(args)
     overrides += list(args.extra)
-    print(f"==> case task={args.task} model={args.model} head={args.head} fraction={fraction}% fold={fold} "
+    print(("==> SMOKE case (synthetic data) " if args.smoke else "==> case ") + f"task={args.task}"
+          + (f" label={args.label}" if args.label else "")
+          + f" model={args.model} head={args.head} fraction={fraction}% fold={fold} "
           f"seed={args.seed} profile={args.profile} gpus={args.gpus or 'cpu'}"
           + (f" settings={settings}" if settings else ""), flush=True)
     if split_report:
@@ -243,7 +307,7 @@ def main(argv=None) -> int:
             if code:
                 return code
     print(f"==> done: {run_dir}", flush=True)
-    for name in ("result.csv", "predictions.csv", "training_curves.png", "preview", "logs.txt"):
+    for name in ("result.csv", "predictions.csv", "training_curves.png", "visualize", "logs.txt"):
         print(f"    {name}: {Path(run_dir) / name}", flush=True)
     return 0
 

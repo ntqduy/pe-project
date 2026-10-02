@@ -32,6 +32,10 @@ bash scripts/diagnosis/baselines/prepare_weights.sh
 # 1b. one bf16 step per arm at the real size: catches CUDA-only errors and OOM early
 bash scripts/diagnosis/baselines/smoke.sh
 
+# 1c. whole pipeline on synthetic data (no INSPECT data, CPU is enough; writes under output/_smoke)
+python tools/baselines/smoke_pipeline.py                  # report: output/_smoke/smoke_report.md
+python tools/baselines/run_case.py --model vit_3d --head kan --smoke   # one case
+
 # 2. rehearse one arm on the small profile, then the real thing
 PROFILE=smoke_30 EPOCHS=1 bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh
 bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh
@@ -61,10 +65,25 @@ scripts/tool/run_ctfm_frozen.sh`), exactly like the existing CT-FM runs.
 | `EPOCH_AUC=0` | on | skip the per-epoch AUROC pass (halves epoch time) |
 | `SCRATCH=1` | off | ignore pretrained weights |
 | `OVERWRITE=1` | off | replace finished cases |
-| `TASK=prognosis` | `diagnosis` | image-only prognosis (`TARGET`, `COHORT=all` or `pe`) |
+| `TASK=prognosis` | `diagnosis` | image-only prognosis; `LABEL` is then required (`1_month_mortality`, `6_month_mortality`, `12_month_mortality`, `1_month_readmission`, `6_month_readmission`, `12_month_readmission`, `12_month_PH`); `COHORT=all` or `pe`. `LABEL` with diagnosis is an error |
 | `DRY_LIST=1` | off | print the case grid only |
 
-One case directly: `python tools/baselines/run_case.py --model vit_3d --head kan --fraction 50 --fold 2 --gpus 1`.
+One case directly: `python tools/baselines/run_case.py --model vit_3d --head kan --fraction 50 --seed 1 --gpus 1`
+(prognosis: `--task prognosis --label 12_month_PH`).
+
+## Training protocol (every arm, `configs/components/baselines.yaml`)
+
+| setting | value |
+|---|---|
+| split | official INSPECT train / validation / test; repeat with seeds (`SEEDS="0 1 2"`), not folds |
+| effective batch | 4 = micro-batch x `gradient_accumulation`; an arm that does not fit lowers its micro-batch in its run config (`vmamba_3d`, `mamba_mae_3d`: 1 x 4; most 2D/3D arms: 2 x 2) |
+| epochs / early stopping | at most 100; stop after 15 epochs without a better validation AUROC |
+| checkpoint | `best.ckpt` = epoch with the highest validation AUROC (`training.selection_metric: val_auroc`) |
+| precision | `compute.precision: auto` = bf16 if the GPU supports it, else fp16 + GradScaler, fp32 on CPU |
+| memory | per-arm `gradient_checkpointing` in `backbones.yaml`; `run.log` prints device, precision, micro / effective batch and checkpointing |
+| seeds | python / numpy / torch / CUDA, cuDNN deterministic, seeded DataLoader order and workers |
+| threshold | Youden on validation, applied unchanged to test |
+| CI | 95% patient-level bootstrap (2000 resamples) on test |
 
 ## What a case is
 
@@ -80,6 +99,7 @@ presets in `configs/components/baselines.yaml`, one run config per arm in
 | 3D | the cached 128^3 RAS volume (1.5 mm) |
 | 2D | 32 axial slices at uniform z, each through the 2D backbone, gated-attention MIL over slices |
 | 2.5D | as 2D, each instance = 3 adjacent slices as the RGB channels |
+| center ablation | `--set model.mil.slice_selection=center`: 2D = the middle slice only, 2.5D = the 3 middle slices |
 
 Each encoder maps the cache's `[0,1]` of `[-1000, 1000]` HU to its own pre-training
 convention (ImageNet window + normalisation, MedicalNet / Mamba-MAE z-score, Swin-UNETR
@@ -145,10 +165,11 @@ tag (12.5% -> `frac012p5`), so two fractions never share a folder.
 ├── runs/<model>__<head>__frac<PPP>/<fold>_seed<S>/epoch_<E>/     one case (shared by experiments)
 │   ├── result.csv  predictions.csv  result.json  logs.txt  training_curves.png
 │   ├── checkpoint/{best,last}.ckpt  resolved_config.yaml
-│   └── preview/  NN_<patient>_<study>_<TP|TN|FP|FN>.{html,png}, _ct.nii.gz + _gradcam.nii.gz
-│                 (input grid, sidecar affine; open together in ITK-SNAP / 3D Slicer)
+│   └── visualize/{correct,incorrect}/  NN_<patient>_<study>_<TP|TN|FP|FN>.{html,png},
+│                 _ct.nii.gz + _gradcam.nii.gz (input grid, sidecar affine; ITK-SNAP / 3D Slicer)
 │                 (+ _mil_attention.png for 2D / 2.5D)
-├── exp01_baselines/      summary.md  summary.csv  runs.csv  auroc_per_model.png  launcher_logs/
+├── exp01_baselines/      summary.md  summary_pretty.csv  summary_ensemble.csv  summary.csv
+│                         summary_raw.csv  auroc_per_model.png  launcher_logs/
 │                         runs/<model>_<head>[_frac<PPP>]/<fold>_seed<S> -> symlink to the shared run
 ├── exp02_data_fraction/  ...                                  auroc_vs_fraction.png
 └── exp03_head_ablation/  ...                                  mlp_vs_kan.png
@@ -157,12 +178,21 @@ tag (12.5% -> `frac012p5`), so two fractions never share a folder.
 A run is identified by its settings, not by the experiment, so e.g. ResNet-18 3D + MLP at
 100% is trained once and reused by all three experiments.
 
-The preview explains the **3 most confident correct (TP/TN alternating) and 3 most confident
-wrong (FP/FN alternating) validation cases** (`preview:` in `baselines.yaml`), with the
-validation threshold. The Grad-CAM target is each encoder's deepest feature map: conv stage
-for CNN/Swin/VMamba/PENet, the last token map reshaped to its 3D grid for ViT / Mamba-MAE,
-and for 2D / 2.5D the per-slice maps stacked along z; their montage selects the highest
-MIL-attention slices. Cases are
-taken from validation (as in the existing CT-FM previews), so test stays untouched.
+`visualize/` explains the **3 most confident correct (TP/TN alternating) and 3 most confident
+wrong (FP/FN alternating) test cases** (`preview:` in `baselines.yaml`) at the
+validation-selected threshold. The Grad-CAM (HiResCAM) target is each encoder's deepest
+feature map: conv stage for CNN/Swin/VMamba/PENet/nnMamba, the last token map reshaped to its
+3D grid for ViT / Mamba-MAE, and for 2D / 2.5D the per-slice maps stacked along z; their
+montage selects the highest MIL-attention slices. Each viewer's technical table names the
+target layer. `python tools/tasks/gradcam_preview.py --run-dir <run>` rebuilds a preview.
+
+Summary tables (`tools/baselines/summarize.py`, also run after every grid):
+
+| file | content |
+|---|---|
+| `summary.md`, `summary_pretty.csv` | one row per model: AUROC / AUPRC as `0.812 [0.790–0.834]` (seed ensemble) and mean ± std over seeds, every other metric mean ± std, `n_seeds` |
+| `summary_ensemble.csv` | the seed ensemble with every `result.csv` column: test probabilities averaged per `study_id` over the seeds (merged on `study_id`, never on row order; runs whose studies or labels differ are an error), threshold re-chosen on the averaged validation probabilities, patient-bootstrap CI |
+| `summary.csv` | numeric mean / std / n per metric |
+| `summary_raw.csv` | every run's test row (all `result.csv` columns) |
+
 Official-split and k-fold runs are summarised in separate rows (`split` column).
-`python tools/tasks/gradcam_preview.py --run-dir <run>` rebuilds a preview.

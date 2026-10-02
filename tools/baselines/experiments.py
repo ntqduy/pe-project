@@ -55,8 +55,29 @@ def _load_experiments() -> dict[str, dict]:
 EXPERIMENTS = _load_experiments()
 
 
-def task_directory(task: str, cohort: str = "all", target: str = "1_month_mortality") -> str:
-    return "diagnosis" if task == "diagnosis" else f"prognosis_{cohort}_{target}"
+# The seven INSPECT prognosis outcomes (source/data/profiles/_common.yaml: prognosis_outcomes).
+PROGNOSIS_LABELS = (
+    "1_month_mortality", "6_month_mortality", "12_month_mortality",
+    "1_month_readmission", "6_month_readmission", "12_month_readmission", "12_month_PH",
+)
+
+
+def check_label(task: str, label: str | None) -> str | None:
+    """--label is required for prognosis (one of PROGNOSIS_LABELS) and forbidden for diagnosis."""
+    if task == "diagnosis":
+        if label:
+            raise SystemExit(f"--label is only valid with --task prognosis (diagnosis always predicts "
+                             f"pe_present); got --label {label}")
+        return None
+    if not label:
+        raise SystemExit("--task prognosis requires --label, one of: " + ", ".join(PROGNOSIS_LABELS))
+    if label not in PROGNOSIS_LABELS:
+        raise SystemExit(f"unknown prognosis --label {label!r}; choose one of: " + ", ".join(PROGNOSIS_LABELS))
+    return label
+
+
+def task_directory(task: str, cohort: str = "all", label: str | None = None) -> str:
+    return "diagnosis" if task == "diagnosis" else f"prognosis_{cohort}_{check_label(task, label)}"
 
 
 def outputs_root():

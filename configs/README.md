@@ -19,7 +19,7 @@ configs/
       anatomy/               arm anatomy-aware (single_concat, silver_*)
       baselines/             baseline zoo theo chiều: 2D/, 2_5D/, 3D/
       matrix/                single-task vs multitask
-      external/              test-only trên RSPECT / Turkey
+      external/              test-only trên Turkey
     03_prognosis/            modality/, global/, anatomy/, ehr_ablation/
     04_anatomy_analysis/     counterfactual/, architecture/ (ablation)
   components/

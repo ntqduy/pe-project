@@ -1,7 +1,7 @@
 # ViT-S/16 2D slice-MIL (ImageNet-21k) + head.
 # Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
 # Contracts: backbone -> components/backbones.yaml#registry.vit_2d, head/task/budget ->
-# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 4.
 _base_:
   - ../../../../paths.yaml
   - ../../../../compute/default.yaml
@@ -21,4 +21,4 @@ model:
 
 training:
   batch_size: 2
-  gradient_accumulation: 4
+  gradient_accumulation: 2

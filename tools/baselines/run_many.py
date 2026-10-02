@@ -34,7 +34,9 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.baselines.experiments import EXPERIMENTS, base_directory, dimension_folder, run_tag, task_directory  # noqa: E402
+from tools.baselines.experiments import (  # noqa: E402
+    EXPERIMENTS, PROGNOSIS_LABELS, base_directory, check_label, dimension_folder, run_tag, task_directory,
+)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -52,13 +54,21 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--jobs-per-gpu", type=int, default=1)
     parser.add_argument("--profile", default=os.environ.get("PROFILE", "full_inspect"))
     parser.add_argument("--task", default="diagnosis", choices=["diagnosis", "prognosis"])
-    parser.add_argument("--target", default="1_month_mortality", help="prognosis endpoint")
+    parser.add_argument("--label", default=None, choices=PROGNOSIS_LABELS,
+                        help="prognosis endpoint; required with --task prognosis, not allowed with diagnosis")
     parser.add_argument("--cohort", default="all", choices=["all", "pe"], help="prognosis cohort")
     parser.add_argument("--dry-list", action="store_true")
     parser.add_argument("--no-summary", action="store_true")
     parser.add_argument("--log-dir", type=Path, help="per-case launcher logs (default: <exp summary dir>/launcher_logs)")
     parser.add_argument("case_args", nargs=argparse.REMAINDER, help="after --, passed to every run_case.py")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    check_label(args.task, args.label)
+    return args
+
+
+def task_arguments(args: argparse.Namespace) -> list[str]:
+    """--task / --label / --cohort as run_case.py and summarize.py take them."""
+    return ["--task", args.task, *(["--label", args.label] if args.label else []), "--cohort", args.cohort]
 
 
 def slots(pool: str, per_job: int, per_gpu: int) -> list[str]:
@@ -80,8 +90,7 @@ def case_command(args: argparse.Namespace, spec: dict, case: dict, extra: list[s
     """run_case.py arguments of one case (without the interpreter and script)."""
     command = ["--model", case["model"], "--head", case["head"], "--fraction", str(case["fraction"]),
                "--fold", str(case["fold"]), "--folds", str(args.folds), "--seed", str(case["seed"]),
-               "--profile", args.profile, "--task", args.task, "--target", args.target, "--cohort", args.cohort,
-               "--gpus", gpu, *extra]
+               "--profile", args.profile, *task_arguments(args), "--gpus", gpu, *extra]
     overrides = spec["overrides"].get(case["model"]) or []
     if overrides:
         command += ["--variant", args.exp] + [part for value in overrides for part in ("--set", str(value))]
@@ -129,8 +138,8 @@ def main(argv=None) -> int:
         {"model": model, "head": head, "fraction": fraction, "fold": fold, "seed": seed}
         for model, head, fraction, fold, seed in itertools.product(models, heads, fractions, args.folds_to_run, args.seeds)
     ]
-    task_dir = task_directory(args.task, args.cohort, args.target)
-    task_args = ["--task", args.task, "--target", args.target, "--cohort", args.cohort]
+    task_dir = task_directory(args.task, args.cohort, args.label)
+    task_args = task_arguments(args)
     names = case_names(args, spec, cases, extra)
     log_dir = args.log_dir or base_directory(args.profile, task_dir) / args.exp / "launcher_logs"
     pool = slots(args.gpus, args.gpus_per_job, args.jobs_per_gpu)

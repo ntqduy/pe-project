@@ -1,7 +1,7 @@
 # ViT-S/16 3D (ImageNet ViT-S inflated: 16^3 patches, 512 tokens) + head.
 # Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
 # Contracts: backbone -> components/backbones.yaml#registry.vit_3d, head/task/budget ->
-# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 4.
 _base_:
   - ../../../../paths.yaml
   - ../../../../compute/default.yaml
@@ -21,4 +21,4 @@ model:
 
 training:
   batch_size: 4
-  gradient_accumulation: 2
+  gradient_accumulation: 1

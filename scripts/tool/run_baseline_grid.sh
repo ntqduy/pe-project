@@ -17,7 +17,8 @@
 #   EPOCH_AUC=0               skip the per-epoch AUROC pass over train/validation (default on)
 #   SCRATCH=1                 ignore pretrained weights (random init)
 #   OVERWRITE=1               replace finished cases instead of skipping them
-#   TASK=diagnosis            or prognosis (TARGET=1_month_mortality, COHORT=all|pe)
+#   TASK=diagnosis            or prognosis: then LABEL is required (1_month_mortality, ...,
+#                             12_month_PH) and COHORT=all|pe; LABEL with diagnosis is an error
 #   NUM_WORKERS=auto  PYTHON=python3
 #   RUN_MANY_EXTRA="--log-dir <dir> --no-summary"   extra tools/baselines/run_many.py options
 #   DRY_LIST=1                print the case grid only
@@ -34,6 +35,10 @@ MODEL="${2:?usage: run_baseline_grid.sh <experiment> <model|all> [run_case args]
 shift 2
 PYTHON="${PYTHON:-python3}"
 
+if [[ -n "${TARGET:-}" ]]; then
+  printf 'error: TARGET was renamed LABEL (e.g. TASK=prognosis LABEL=%s)\n' "$TARGET" >&2
+  exit 2
+fi
 GRID=(
   --exp "$EXPERIMENT"
   --profile "${PROFILE:-full_inspect}"
@@ -42,9 +47,9 @@ GRID=(
   --gpus-per-job "${GPUS_PER_JOB:-1}"
   --folds "${K:-5}"
   --task "${TASK:-diagnosis}"
-  --target "${TARGET:-1_month_mortality}"
   --cohort "${COHORT:-all}"
 )
+[[ -n "${LABEL:-}" ]] && GRID+=(--label "$LABEL")
 # shellcheck disable=SC2206
 GRID+=(--folds-to-run ${FOLDS:-official} --seeds ${SEEDS:-42})
 case "$MODEL" in

@@ -30,6 +30,16 @@ def move_to_device(value: Any, device: torch.device) -> Any:
     return value
 
 
+def resolve_precision(precision: str, device: torch.device) -> str:
+    """``auto``: bf16 where the GPU supports it, fp16 (+ GradScaler) on older GPUs, fp32 on CPU."""
+    precision = str(precision or "fp32")
+    if precision != "auto":
+        return precision
+    if device.type != "cuda":
+        return "fp32"
+    return "bf16" if torch.cuda.is_bf16_supported() else "fp16"
+
+
 class Trainer:
     """Small task-agnostic engine; task callbacks own forward/loss/decoding semantics."""
 
@@ -50,6 +60,7 @@ class Trainer:
         accumulation_steps: int = 1,
         maximize_metric: bool = True,
         early_stopping_patience: int | None = None,
+        selection_metric: str | None = None,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -58,7 +69,10 @@ class Trainer:
         self.run_dir = run_dir
         self.lineage = dict(lineage)
         self.scheduler = scheduler
-        self.precision = precision
+        self.precision = resolve_precision(precision, context.device)
+        # A key of the epoch metrics (e.g. "val_auroc") that selects best.ckpt and drives early
+        # stopping; None keeps the metric_fn / negative-validation-loss selection.
+        self.selection_metric = selection_metric
         self.accumulation_steps = int(accumulation_steps)
         self.maximize_metric = maximize_metric
         # None disables early stopping and keeps the historical "always run every epoch"
@@ -70,9 +84,9 @@ class Trainer:
             raise ValueError("training.early_stopping_patience must be a positive integer or null")
         if self.accumulation_steps < 1:
             raise ValueError("gradient accumulation must be positive")
-        self.autocast_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
-        self.amp_enabled = context.device.type == "cuda" and precision in {"bf16", "fp16"}
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled and precision == "fp16")
+        self.autocast_dtype = torch.bfloat16 if self.precision == "bf16" else torch.float16
+        self.amp_enabled = context.device.type == "cuda" and self.precision in {"bf16", "fp16"}
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled and self.precision == "fp16")
         self.logger = RunLogger(run_dir / "logs" / "run.log", echo=context.is_main) if context.is_main else None
         self._epochs = 0      # set by fit(); only used to label progress lines
 
@@ -214,14 +228,14 @@ class Trainer:
         row: Mapping[str, Any],
         epoch_metrics: Mapping[str, Any],
         improved: bool,
-        metric_fn: Any,
+        custom_selection: bool,
     ) -> str:
         """One readable log line per epoch: losses, per-target train/val AUROC, best marker."""
         line = (
             f"epoch={epoch}/{epochs} train_loss={float(row['train_loss']):.6f} "
             f"val_loss={float(row['val_loss']):.6f}"
         )
-        if metric_fn is not None:
+        if custom_selection:
             # With the default selection the metric is just -val_loss; print it only when custom.
             line += f" selection_metric={float(row['primary_val_metric']):.6f}"
         line += f" lr={float(row['lr']):.6g} time_sec={float(row['epoch_time_sec']):.2f}"
@@ -278,12 +292,23 @@ class Trainer:
             val_loss, validation_metrics = self.validation_loss(
                 validation_loader, label=f"epoch {epoch}/{int(epochs)} validation"
             )
-            primary = metric_fn(self.model, validation_loader, self.context) if metric_fn else -val_loss
             epoch_metrics = (
                 dict(epoch_metrics_fn(self.model, train_loader, validation_loader, self.context))
                 if epoch_metrics_fn
                 else {}
             )
+            if self.selection_metric:
+                if self.selection_metric not in epoch_metrics:
+                    raise KeyError(
+                        f"selection metric {self.selection_metric!r} is not among the epoch metrics "
+                        f"{sorted(epoch_metrics)}"
+                    )
+                # NaN (e.g. a single-class validation split) never counts as an improvement.
+                primary = float(epoch_metrics[self.selection_metric])
+            elif metric_fn:
+                primary = metric_fn(self.model, validation_loader, self.context)
+            else:
+                primary = -val_loss
             if self.scheduler is not None:
                 try:
                     self.scheduler.step(primary)
@@ -307,7 +332,10 @@ class Trainer:
             history.append(row)
             if self.context.is_main:
                 self._write_history(history)
-                self.logger.log(self._epoch_line(epoch, int(epochs), row, epoch_metrics, improved, metric_fn))
+                self.logger.log(self._epoch_line(
+                    epoch, int(epochs), row, epoch_metrics, improved,
+                    custom_selection=metric_fn is not None or bool(self.selection_metric),
+                ))
                 per_epoch = (time.perf_counter() - started) / epoch
                 if epoch < int(epochs) and per_epoch >= PROGRESS_EVERY_SEC:    # silent on short smoke epochs
                     self.logger.log(

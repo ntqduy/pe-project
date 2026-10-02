@@ -3,8 +3,14 @@
 #
 # Every baseline arm is: encoder (backbones.yaml) -> shared projection -> head (MLP | KAN),
 # built by source/model/classifier.py (task.architecture: baseline_classifier). Arms differ
-# only in the encoder and in what an arm's own run config overrides (batch size, peft),
+# only in the encoder and in what an arm's own run config overrides (micro-batch, peft),
 # so rows of one result table are comparable.
+#
+# One training protocol for every arm: effective batch 4 (micro-batch x gradient_accumulation),
+# at most 100 epochs, early stopping after 15 epochs without a better validation AUROC, and
+# best.ckpt = the epoch with the highest validation AUROC. An arm whose micro-batch 4 does
+# not fit in GPU memory lowers its micro-batch and raises gradient_accumulation in its own run
+# config (the effective batch stays 4); run.log prints micro/effective batch and checkpointing.
 _presets_:
   diagnosis:
     # PE present / absent from the image only, official INSPECT split.
@@ -43,14 +49,21 @@ _presets_:
       bootstrap_samples: 2000
       confidence: 0.95
       threshold_method: youden
-    # Grad-CAM preview written by evaluate: the 3 most confident correct (TP/TN alternating)
-    # and 3 most confident wrong (FP/FN alternating) validation studies, each as an .html
-    # viewer + .png montage (+ _mil_attention.png for 2D / 2.5D models), plus
-    # _ct.nii.gz / _gradcam.nii.gz on the input grid (sidecar affine) for ITK-SNAP / Slicer.
+    # bf16 where the GPU supports it, fp16 + GradScaler otherwise, fp32 on CPU
+    # (source/engine/trainer.py:resolve_precision); run.log records the resolved one.
+    compute:
+      precision: auto
+    # Grad-CAM cases written by evaluate into <run>/visualize/{correct,incorrect}/: the 3 most
+    # confident correct (TP/TN alternating) and 3 most confident wrong (FP/FN alternating)
+    # TEST studies at the validation-selected threshold, each as an .html viewer + .png
+    # montage (+ _mil_attention.png for 2D / 2.5D models), plus _ct.nii.gz / _gradcam.nii.gz
+    # on the input grid (sidecar affine) for ITK-SNAP / Slicer.
     preview:
       correct: 3
       wrong: 3
       nifti: true
+      split: test
+      directory: visualize
     seed: 42
 
   head_mlp:
@@ -76,10 +89,11 @@ _presets_:
       _replace_: true
       method: full
     training:
-      epochs: 40
-      early_stopping_patience: 8
-      batch_size: 2
-      gradient_accumulation: 4
+      epochs: 100
+      early_stopping_patience: 15
+      selection_metric: val_auroc
+      batch_size: 4
+      gradient_accumulation: 1
       learning_rate: 0.0001
       weight_decay: 0.05
       scheduler: cosine
@@ -113,7 +127,8 @@ _presets_:
     training:
       epochs: 100
       early_stopping_patience: 15
-      batch_size: 32
+      selection_metric: val_auroc
+      batch_size: 4
       gradient_accumulation: 1
       learning_rate: 0.001
       weight_decay: 0.0001

@@ -580,30 +580,6 @@ experiments:
     produces: [Soft-MoE cell of the fusion comparison]
     status: ready
 
-  diag.external.rspect_test:
-    config: configs/runs/02_diagnosis/external/rspect_test.yaml
-    group: DIAGNOSIS
-    description: Test-only RSPECT evaluation for an explicitly selected INSPECT checkpoint
-    question: Does a selected checkpoint generalize to the external RSPECT test split?
-    representation: supplied checkpoint
-    task: diagnosis
-    modalities: [image]
-    anatomy: false
-    supervision: external native label used only for evaluation
-    fusion: concat_mlp
-    requires:
-      - what: Normalized RSPECT patient-level test manifest
-        path_key: data.manifest
-        blocker: rspect_manifest
-      - what: INSPECT-validation threshold artifact of the selected internal run
-        experiment: diag.global.single
-      - what: Explicit --checkpoint argument from the model-selection protocol
-    produces: [INSPECT-validation-locked threshold, test predictions and bootstrap metrics]
-    status: blocked
-    blockers:
-      - Normalized RSPECT data are absent; train_task.py explicitly refuses this config.
-      - Evaluation only - run tools/tasks/evaluate.py --checkpoint <selected checkpoint>, not run.py run.
-
   diag.external.turkey_test:
     config: configs/runs/02_diagnosis/external/turkey_test.yaml
     group: DIAGNOSIS

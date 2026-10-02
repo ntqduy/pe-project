@@ -1,7 +1,7 @@
 # VMamba-B 3D (ImageNet VMamba-B inflated, SS3D) + head. mamba_ssm CUDA kernel recommended.
 # Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
 # Contracts: backbone -> components/backbones.yaml#registry.vmamba_3d, head/task/budget ->
-# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 4.
 _base_:
   - ../../../../paths.yaml
   - ../../../../compute/default.yaml
@@ -21,4 +21,4 @@ model:
 
 training:
   batch_size: 1
-  gradient_accumulation: 8
+  gradient_accumulation: 4

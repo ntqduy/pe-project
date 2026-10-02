@@ -33,7 +33,7 @@ def main(argv=None) -> int:
     parser.add_argument("--size", type=int, default=128, help="cube side of the synthetic volume")
     parser.add_argument("--batch-size", type=int, help="default: each arm's training.batch_size")
     parser.add_argument("--head", default="mlp", choices=["mlp", "kan"])
-    parser.add_argument("--precision", default=None, help="bf16 | fp16 | fp32 (default: compute.precision)")
+    parser.add_argument("--precision", default=None, help="auto | bf16 | fp16 | fp32 (default: compute.precision)")
     args = parser.parse_args(argv)
 
     import torch
@@ -54,7 +54,9 @@ def main(argv=None) -> int:
                 overrides.append(f"model.input_size={args.size}")
             config = validate_config({key: value for key, value in load_config(
                 config_path(name), overrides).items() if key != "config_hash"})
-            precision = args.precision or str(config["compute"].get("precision", "fp32"))
+            from source.engine.trainer import resolve_precision
+
+            precision = resolve_precision(args.precision or str(config["compute"].get("precision", "fp32")), device)
             batch = int(args.batch_size or config["training"]["batch_size"])
             model, _ = build_task_model(config)
             model.to(device).train()

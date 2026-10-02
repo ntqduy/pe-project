@@ -819,28 +819,45 @@ def main() -> int:
                 and validation_loader is not None
             ):
                 if bundle_dir is not None:
-                    preview_report = write_backbone_previews(
-                        model,
-                        validation_loader.dataset,
-                        config,
-                        context.device,
-                        bundle_dir / "preview",
-                        maximum_patients=5,
-                        # Same validation-selected cutoff as result.csv, so each preview can say
-                        # whether the model is right for that patient.
-                        threshold=thresholds.get(primary),
-                        threshold_rule=threshold_rule(threshold_sources.get(primary), threshold_method),
-                        # The validation probabilities scored above: shown in the header and
-                        # checked against the preview's own forward pass.
-                        reference_probabilities={
-                            (str(row["patient_id"]), str(row["study_id"])): float(row["y_prob"])
-                            for row in validation_rows_by_target.get(primary) or ()
-                        },
-                        checkpoint=Path(checkpoint).resolve(),
-                        checkpoint_sha256=result["evaluation_checkpoint"]["sha256"],
-                    )
-                    for line in preview_log_lines(preview_report, bundle_dir / "preview"):
-                        log(line)
+                    # preview.split picks the explained cases: validation (default, preview/) or
+                    # test (baselines: visualize/{correct,incorrect}/). The cutoff is always the
+                    # validation-selected one of result.csv; a smoke-scope test subset is skipped.
+                    preview_options = dict(config.get("preview") or {})
+                    preview_split = str(preview_options.get("split") or "validation")
+                    if preview_split not in {"validation", "test"}:
+                        raise ValueError(f"preview.split must be validation or test, got {preview_split!r}")
+                    preview_dir = bundle_dir / str(preview_options.get("directory") or "preview")
+                    if preview_split == "test":
+                        preview_dataset = test_loader.dataset
+                        preview_rows = rows_by_target.get(primary) or ()
+                    else:
+                        preview_dataset = validation_loader.dataset
+                        preview_rows = validation_rows_by_target.get(primary) or ()
+                    if not (smoke_scope and preview_split == "test"):
+                        preview_report = write_backbone_previews(
+                            model,
+                            preview_dataset,
+                            config,
+                            context.device,
+                            preview_dir,
+                            maximum_patients=5,
+                            # Same validation-selected cutoff as result.csv, so each preview can say
+                            # whether the model is right for that patient.
+                            threshold=thresholds.get(primary),
+                            threshold_rule=threshold_rule(threshold_sources.get(primary), threshold_method),
+                            # The probabilities scored above: shown in the header and checked
+                            # against the preview's own forward pass.
+                            reference_probabilities={
+                                (str(row["patient_id"]), str(row["study_id"])): float(row["y_prob"])
+                                for row in preview_rows
+                            },
+                            checkpoint=Path(checkpoint).resolve(),
+                            checkpoint_sha256=result["evaluation_checkpoint"]["sha256"],
+                            split=preview_split,
+                            by_outcome=preview_split == "test",
+                        )
+                        for line in preview_log_lines(preview_report, preview_dir):
+                            log(line)
             if stage in {"diagnosis", "prognosis"}:
                 from source.metrics.reporting import stard_ai_checklist, tripod_ai_checklist
 

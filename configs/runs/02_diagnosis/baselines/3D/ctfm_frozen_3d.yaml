@@ -1,7 +1,7 @@
 # CT-FM 3D frozen (cached pooled features, tools/data/build_ctfm_cache.py) + head.
 # Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
 # Contracts: backbone -> components/backbones.yaml#registry.ct_fm_features, head/task/budget ->
-# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 32.
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 4.
 _base_:
   - ../../../../paths.yaml
   - ../../../../compute/default.yaml
@@ -20,7 +20,7 @@ model:
   backbone: ct_fm_features
 
 training:
-  batch_size: 32
+  batch_size: 4
   gradient_accumulation: 1
 
 data:

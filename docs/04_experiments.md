@@ -107,7 +107,7 @@ python run.py run diag.matrix.single_task --gpus 0 \
 | 2.5D (bộ 3 lát kề làm RGB) | `resnet18_25d`, `convnext_25d`, `vit_25d`, `swin_25d` |
 | 3D | `resnet18_3d`, `resnet50_3d`, `densenet121_3d`, `convnext_3d`, `vit_3d`, `swin_3d`, `nnmamba_3d`, `mamba_mae_3d`, `vmamba_3d`, `penet_3d`, `ctfm_lora_3d`, `ctfm_frozen_3d` |
 
-Ngân sách (`baselines.yaml`): `train_end_to_end` (full, 40 epoch, patience 8, cosine), `train_lora` (lr 3e-4), `train_frozen_features` (`ctfm_frozen_3d`: 100 epoch, batch 32, lr 1e-3). Ba lưới (`tools/baselines/experiments.py`; một case = model × head × fraction × fold × seed):
+Ngân sách (`baselines.yaml`, chung cho mọi arm): tối đa 100 epoch, early stopping patience 15 theo val AUROC, `best.ckpt` = val AUROC cao nhất, batch hiệu dụng 4 (micro-batch × accumulation, micro-batch theo VRAM của từng arm), `compute.precision: auto`; `train_end_to_end` (full, cosine, lr 1e-4), `train_lora` (lr 3e-4), `train_frozen_features` (`ctfm_frozen_3d`, lr 1e-3). Ba lưới (`tools/baselines/experiments.py`; một case = model × head × fraction × fold × seed):
 
 | Lưới | File | Model | Head | Fraction train |
 |---|---|---|---|---|
@@ -127,7 +127,6 @@ GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh
 
 | Experiment | Run ID | Checkpoint đánh giá | Threshold khoá từ | Trạng thái |
 |---|---|---|---|---|
-| `diag.external.rspect_test` | `DX_external_rspect_test` | chỉ định qua `--checkpoint` | `diagnosis/DX_global_single/epoch_50/result.json` | blocked: chưa có `manifests/rsna_diagnosis.csv` |
 | `diag.external.turkey_test` | `DX_external_turkey_test` | `DX_anatomy_concat/epoch_50/checkpoint/best.ckpt` | `diagnosis/DX_anatomy_concat/epoch_50/result.json` | blocked: chưa nhận dữ liệu Turkey; cần `data.segmentation.turkey`, `data.roi.turkey` |
 
 Hợp đồng `external_evaluation`: `test_only`, `prohibit_training`, `threshold_source: internal_validation_artifact`, `evaluation_split: test`. `train_task.py` từ chối config này; `evaluate.py` bắt buộc `--checkpoint`, chỉ chấm primary, threshold khoá theo SHA-256 checkpoint ([03](03_training_evaluation.md), mục threshold khoá).

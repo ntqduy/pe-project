@@ -16,6 +16,8 @@ from source.imaging.cam_preview import CAM_MEANING, CAM_METHODS, cam_from_target
 # Files of earlier artifact contracts that must not linger beside the current bundle.
 LEGACY_EPOCH_FILES = ("training_curves.pdf", "artifacts.json")
 LEGACY_PREVIEW_FILES = ("README.txt", "summary.json")
+# visualize/ layout of write_backbone_previews(by_outcome=True).
+OUTCOME_FOLDERS = {"TP": "correct", "TN": "correct", "FP": "incorrect", "FN": "incorrect"}
 
 
 def latest_epoch_directory(run_dir: Path) -> Path | None:
@@ -645,8 +647,9 @@ def _preview_indices(
     threshold: float | None,
     reference: Mapping[tuple[str, str], float] | None,
     target: str,
+    split: str = "validation",
 ) -> tuple[list[int], str]:
-    """Which validation studies to explain, and a one-line description of the rule.
+    """Which ``split`` studies to explain, and a one-line description of the rule.
 
     ``selection = {"correct": 3, "wrong": 3}`` picks the most confident correct cases
     (alternating TP / TN) and the most confident errors (alternating FP / FN), judged with
@@ -658,7 +661,7 @@ def _preview_indices(
     correct_n, wrong_n = int(options.get("correct", 0)), int(options.get("wrong", 0))
     base = _base_dataset(dataset)
     if not (correct_n or wrong_n) or threshold is None or not reference or base is None:
-        return default, "các study đầu của validation theo thứ tự manifest; không chọn theo đúng/sai"
+        return default, f"các study đầu của {split} theo thứ tự manifest; không chọn theo đúng/sai"
     pools: dict[str, list[tuple[float, int]]] = {"TP": [], "TN": [], "FP": [], "FN": []}
     for index, row in enumerate(base.rows):
         probability = reference.get((str(row.get("patient_id")), str(row.get("study_id"))))
@@ -687,7 +690,7 @@ def _preview_indices(
     counts = ", ".join(f"{name}={len(pool)}" for name, pool in pools.items())
     text = (
         f"{correct_n} ca đúng (xen kẽ TP/TN) + {wrong_n} ca sai (xen kẽ FP/FN) tự tin nhất theo |p − threshold| "
-        f"trên validation (threshold của evaluate); số ca có sẵn: {counts}"
+        f"trên {split} (threshold chọn trên validation của evaluate); số ca có sẵn: {counts}"
     )
     return indices, text
 
@@ -766,8 +769,13 @@ def write_backbone_previews(
     checkpoint_sha256: str | None = None,
     cam_method: str = "hirescam",
     selection: Mapping[str, Any] | None = None,
+    split: str = "validation",
+    by_outcome: bool = False,
 ) -> dict[str, Any]:
-    """Grad-CAM preview of validation studies: which input regions drive the target.
+    """Grad-CAM preview of ``split`` studies (validation by default): which input regions drive the target.
+
+    ``by_outcome`` files every case under ``correct/`` (TP, TN) or ``incorrect/`` (FP, FN);
+    cases without an outcome (no threshold yet) stay at the top level.
 
     ``selection={"correct": 3, "wrong": 3}`` (``preview`` in the run config) explains the most
     confident correct and wrong validation cases instead of the first studies; slice-MIL
@@ -811,8 +819,9 @@ def write_backbone_previews(
     destination.mkdir(parents=True, exist_ok=True)
     # Only this contract's files belong in preview/; remove images and notes of earlier ones.
     for pattern in ("*.png", "*.html", "*.nii.gz"):
-        for stale in destination.glob(pattern):
-            stale.unlink()
+        for folder in (destination, destination / "correct", destination / "incorrect"):
+            for stale in folder.glob(pattern):
+                stale.unlink()
     for name in LEGACY_PREVIEW_FILES:
         (destination / name).unlink(missing_ok=True)
     stage = str((config.get("experiment") or {}).get("stage") or "")
@@ -874,7 +883,7 @@ def write_backbone_previews(
     target_for_selection = str((config.get("task") or {}).get("primary_target") or "pe_present")
     indices, selection_text = _preview_indices(
         dataset, maximum_patients, selection or (config.get("preview") or None),
-        threshold, reference_probabilities, target_for_selection,
+        threshold, reference_probabilities, target_for_selection, split,
     )
     handle = hook_module.register_forward_hook(capture)
     was_training = underlying.training
@@ -1170,18 +1179,24 @@ def write_backbone_previews(
                 prefix = f"{written + 1:02d}_{_safe_name(patient)}_{_safe_name(study)}"
                 if outcome:
                     prefix += f"_{outcome}"
+                subfolder = ""
+                if by_outcome and outcome in OUTCOME_FOLDERS:
+                    subfolder = OUTCOME_FOLDERS[outcome]
+                case_dir = destination / subfolder if subfolder else destination
+                case_dir.mkdir(parents=True, exist_ok=True)
+                relative = f"{subfolder}/" if subfolder else ""
                 metadata_hook = hook_state.get("metadata")
                 if isinstance(metadata_hook, Mapping):
                     attention_file = _write_attention_plot(
-                        destination / f"{prefix}_mil_attention.png", metadata_hook,
+                        case_dir / f"{prefix}_mil_attention.png", metadata_hook,
                         f"MIL attention · {patient} / {study} · {outcome or 'N/A'} · p={probability:.3f}",
                     )
                     if attention_file is not None:
-                        files.append(attention_file.name)
+                        files.append(relative + attention_file.name)
                 if nifti_payload is not None and bool((config.get("preview") or {}).get("nifti", False)):
-                    files += _write_cam_nifti(destination / prefix, *nifti_payload)
+                    files += [relative + name for name in _write_cam_nifti(case_dir / prefix, *nifti_payload)]
                 write_cam_preview(
-                    destination / prefix,
+                    case_dir / prefix,
                     {
                         "title": f"Grad-CAM {target} · {patient} / {study}",
                         "ct": ct_display,
@@ -1207,7 +1222,7 @@ def write_backbone_previews(
                                        if int(model_input.shape[1]) > 1 else "CT trên lưới input model"),
                     },
                 )
-                files += [f"{prefix}.html", f"{prefix}.png"]
+                files += [f"{relative}{prefix}.html", f"{relative}{prefix}.png"]
                 probabilities.append(preview_probability)
                 outcomes.append(outcome or "pending")
                 statuses.append(status)
@@ -1227,6 +1242,7 @@ def write_backbone_previews(
         "cam_status": statuses,
         "files": files,
         "method": cam_method,
+        "split": split,
         "max_abs_probability_delta": max(deltas) if deltas else None,
         "preview_probabilities": probabilities,
     }
@@ -1241,6 +1257,7 @@ def preview_log_lines(report: Mapping[str, Any], destination: Path) -> list[str]
         f"preview status={report.get('status')} patients={report.get('patients')} "
         f"dir={destination}"
         + (f" method={report['method']}" if report.get("method") else "")
+        + (f" split={report['split']}" if report.get("split") else "")
         + (f" outcomes={','.join(outcomes)}" if outcomes else "")
         + (f" cam={','.join(statuses)}" if statuses else "")
         + (f" max_abs_dp_vs_evaluate={delta:.2e}" if delta is not None else "")

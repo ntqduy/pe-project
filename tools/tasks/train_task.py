@@ -24,7 +24,7 @@ from source.engine.experiment import OutputManager, compact_result, run_output_i
 from source.engine.factory import build_task_model
 from source.engine.task_steps import diagnosis_evaluation_targets, task_loss_step
 from source.engine.schedulers import build_scheduler
-from source.engine.trainer import Trainer, move_to_device
+from source.engine.trainer import Trainer, move_to_device, resolve_precision
 from source.engine.task_artifacts import (
     best_epoch,
     cleanup_task_run,
@@ -38,7 +38,7 @@ from source.profiling.model_profile import profile_model
 from source.components.peft.freeze import trainable_parameter_summary
 from source.utils.console import experiment_header
 from source.utils.environment import environment_report
-from source.utils.seed import seed_everything
+from source.utils.seed import loader_seeding, seed_everything
 from source.utils.logger import RunLogger
 from source.utils.progress import with_progress
 from source.utils.workers import LOADER_WORKER_GB, resolve_workers
@@ -213,11 +213,16 @@ def _auc_rows(model, loader, config, context, log=None, label="epoch AUROC pass"
     return rows
 
 
-def _epoch_auc_metrics(model, train_loader, validation_loader, config, context, log=None) -> Mapping[str, float]:
+def _epoch_auc_metrics(
+    model, train_loader, validation_loader, config, context, log=None, include_train=True,
+) -> Mapping[str, float]:
     from source.distributed.gather import gather_prediction_rows
 
-    # record_epoch_auc re-reads the whole train and validation split every epoch.
-    train_local = _auc_rows(model, train_loader, config, context, log, "epoch AUROC pass train")
+    # record_epoch_auc re-reads the whole train and validation split every epoch; a run that
+    # only selects on validation AUROC (include_train=False) skips the train pass.
+    train_local = (
+        _auc_rows(model, train_loader, config, context, log, "epoch AUROC pass train") if include_train else []
+    )
     validation_local = _auc_rows(model, validation_loader, config, context, log, "epoch AUROC pass validation")
     task = dict(config.get("task") or {})
     data = dict(config.get("data") or {})
@@ -256,7 +261,7 @@ def _epoch_auc_metrics(model, train_loader, validation_loader, config, context, 
             [row for row in train_local if row.get("target") == target],
             context,
             expected_ids=expected(train_loader.dataset, target),
-        )
+        ) if include_train else []
         validation_rows_by_target[target] = gather_prediction_rows(
             [row for row in validation_local if row.get("target") == target],
             context,
@@ -365,12 +370,14 @@ def main() -> int:
         validation_sampler = (
             DistributedSampler(validation_data, shuffle=False) if context.distributed else None
         )
+        # Seeded shuffle order and per-worker python/numpy streams (source/utils/seed.py).
         train_loader = DataLoader(
             train_data,
             batch_size=batch_size,
             shuffle=train_sampler is None,
             sampler=train_sampler,
             num_workers=workers,
+            **loader_seeding(int(config["seed"]) + context.rank),
         )
         validation_loader = DataLoader(
             validation_data,
@@ -378,6 +385,7 @@ def main() -> int:
             shuffle=False,
             sampler=validation_sampler,
             num_workers=workers,
+            **loader_seeding(int(config["seed"]) + context.rank),
         )
         model, peft_report = build_task_model(config)
         pretrained_report = getattr(getattr(model, "image_encoder", None), "pretrained_report", None)
@@ -439,6 +447,34 @@ def main() -> int:
         if not parameters:
             raise RuntimeError("training has no trainable parameters")
         training = dict(config.get("training") or {})
+        selection = str(training.get("selection_metric") or "val_loss")
+        if selection not in {"val_loss", "val_auroc"}:
+            raise ValueError(f"training.selection_metric must be val_loss or val_auroc, got {selection!r}")
+        record_epoch_auc = bool(training.get("record_epoch_auc", True))
+        configured_precision = str(config["compute"].get("precision", "fp32"))
+        precision = resolve_precision(configured_precision, context.device)
+        if run_logger is not None:
+            accumulation = int(training.get("gradient_accumulation", 1))
+            if context.device.type == "cuda":
+                properties = torch.cuda.get_device_properties(context.device)
+                device_text = f"cuda:{context.device.index} {properties.name} {properties.total_memory / 1024**3:.1f} GB"
+            else:
+                device_text = "cpu"
+            model_config = dict(config.get("model") or {})
+            # 3-D arms keep the flag on model, slice-MIL arms on model.mil; unset = builder default.
+            checkpointing = model_config.get(
+                "gradient_checkpointing", (model_config.get("mil") or {}).get("gradient_checkpointing", "default")
+            )
+            run_logger.log(
+                f"compute device={device_text} world_size={context.world_size} "
+                f"precision={precision} (configured {configured_precision})"
+            )
+            run_logger.log(
+                f"batch micro_batch={batch_size} gradient_accumulation={accumulation} "
+                f"effective_batch={batch_size * accumulation * context.world_size} "
+                f"gradient_checkpointing={checkpointing} selection={selection} "
+                f"early_stopping_patience={training.get('early_stopping_patience')}"
+            )
         optimizer = torch.optim.AdamW(
             parameters,
             lr=float(training.get("learning_rate", 1e-4)),
@@ -461,15 +497,17 @@ def main() -> int:
             run_dir,
             lineage,
             scheduler=build_scheduler(optimizer, training),
-            precision=str(config["compute"].get("precision", "fp32")),
+            precision=precision,
             early_stopping_patience=training.get("early_stopping_patience"),
             accumulation_steps=int(training.get("gradient_accumulation", 1)),
+            selection_metric="val_auroc" if selection == "val_auroc" else None,
         )
         epoch_metrics_fn = None
-        if bool(training.get("record_epoch_auc", True)):
+        if record_epoch_auc or selection == "val_auroc":
             epoch_metrics_fn = lambda current_model, train, validation, current_context: _epoch_auc_metrics(
                 current_model, train, validation, config, current_context,
                 log=run_logger.log if run_logger is not None else None,
+                include_train=record_epoch_auc,
             )
         training_result = trainer.fit(
             train_loader,
@@ -495,18 +533,21 @@ def main() -> int:
                 lineage=lineage,
                 config=config,
             )
-            preview_report = write_backbone_previews(
-                model,
-                validation_data,
-                config,
-                context.device,
-                epoch_artifact_dir / "preview",
-                maximum_patients=5,
-                checkpoint=epoch_artifact_dir / "checkpoint" / "best.ckpt",
-            )
-            if run_logger is not None:
-                for line in preview_log_lines(preview_report, epoch_artifact_dir / "preview"):
-                    run_logger.log(line)
+            # Runs whose evaluation explains test cases (preview.split: test -> visualize/) skip
+            # this unselected validation preview, so the bundle holds one set of Grad-CAMs.
+            if str((config.get("preview") or {}).get("split") or "validation") != "test":
+                preview_report = write_backbone_previews(
+                    model,
+                    validation_data,
+                    config,
+                    context.device,
+                    epoch_artifact_dir / "preview",
+                    maximum_patients=5,
+                    checkpoint=epoch_artifact_dir / "checkpoint" / "best.ckpt",
+                )
+                if run_logger is not None:
+                    for line in preview_log_lines(preview_report, epoch_artifact_dir / "preview"):
+                        run_logger.log(line)
             underlying = model.module if hasattr(model, "module") else model
             profile_batch = move_to_device(next(iter(validation_loader)), context.device)
             effective_stage = str(config["experiment"]["stage"])
@@ -532,7 +573,7 @@ def main() -> int:
                     "epochs_run": training_result["epochs_run"],
                     "early_stopping_patience": training_result["early_stopping_patience"],
                     "stopped_early": training_result["stopped_early"],
-                    "selection_metric": "negative_validation_loss",
+                    "selection_metric": "validation_auroc" if selection == "val_auroc" else "negative_validation_loss",
                     "selection_direction": "maximize",
                 },
                 "split_strategy": (config.get("evaluation") or {}).get(
@@ -563,7 +604,7 @@ def main() -> int:
                     "strategy": config["compute"]["strategy"],
                     "gpu_count": context.world_size if context.device.type == "cuda" else 0,
                     "gpu_names": reproducibility["gpu_names"],
-                    "precision": config["compute"].get("precision", "fp32"),
+                    "precision": precision,
                     "training_time_min": training_result["training_time_min"],
                     "peak_vram_gb": training_peak,
                     "latency_ms_per_volume": profile["latency_ms_per_volume"],
@@ -587,11 +628,11 @@ def main() -> int:
                     f"training run={experiment_id} status=finished "
                     f"best_epoch={int(best_row['epoch'])} "
                     f"best_validation_metric={training_result['best_validation_metric']} "
-                    f"(selection: negative validation loss)"
+                    f"(selection: {'validation AUROC' if selection == 'val_auroc' else 'negative validation loss'})"
                 )
                 run_logger.log(
                     f"artifacts: {epoch_artifact_dir} "
-                    "(checkpoint/, preview/, history.csv, training_curves.png); "
+                    "(checkpoint/, history.csv, training_curves.png); "
                     "result.csv and predictions.csv are written by the evaluation step"
                 )
             refresh_epoch_log(run_dir)

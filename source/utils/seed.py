@@ -31,3 +31,26 @@ def seed_everything(seed: int, deterministic: bool = True) -> dict[str, Any]:
     except ModuleNotFoundError:
         pass
     return report
+
+
+def seed_worker(worker_id: int) -> None:
+    """DataLoader ``worker_init_fn``: derive python/numpy seeds from the worker's torch seed.
+
+    torch already gives each worker ``base_seed + worker_id``; python ``random`` and numpy are
+    otherwise forked with the parent's state, so every worker would draw the same numbers.
+    """
+    import numpy as np
+    import torch
+
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def loader_seeding(seed: int) -> dict[str, Any]:
+    """``DataLoader(**loader_seeding(seed))``: seeded shuffle order and worker RNG streams."""
+    import torch
+
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return {"worker_init_fn": seed_worker, "generator": generator}

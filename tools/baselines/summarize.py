@@ -37,12 +37,19 @@ if str(ROOT) not in sys.path:
 from tools.baselines.experiments import (  # noqa: E402
     EXPERIMENTS,
     MODEL_GROUPS,
+    PROGNOSIS_LABELS,
     base_directory,
+    check_label,
     model_dimension,
     task_directory,
 )
 
-METRICS = ("auroc", "auprc", "sensitivity", "specificity", "f1", "balanced_accuracy", "accuracy", "brier")
+METRICS = ("auroc", "auprc", "sensitivity", "specificity", "ppv", "npv", "f1", "balanced_accuracy", "accuracy",
+           "brier")
+# Test-row columns of each run's result.csv copied into summary_raw.csv (source/metrics/result_table.py).
+RESULT_COLUMNS = ("auroc", "auroc_ci_low", "auroc_ci_high", "auprc", "auprc_ci_low", "auprc_ci_high", "threshold",
+                  "threshold_rule", "sensitivity", "specificity", "ppv", "npv", "f1", "balanced_accuracy", "accuracy",
+                  "brier", "note")
 TAG = re.compile(
     r"^(?P<model>.+?)__(?P<head>mlp|kan)__frac(?P<fraction>\d{3})"
     r"(?:__v(?P<variant>[A-Za-z0-9_]+?))?(?:__x(?P<settings>[A-Za-z0-9._+-]+))?$"
@@ -120,10 +127,11 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
             "epochs": epoch_dir.name,
             # official split and k-fold CV use different validation sets: never pooled together
             "scheme": "official" if run["fold"] == "official" else "cv",
-            "n_test": test.get("n_studies"), **{metric: _float(test.get(metric)) for metric in METRICS},
-            "auroc_ci_low": _float(test.get("auroc_ci_low")), "auroc_ci_high": _float(test.get("auroc_ci_high")),
+            "n_test": test.get("n_studies"),
+            **{column: (test.get(column) or "") if column in ("threshold_rule", "note") else _float(test.get(column))
+               for column in RESULT_COLUMNS},
             "val_auroc": _float((validation or {}).get("auroc")), "weights": weights, "params_M": params,
-            "run_dir": str(epoch_dir),
+            "primary_target": primary or "", "run_dir": str(epoch_dir),
         })
     return rows
 
@@ -136,6 +144,8 @@ def aggregate(rows: list[dict]) -> list[dict]:
     for (model, head, fraction, settings, scheme), items in groups.items():
         entry = {"model": model, "dim": model_dimension(model), "group": MODEL_GROUPS.get(model, ""), "head": head,
                  "fraction": fraction, "settings": settings, "scheme": scheme, "n_runs": len(items),
+                 "n_seeds": len({item["seed"] for item in items}),
+                 "seeds": " ".join(str(seed) for seed in sorted({item["seed"] for item in items})),
                  "weights": ",".join(sorted({item["weights"] for item in items}))}
         for metric in METRICS + ("val_auroc",):
             values = [item[metric] for item in items if math.isfinite(item[metric])]
@@ -149,6 +159,92 @@ def aggregate(rows: list[dict]) -> list[dict]:
                                              item["fraction"], item["settings"]))
 
 
+def _merged_predictions(items: list[dict]) -> dict[str, list[dict]]:
+    """Seed-averaged probabilities per split, merged on study_id (never on row order).
+
+    Every run of the group must hold the same studies with the same patient and label in
+    each split; any difference is an error, not something to skip silently.
+    """
+    from source.metrics.result_table import read_prediction_file
+
+    merged: dict[str, dict[str, dict]] = {}
+    reference_run: dict[str, str] = {}
+    for item in items:
+        path = Path(item["run_dir"]) / "predictions.csv"
+        if not path.is_file():
+            raise SystemExit(f"seed ensemble: {path} is missing")
+        primary = item.get("primary_target") or ""
+        rows = [row for row in read_prediction_file(path, split=None)
+                if not primary or str(row.get("target")) == primary]
+        by_split: dict[str, dict[str, dict]] = defaultdict(dict)
+        for row in rows:
+            study = str(row["study_id"])
+            if study in by_split[row["split"]]:
+                raise SystemExit(f"seed ensemble: study_id {study} appears twice in {path} ({row['split']})")
+            by_split[row["split"]][study] = row
+        for split, studies in by_split.items():
+            if split not in merged:
+                merged[split] = {study: {"patient_id": str(row["patient_id"]), "study_id": study,
+                                         "y_true": int(row["y_true"]), "probabilities": [float(row["y_prob"])]}
+                                 for study, row in studies.items()}
+                reference_run[split] = str(path)
+                continue
+            expected, found = set(merged[split]), set(studies)
+            if expected != found:
+                raise SystemExit(
+                    f"seed ensemble: {split} studies differ between {reference_run[split]} and {path} "
+                    f"(only in first: {sorted(expected - found)[:5]}, only in second: {sorted(found - expected)[:5]})")
+            for study, row in studies.items():
+                target = merged[split][study]
+                if int(row["y_true"]) != target["y_true"] or str(row["patient_id"]) != target["patient_id"]:
+                    raise SystemExit(f"seed ensemble: study {study} ({split}) has another label or patient in {path}")
+                target["probabilities"].append(float(row["y_prob"]))
+    return {split: [{"patient_id": row["patient_id"], "study_id": row["study_id"], "y_true": row["y_true"],
+                     "y_prob": statistics.fmean(row["probabilities"])} for row in studies.values()]
+            for split, studies in merged.items()}
+
+
+def seed_ensemble(items: list[dict], stage: str) -> dict:
+    """result.csv-style test row of the seed-averaged prediction of one group of runs.
+
+    Threshold: Youden (or the runs' rule) on the averaged validation probabilities, applied
+    unchanged to test; 95% CI: patient-level bootstrap of the averaged test probabilities.
+    """
+    from source.metrics.result_table import metric_bundle, result_rows, select_threshold, split_summary
+
+    method, samples, confidence = "youden", 2000, 0.95
+    try:
+        payload = json.loads((Path(items[0]["run_dir"]) / "result.json").read_text(encoding="utf-8"))
+        evaluation = payload.get("evaluation") or {}
+        method = str(evaluation.get("threshold_method") or method)
+        samples = int((evaluation.get("bootstrap") or {}).get("samples") or samples)
+        confidence = float((evaluation.get("bootstrap") or {}).get("confidence") or confidence)
+    except (OSError, ValueError, TypeError):
+        pass
+    splits = _merged_predictions(items)
+    test = splits.get("test") or []
+    validation = splits.get("validation") or []
+    if not test:
+        raise SystemExit(f"seed ensemble: no test predictions in {items[0]['run_dir']}")
+    threshold, source = select_threshold(validation, method) if validation else (0.5, "")
+    metrics, reason = metric_bundle(test, stage, threshold, with_ci=True, samples=samples, confidence=confidence, seed=42)
+    row = result_rows(
+        experiment="seed_ensemble", target=str(items[0].get("primary_target") or ""),
+        splits={"test": {"metrics": metrics, "summary": split_summary(test, threshold), "ci_reason": reason}},
+        threshold=threshold, threshold_source=source, stage=stage, threshold_method=method,
+    )[0]
+    return {**row, "n_seeds": len({item["seed"] for item in items}), "bootstrap_samples": samples}
+
+
+def _interval(value, low, high) -> str:
+    value, low, high = _float(value), _float(low), _float(high)
+    if not math.isfinite(value):
+        return "-"
+    if not (math.isfinite(low) and math.isfinite(high)):
+        return f"{value:.3f}"
+    return f"{value:.3f} [{low:.3f}–{high:.3f}]"
+
+
 def _cell(entry: dict, metric: str) -> str:
     mean, std = entry[f"{metric}_mean"], entry[f"{metric}_std"]
     if not math.isfinite(mean):
@@ -156,33 +252,78 @@ def _cell(entry: dict, metric: str) -> str:
     return f"{mean:.3f}" + (f" ± {std:.3f}" if math.isfinite(std) else "")
 
 
-def write_tables(out: Path, exp: str, spec: dict, rows: list[dict], summary: list[dict]) -> None:
+def _write_csv(path: Path, rows: list[dict]) -> None:
+    fields = list(dict.fromkeys(key for row in rows for key in row))
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+PRETTY_POINT_METRICS = ("sensitivity", "specificity", "ppv", "npv", "f1", "balanced_accuracy", "accuracy", "brier")
+
+
+def pretty_rows(summary: list[dict], ensembles: dict[tuple, dict]) -> list[dict]:
+    """One readable row per (model, head, fraction, settings, scheme).
+
+    AUROC / AUPRC: value [95% CI] of the seed-averaged prediction (seed_ensemble) next to
+    mean ± std of the per-seed values; every other metric: mean ± std over the seeds.
+    """
+    rows = []
+    for entry in summary:
+        key = (entry["model"], entry["head"], entry["fraction"], entry["settings"], entry["scheme"])
+        ensemble = ensembles.get(key) or {}
+        row = {"model": entry["model"], "dim": entry["dim"], "group": entry["group"], "head": entry["head"],
+               "train_%": entry["fraction"], "settings": entry["settings"] or "default", "split": entry["scheme"],
+               "n_seeds": entry["n_seeds"], "seeds": entry["seeds"]}
+        for metric in ("auroc", "auprc"):
+            row[f"{metric}_[CI]_seed_avg"] = _interval(ensemble.get(metric), ensemble.get(f"{metric}_ci_low"),
+                                                       ensemble.get(f"{metric}_ci_high"))
+            row[f"{metric}_mean±std"] = _cell(entry, metric)
+        row["threshold_seed_avg"] = "-" if not math.isfinite(_float(ensemble.get("threshold"))) else f"{_float(ensemble.get('threshold')):.3f}"
+        row["threshold_rule"] = ensemble.get("threshold_rule", "")
+        for metric in PRETTY_POINT_METRICS:
+            row[f"{metric}_mean±std"] = _cell(entry, metric)
+        row["val_auroc_mean±std"] = _cell(entry, "val_auroc")
+        row["weights"] = entry["weights"]
+        row["note"] = ensemble.get("note", "")
+        rows.append(row)
+    return rows
+
+
+def write_tables(out: Path, exp: str, spec: dict, rows: list[dict], summary: list[dict],
+                 ensembles: dict[tuple, dict]) -> None:
+    """summary_raw.csv (every run), summary.csv (numeric mean/std), summary_ensemble.csv
+    (seed-averaged prediction, result.csv columns), summary_pretty.csv + summary.md."""
     out.mkdir(parents=True, exist_ok=True)
+    (out / "runs.csv").unlink(missing_ok=True)       # renamed summary_raw.csv
     if rows:
-        with (out / "runs.csv").open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
+        _write_csv(out / "summary_raw.csv", rows)
     if summary:
-        fields = sorted({key for entry in summary for key in entry}, key=lambda key: list(summary[0]).index(key) if key in summary[0] else 999)
-        with (out / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(summary)
+        _write_csv(out / "summary.csv", summary)
+    if ensembles:
+        _write_csv(out / "summary_ensemble.csv", [
+            {"model": key[0], "head": key[1], "fraction": key[2], "settings": key[3] or "default", "split": key[4],
+             **value} for key, value in ensembles.items()])
+    pretty = pretty_rows(summary, ensembles)
+    if pretty:
+        _write_csv(out / "summary_pretty.csv", pretty)
     done = {(entry["model"], entry["head"], entry["fraction"]) for entry in summary if not entry["settings"]}
     missing = [f"{m} / {h} / {f}%" for m in spec["models"] for h in spec["heads"] for f in spec["fractions"] if (m, h, f) not in done]
-    lines = [f"# {exp}: {spec['title']}", "", "Test split (official INSPECT test). mean ± std over folds/seeds; "
-             "a single run shows the patient-bootstrap 95% CI of AUROC.", "",
-             "| model | dim | group | head | train % | settings | split | n | AUROC | AUROC CI | AUPRC | Sens | Spec | F1 | Bal.Acc | val AUROC | weights |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-    for entry in summary:
-        lines.append(
-            f"| {entry['model']} | {entry['dim']} | {entry['group']} | {entry['head']} | {entry['fraction']} | "
-            f"{entry['settings'] or 'default'} | {entry['scheme']} | {entry['n_runs']} | "
-            f"{_cell(entry, 'auroc')} | {entry.get('auroc_ci', '')} | {_cell(entry, 'auprc')} | {_cell(entry, 'sensitivity')} | "
-            f"{_cell(entry, 'specificity')} | {_cell(entry, 'f1')} | {_cell(entry, 'balanced_accuracy')} | "
-            f"{_cell(entry, 'val_auroc')} | {entry['weights']} |"
-        )
+    columns = ["model", "dim", "head", "train_%", "settings", "n_seeds", "auroc_[CI]_seed_avg", "auroc_mean±std",
+               "auprc_[CI]_seed_avg", "auprc_mean±std", "sensitivity_mean±std", "specificity_mean±std",
+               "f1_mean±std", "balanced_accuracy_mean±std", "brier_mean±std", "weights"]
+    titles = ["model", "dim", "head", "train %", "settings", "n seeds", "AUROC [95% CI]", "AUROC mean ± std",
+              "AUPRC [95% CI]", "AUPRC mean ± std", "Sens", "Spec", "F1", "Bal.Acc", "Brier", "weights"]
+    lines = [f"# {exp}: {spec['title']}", "",
+             "Test split (official INSPECT test), threshold chosen on validation. "
+             "`[95% CI]`: patient-bootstrap interval of the seed-averaged prediction (probabilities "
+             "averaged per study_id over the seeds, threshold re-selected on the averaged validation "
+             "predictions); `mean ± std`: over the seeds. Full columns: summary_pretty.csv, "
+             "summary_ensemble.csv, summary_raw.csv.", "",
+             "| " + " | ".join(titles) + " |", "|" + "---|" * len(titles)]
+    for row in pretty:
+        lines.append("| " + " | ".join(str(row.get(column, "")) for column in columns) + " |")
     if missing:
         lines += ["", f"Not finished yet ({len(missing)}): " + ", ".join(missing)]
     (out / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -316,23 +457,31 @@ def main(argv=None) -> int:
     parser.add_argument("--exp", required=True, choices=sorted(EXPERIMENTS))
     parser.add_argument("--profile", default="full_inspect")
     parser.add_argument("--task", default="diagnosis", choices=["diagnosis", "prognosis"])
-    parser.add_argument("--target", default="1_month_mortality")
+    parser.add_argument("--label", default=None, choices=PROGNOSIS_LABELS,
+                        help="prognosis endpoint; required with --task prognosis, not allowed with diagnosis")
     parser.add_argument("--cohort", default="all")
     parser.add_argument("--base", type=Path, help="override <outputs>/<family>/BASE/<profile>/<task>")
     parser.add_argument("--settings", default=None,
                         help="only runs with this settings stamp ('default' = no __x suffix); default: all, kept apart")
     args = parser.parse_args(argv)
+    check_label(args.task, args.label)
     spec = EXPERIMENTS[args.exp]
-    base = args.base or base_directory(args.profile, task_directory(args.task, args.cohort, args.target))
+    base = args.base or base_directory(args.profile, task_directory(args.task, args.cohort, args.label))
     settings_filter = None if args.settings is None else ("" if args.settings == "default" else args.settings)
     rows = collect(base, spec, args.exp, settings_filter)
     summary = aggregate(rows)
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for row in rows:
+        groups[(row["model"], row["head"], row["fraction"], row["settings"], row["scheme"])].append(row)
+    # k-fold runs hold different studies per fold, so only official-split runs are averaged.
+    ensembles = {key: seed_ensemble(items, args.task) for key, items in groups.items() if key[4] == "official"}
     out = base / args.exp
-    write_tables(out, args.exp, spec, rows, summary)
+    write_tables(out, args.exp, spec, rows, summary, ensembles)
     link_runs(out, args.exp, rows)
     figures = plot(out, args.exp, summary)
     print(f"==> {args.exp}: {len(rows)} run(s), {len(summary)} row(s) -> {out}")
-    for path in [out / "summary.md", out / "summary.csv", out / "runs.csv", *figures]:
+    for path in [out / "summary.md", out / "summary_pretty.csv", out / "summary_ensemble.csv", out / "summary.csv",
+                 out / "summary_raw.csv", *figures]:
         if path.exists():
             print(f"    {path}")
     print((out / "summary.md").read_text(encoding="utf-8"))

@@ -3,6 +3,9 @@
 ``2d`` uses N uniformly spaced axial slices. ``2.5d`` uses the same N centres, with
 the adjacent axial slices as the three input channels. Gated attention pools their feature
 vectors into one study embedding. The returned map is [B, C, h, w, N] for Grad-CAM.
+
+``selection="center"`` is the single-slice ablation: one instance at the volume's middle
+axial slice (2d: that slice; 2.5d: it and its two neighbours), whatever ``num_slices`` says.
 """
 from __future__ import annotations
 
@@ -30,17 +33,32 @@ def uniform_slice_indices(depth: int, count: int) -> list[int]:
     return [min(depth - 1, int((index + 0.5) * depth / count)) for index in range(count)]
 
 
+SLICE_SELECTIONS = ("uniform", "center")
+
+
+def slice_indices(depth: int, count: int, selection: str = "uniform") -> list[int]:
+    """Instance centres: ``count`` uniformly spaced slices, or the single middle slice."""
+    if selection == "center":
+        return [int(depth) // 2]
+    return uniform_slice_indices(depth, count)
+
+
 class SliceMILCore(nn.Module):
     def __init__(self, backbone: nn.Module, feature_dim: int, *, mode: str = "2d", num_slices: int = 32,
                  slice_size: int = 224, slice_offset: int = 1, pooling: str = "attention",
                  attention_hidden: int = 128, chunk_size: int = 32, gradient_checkpointing: bool = True,
-                 normalize_mean: Sequence[float] | None = None, normalize_std: Sequence[float] | None = None):
+                 normalize_mean: Sequence[float] | None = None, normalize_std: Sequence[float] | None = None,
+                 selection: str = "uniform"):
         super().__init__()
         self.backbone, self.feature_dim = backbone, int(feature_dim)
         self.mode = str(mode).lower().replace(".", "")
         if self.mode not in {"2d", "25d"}:
             raise ValueError(f"slice mode must be 2d or 2.5d, got {mode!r}")
-        self.num_slices, self.slice_size, self.slice_offset = int(num_slices), int(slice_size), int(slice_offset)
+        self.selection = str(selection).lower()
+        if self.selection not in SLICE_SELECTIONS:
+            raise ValueError(f"slice selection must be one of {SLICE_SELECTIONS}, got {selection!r}")
+        self.num_slices = 1 if self.selection == "center" else int(num_slices)
+        self.slice_size, self.slice_offset = int(slice_size), int(slice_offset)
         self.pooling = str(pooling).lower()
         if self.pooling not in {"attention", "mean", "max"}:
             raise ValueError(f"MIL pooling must be attention, mean or max, got {pooling!r}")
@@ -90,7 +108,7 @@ class SliceMILCore(nn.Module):
         if volume.ndim != 5:
             raise ValueError(f"slice MIL expects [B, C, x, y, z], got {tuple(volume.shape)}")
         batch, depth = volume.shape[0], volume.shape[-1]
-        indices = uniform_slice_indices(depth, self.num_slices)
+        indices = slice_indices(depth, self.num_slices, self.selection)
         maps = self._encode(self._instances(volume, indices))
         maps = maps.reshape(batch, len(indices), *maps.shape[1:])
         feature_map = maps.permute(0, 2, 3, 4, 1)
@@ -107,9 +125,10 @@ class SliceMILCore(nn.Module):
         return {"feature_map": feature_map, "global_embedding": pooled, "pooling": f"slice_mil_{self.pooling}",
                 "metadata": {"slice_indices": list(indices), "slice_attention": weights.detach(),
                              "slice_mode": "2.5d" if self.mode == "25d" else "2d",
+                             "slice_selection": self.selection,
                              # ROI pooling reads region masks on exactly these slices.
                              "slice_channel_indices": self.channel_slices(indices, depth),
                              "slice_depth": int(depth)}}
 
 
-__all__ = ["GatedAttentionPool", "SliceMILCore", "uniform_slice_indices"]
+__all__ = ["GatedAttentionPool", "SLICE_SELECTIONS", "SliceMILCore", "slice_indices", "uniform_slice_indices"]

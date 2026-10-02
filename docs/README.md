@@ -17,7 +17,7 @@ Framework nghiên cứu **pulmonary embolism (PE) trên CTPA 3D** của bộ Sta
 | Baseline | Backbone 2D / 2.5D / 3D public phát hiện PE end-to-end tốt tới đâu? | `baseline.*` |
 | Prognosis | CTPA có thêm thông tin tử vong 30 ngày ngoài sPESI và EHR không? | `prog.*` |
 | Anatomy analysis | Tim / PA / phổi có **cần thiết** cho model đã train không (xoá vùng so với random control)? Expert nào đóng góp? | `anatomy.remove_*`, `ablation.arch.*` |
-| External | Checkpoint chọn trên INSPECT có tổng quát hoá sang Turkey / RSPECT không? | `diag.external.*` |
+| External | Checkpoint chọn trên INSPECT có tổng quát hoá sang Turkey không? | `diag.external.*` |
 
 Bảng kết quả cần điền cho paper: [04_experiments.md](04_experiments.md).
 
@@ -160,7 +160,7 @@ Theo `python run.py list`: **73 experiment, 56 `ready`, 17 `blocked`**. `ready` 
 Hai nguyên nhân blocked duy nhất (trường `blockers:` trong registry):
 
 1. **EHR contract** (13 arm prognosis có EHR, gồm `ablation.ehr.*`): `data.ehr_columns` trong `configs/components/tasks.yaml#prognosis_primary_cohort` còn rỗng, trong khi độ dài phải bằng `task.ehr_input_dim` (32). Chỉ `prog.spesi`, `prog.image` ready.
-2. **External cohort** (4 entry: `data.segmentation.turkey`, `data.roi.turkey`, `diag.external.turkey_test`, `diag.external.rspect_test`): dữ liệu Turkey và RSPECT chuẩn hoá chưa được giao.
+2. **External cohort** (3 entry: `data.segmentation.turkey`, `data.roi.turkey`, `diag.external.turkey_test`): dữ liệu Turkey chuẩn hoá chưa được giao.
 
 Proposal có nhắc nhưng **không có trong code**:
 

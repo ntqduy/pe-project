@@ -22,7 +22,7 @@ missing artifact or unresolved contract instead of guessing.
 
 So the runnable path today is: install the requirements, then build a dataset profile. The
 CT-FM contract is filled in, so image arms are `ready`; what is still `blocked` needs a real
-contract that has not been delivered (EHR column selection, the RSPECT / Turkey cohorts).
+contract that has not been delivered (EHR column selection, the Turkey cohort).
 `python run.py plan <experiment>` checks the artifacts (manifests, masks, weights,
 checkpoints) on the current machine and names whatever is missing.
 

@@ -14,10 +14,10 @@ for NAME in "${EXPERIMENTS[@]}"; do
     exp01_baselines|exp02_data_fraction|exp03_head_ablation) ;;
     *)
       printf 'usage: bash scripts/diagnosis/baselines/summarize.sh [exp01_baselines|exp02_data_fraction|exp03_head_ablation ...]\n' >&2
-      printf '       settings: PROFILE, TASK, TARGET, COHORT, PYTHON (got %s)\n' "$NAME" >&2
+      printf '       settings: PROFILE, TASK, LABEL, COHORT, PYTHON (got %s)\n' "$NAME" >&2
       exit 2
       ;;
   esac
   "${PYTHON:-python3}" tools/baselines/summarize.py --exp "$NAME" --profile "${PROFILE:-full_inspect}" \
-    --task "${TASK:-diagnosis}" --target "${TARGET:-1_month_mortality}" --cohort "${COHORT:-all}"
+    --task "${TASK:-diagnosis}" ${LABEL:+--label "$LABEL"} --cohort "${COHORT:-all}"
 done

@@ -292,7 +292,12 @@ def resolve_backbone(config: dict[str, Any]) -> dict[str, Any]:
     for key, value in entry.items():
         if key == "display_name":
             continue
-        model.setdefault(key, value)
+        if isinstance(model.get(key), dict) and isinstance(value, Mapping):
+            # A partial override (e.g. --set model.mil.slice_selection=center) keeps the
+            # registry's other sub-keys instead of replacing the whole block.
+            model[key] = _with_defaults(model[key], value)
+        else:
+            model.setdefault(key, value)
     display = str(entry.get("display_name") or name)
     lineage = config.setdefault("lineage", {})
     if isinstance(lineage, dict):
@@ -300,6 +305,17 @@ def resolve_backbone(config: dict[str, Any]) -> dict[str, Any]:
         # the previous backbone's name into its checkpoint lineage.
         lineage["backbone"] = display
     return config
+
+
+def _with_defaults(values: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
+    """``values`` with every key of ``defaults`` it lacks filled in, recursively."""
+    merged = dict(values)
+    for key, default in defaults.items():
+        if key not in merged:
+            merged[key] = copy.deepcopy(default)
+        elif isinstance(merged[key], dict) and isinstance(default, Mapping):
+            merged[key] = _with_defaults(merged[key], default)
+    return merged
 
 
 def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
