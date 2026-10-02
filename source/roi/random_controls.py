@@ -29,14 +29,22 @@ def matched_random_control(
     body: np.ndarray,
     body_wall: np.ndarray | None,
     forbidden: np.ndarray | None = None,
+    valid_ct: np.ndarray | None = None,
     spacing: Sequence[float],
     seed: int,
     exclusion_margin_mm: float = 0.0,
     max_attempts: int = 500,
     require_exact_voxel_match: bool = True,
     preserve_z_range: bool = True,
+    superior_axis: int = 2,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Rigidly translate a source ROI to a reproducible eligible body location.
+
+    Eligible voxels lie inside the body or the body wall, inside valid CT (``valid_ct``,
+    e.g. finite HU), and outside the source ROI and the forbidden union after the physical
+    exclusion margin. ``superior_axis`` is the array axis of the inferior-superior direction
+    (derive it from the affine, see ``source.imaging.nifti.superior_axis``); with
+    ``preserve_z_range`` the control keeps the source's extent along that axis.
 
     The source shape is never eroded, cropped, resampled, or filled with arbitrary nearest
     voxels. If no valid translation exists, callers must record a failed ROI rather than an
@@ -64,24 +72,49 @@ def matched_random_control(
         raise ValueError("forbidden anatomy and target masks must share geometry")
     if body_wall is not None and np.asarray(body_wall).shape != target_binary.shape:
         raise ValueError("body-wall mask must share target geometry")
+    if valid_ct is not None and np.asarray(valid_ct).shape != target_binary.shape:
+        raise ValueError("valid-CT mask must share target geometry")
+    if int(superior_axis) not in (0, 1, 2):
+        raise ValueError("superior_axis must be 0, 1 or 2")
+    superior_axis = int(superior_axis)
 
+    # "Inside body/body-wall": the wall shell is eligible even where the body mask in use
+    # (for example the HU-threshold fallback) does not cover it.
+    region = (body_binary | np.asarray(body_wall, dtype=bool)) if body_wall is not None else body_binary
+    if valid_ct is not None:
+        region = region & np.asarray(valid_ct, dtype=bool)
     excluded_source = target_binary | forbidden_binary
     excluded = (
         dilate_mask(excluded_source, spacing, float(exclusion_margin_mm))
         if exclusion_margin_mm > 0
         else excluded_source
     )
-    candidate = body_binary & ~excluded
+    candidate = region & ~excluded
+    if not candidate.any():
+        raise ValueError("no_valid_control_location")
 
     coordinates = np.argwhere(target_binary)
     low = coordinates.min(axis=0)
     high = coordinates.max(axis=0)
-    ranges = [
-        np.arange(-int(low[axis]), int(target_binary.shape[axis] - high[axis]), dtype=int)
-        for axis in range(3)
-    ]
+    # Only translations that keep the ROI's bounding box inside the candidate's bounding box
+    # can succeed, so the random draws are restricted to them. This drops no valid location
+    # and stops most of the max_attempts budget being spent outside the body.
+    ranges = []
+    for axis in range(3):
+        occupied = np.flatnonzero(candidate.any(axis=tuple(other for other in range(3) if other != axis)))
+        ranges.append(
+            np.arange(
+                int(occupied[0]) - int(low[axis]),
+                int(occupied[-1]) - int(high[axis]) + 1,
+                dtype=int,
+            )
+        )
     if preserve_z_range:
-        ranges[2] = np.asarray([0], dtype=int)
+        ranges[superior_axis] = (
+            np.asarray([0], dtype=int)
+            if np.any(ranges[superior_axis] == 0)
+            else np.asarray([], dtype=int)
+        )
     rng = np.random.default_rng(int(seed))
     shape = tuple(len(values) for values in ranges)
     total_offsets = int(np.prod(shape))
@@ -138,7 +171,11 @@ def matched_random_control(
     control_volume_mm3 = actual_voxels * voxel_volume_mm3
     return control, {
         "method": "seeded_rigid_translation",
-        "candidate_region": "body_and_valid_ct_outside_forbidden_union",
+        "candidate_region": (
+            ("body_or_body_wall" if body_wall is not None else "body")
+            + ("_and_valid_ct" if valid_ct is not None else "")
+            + "_outside_forbidden_union"
+        ),
         "target_voxels": target_voxels,
         "actual_voxels": actual_voxels,
         "eligible_voxels": int(candidate.sum()),
@@ -151,6 +188,7 @@ def matched_random_control(
         "attempts_tested": tested,
         "max_attempts": int(max_attempts),
         "preserve_z_range": bool(preserve_z_range),
+        "superior_axis": superior_axis,
         "shape_matched": True,
         "volume_matched": actual_voxels == target_voxels,
         "target_physical_volume_mm3": target_volume_mm3,

@@ -1,0 +1,24 @@
+# ResNet-18 2.5D slice-MIL (32 triplets of adjacent slices, ImageNet) + head.
+# Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
+# Contracts: backbone -> components/backbones.yaml#registry.resnet18_25d, head/task/budget ->
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbones.yaml#registry
+  - ../../../../components/encoders.yaml#from_pretrained
+  - ../../../../components/baselines.yaml#diagnosis
+  - ../../../../components/baselines.yaml#head_mlp
+  - ../../../../components/baselines.yaml#train_end_to_end
+
+experiment:
+  id: DX_base_resnet18_25d
+  name: baseline.resnet18_25d
+  baseline_backbone: resnet18_25d
+
+model:
+  backbone: resnet18_25d
+
+training:
+  batch_size: 2
+  gradient_accumulation: 4

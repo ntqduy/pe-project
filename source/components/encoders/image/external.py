@@ -43,7 +43,7 @@ def load_state_file(source: Path) -> Mapping[str, Any]:
 class InspectedExternalEncoder(BaseImageEncoder):
     """Adapter configured only after the concrete third-party API has been inspected.
 
-    The project deliberately does not guess CT-FM, CT-CLIP, or TotalFM call signatures.
+    The project deliberately does not guess third-party encoder call signatures.
     A versioned integration supplies a factory and output adapter in its config.
     """
 
@@ -149,6 +149,13 @@ def build_inspected_external(config: Mapping[str, Any], backbone_name: str) -> I
         raise ThirdPartyIntegrationError(f"{factory_path} did not return torch.nn.Module")
     wrapper = InspectedExternalEncoder(model, output_adapter, feature_dim, backbone_name)
     wrapper.lora_target_modules = tuple(str(value) for value in (config.get("lora_target_modules") or ()))
+    wrapper.load_report = None
     if load_pretrained:
-        wrapper.load_pretrained_weights(str(checkpoint), strict=bool(config.get("strict_load", True)))
+        # Kept so callers can log what actually loaded (missing / unexpected keys).
+        wrapper.load_report = {
+            **wrapper.load_pretrained_weights(str(checkpoint), strict=bool(config.get("strict_load", True))),
+            "checkpoint": str(checkpoint),
+            "strict": bool(config.get("strict_load", True)),
+            "model_tensors": len(wrapper.model.state_dict()),
+        }
     return wrapper

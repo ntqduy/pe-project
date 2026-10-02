@@ -23,17 +23,10 @@ _STAGE_PREFIXES = {
     "segmentation": ("SEG",),
     "roi": ("ROI",),
     "silver": ("SL",),
-    "foundation": ("F",),
-    "dapt": ("D",),
-    "alignment": ("AL",),
-    "silver_encoder_adaptation": ("SE",),
     "diagnosis": ("DX",),
     "prognosis": ("PR",),
-    "contour": ("CT",),
     "ablation": ("SA", "A", "RM", "RS", "TR"),
     "counterfactual": ("CF",),
-    "roi_student": ("RS", "KD"),
-    "segmentation_validation": ("SEG",),
 }
 
 
@@ -241,11 +234,6 @@ DEFAULT_DATASET_PROFILE = "full_inspect"
 # whole point -- the comparison is between representations, not between architectures.
 ENCODER_INIT_SOURCES = (
     "pretrained",
-    "dapt",
-    "c0",
-    "rspect_multitask",
-    "rspect_single",
-    "silver",
     "diagnosis",
     "custom",
 )
@@ -253,23 +241,10 @@ _ENCODER_INIT_ALIASES = {
     "public": "pretrained",
     "published": "pretrained",
     "original": "pretrained",
-    "alignment": "c0",
-    "image_report": "c0",
-    "c_0": "c0",
-    "c_silver": "silver",
-    "silver_encoder": "silver",
-    "silver_adaptation": "silver",
     "c_diagnosis": "diagnosis",
-    "rspect_multi_task": "rspect_multitask",
-    "rspect_single_task": "rspect_single",
 }
 _ENCODER_INITIALIZATION = {
     "pretrained": "public",
-    "dapt": "C_SSL",
-    "c0": "C0",
-    "rspect_multitask": "RSPECT_multitask",
-    "rspect_single": "RSPECT_single",
-    "silver": "C_silver",
     "diagnosis": "C_diagnosis",
     "custom": "custom",
 }
@@ -278,7 +253,7 @@ _ENCODER_INITIALIZATION = {
 def active_dataset_profiles() -> tuple[str, ...]:
     """The dataset profiles a run may point at. Imported lazily to avoid a config cycle."""
     try:
-        from source.dataset import ACTIVE_PROFILES
+        from source.data.profiles import ACTIVE_PROFILES
     except Exception:  # noqa: BLE001 - config must stay usable without the dataset package
         return ("smoke_30", "test_500_sample", "full_inspect")
     return tuple(ACTIVE_PROFILES)
@@ -288,7 +263,7 @@ def resolve_backbone(config: dict[str, Any]) -> dict[str, Any]:
     """Fill ``model`` from the selected entry of the inherited backbone registry.
 
     ``configs/components/backbones.yaml`` holds the registry and named selections in one
-    catalog. That makes the backbone a config variable -- ``--set model.backbone=ct_clip``
+    catalog. That makes the backbone a config variable -- ``--set model.backbone=resnet18_3d``
     works from any run config because the registry travels with the selected preset --
     while each contract still lives in exactly one place. Explicit ``model`` keys always
     win, so a targeted override is still possible.
@@ -330,22 +305,19 @@ def resolve_backbone(config: dict[str, Any]) -> dict[str, Any]:
 def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
     """Turn ``encoder.init_source`` into the concrete checkpoint the stage will load.
 
-    Diagnosis, prognosis, the probes and the ROI students all consume an image encoder.
-    Which weights that encoder starts from is an experiment variable, not a code path:
-    one task model, a small set of named upstream stages, or an explicitly supplied
-    custom checkpoint.
+    Diagnosis, prognosis and the probes all consume an image encoder. Which weights that
+    encoder starts from is an experiment variable, not a code path: one task model, the
+    public backbone, the canonical diagnosis model, or an explicitly supplied custom
+    checkpoint.
 
         encoder:
           backbone: ct_fm          # selects the registry entry (same key as model.backbone)
-          init_source: pretrained | dapt | c0 | rspect_multitask | rspect_single |
-                       silver | custom
+          init_source: pretrained | diagnosis | custom
           checkpoint: <explicit path, or null to use encoder.sources[init_source]>
 
     ``pretrained`` loads the public weights through the backbone contract and transfers
     nothing; the other sources transfer ``lineage.transfer_modules`` out of a project
-    checkpoint. Either way the model built afterwards is the same model. ``alignment``
-    and ``silver_encoder`` remain user-facing aliases for the legacy ``c0`` and
-    ``silver`` source keys.
+    checkpoint. Either way the model built afterwards is the same model.
     """
     encoder = config.get("encoder")
     if not isinstance(encoder, dict):
@@ -364,8 +336,7 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
         # Recorded in every checkpoint and every result, so a number always says which
         # kind of weights the encoder started from.
         lineage_block["encoder_init_source"] = source
-        # Keep the public matrix name (for example ``alignment``) if a launcher supplied
-        # it, instead of losing it to the historical internal key (``c0``).
+        # Keep the public matrix name if a launcher supplied one.
         lineage_block["weight_source"] = str(encoder.get("weight_source") or source)
 
     backbone = str(encoder.get("backbone") or "").strip().lower().replace("-", "_")
@@ -382,9 +353,9 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
     checkpoint = encoder.get("checkpoint") or sources.get(source)
     checkpoint = str(checkpoint).strip() if checkpoint not in (None, "") else None
     if checkpoint and not explicit and source != "pretrained":
-        # encoder.sources holds the canonical run of each adaptation stage, and that run
-        # belongs to one backbone. Silently handing a CT-FM DAPT checkpoint to a TotalFM
-        # experiment would produce a number nobody could interpret.
+        # encoder.sources holds the canonical run of each source, and that run belongs to
+        # one backbone. Silently handing a CT-FM checkpoint to another backbone's experiment would
+        # produce a number nobody could interpret.
         baseline = str((config.get("experiment") or {}).get("baseline_backbone") or "").strip()
         selected = str((config.get("model") or {}).get("backbone") or "").strip()
         if baseline and selected and selected != baseline:
@@ -410,8 +381,6 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
         lineage["source_checkpoint"] = None
         lineage["source_experiment"] = None
         lineage["initialization"] = _ENCODER_INITIALIZATION[source]
-        lineage["dapt"] = "none"
-        lineage["alignment"] = False
         model["load_pretrained"] = True
     else:
         if not checkpoint:
@@ -424,27 +393,7 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
         experiments = dict(encoder.get("source_experiments") or {})
         lineage["source_experiment"] = encoder.get("source_experiment") or experiments.get(source)
         lineage.setdefault("transfer_modules", ["image_encoder"])
-        lineage["alignment"] = source in {"c0", "silver"}
-        if encoder.get("dapt_method"):
-            lineage["dapt"] = encoder["dapt_method"]
-        if source == "silver":
-            # Distinct from lineage.silver_source, which names the silver labels a task is
-            # *supervised* with. This one names the silver source the encoder was adapted on.
-            lineage["encoder_silver_source"] = encoder.get("silver_source")
         model.setdefault("load_pretrained", False)
-        stage = str((config.get("experiment") or {}).get("stage") or "")
-        if stage == "silver_encoder_adaptation":
-            # This stage reads its starting encoder from init.checkpoint, not from lineage.
-            initialization = config.setdefault("init", {})
-            if isinstance(initialization, dict):
-                initialization["checkpoint"] = checkpoint
-                # Do not leave the legacy C0 values inherited from
-                # components/tasks.yaml#silver_adaptation in place. They are a real
-                # provenance contract checked by train_silver_encoder.py, so an RSPECT
-                # checkpoint must be identified as RSPECT rather than silently relabelled
-                # as C0 (and vice versa).
-                initialization["encoder"] = _ENCODER_INITIALIZATION[source]
-                initialization["experiment"] = lineage.get("source_experiment")
     return config
 
 
@@ -457,8 +406,8 @@ def stamp_experiment_variant(config: dict[str, Any]) -> dict[str, Any]:
     stamped, so a config left at its defaults keeps exactly the id it has today.
 
         DX_anatomy_concat                     baseline
-        DX_anatomy_concat__enc_dapt           same model, DAPT initialization
-        DX_anatomy_concat__ds_test_500_sample__bb_ct_clip__enc_silver
+        DX_anatomy_concat__enc_custom         same model, custom initialization
+        DX_anatomy_concat__ds_test_500_sample__bb_resnet18_3d__enc_custom
     """
     experiment = config.get("experiment")
     if not isinstance(experiment, dict) or experiment.get("variant_stamp") is False:

@@ -358,7 +358,9 @@ def prediction_rows(
             "patient_id": str(row["patient_id"]),
             "study_id": str(row["study_id"]),
             "y_true": int(row["y_true"]),
-            "y_prob": round(float(row["y_prob"]), 6),
+            # 9 decimals, so re-applying the stored threshold to y_prob (a paired reference)
+            # reproduces y_pred except for probabilities within 5e-10 of that threshold.
+            "y_prob": round(float(row["y_prob"]), 9),
             "y_pred": int(float(row["y_prob"]) >= float(threshold)),
             **{key: row[key] for key in row if key not in PREDICTION_COLUMNS and key != "target"},
         }

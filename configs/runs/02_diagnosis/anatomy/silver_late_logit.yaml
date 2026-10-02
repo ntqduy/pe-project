@@ -1,0 +1,42 @@
+# diag.anatomy.silver.late — same arm as diag.anatomy.silver.concat, late-logit fusion.
+#
+# Question: is it better to combine branch *decisions* than branch *features*?
+# Each branch (global / heart / PA / lung) gets its own PE head and the logits are averaged
+# with masked, renormalized weights, so a branch whose mask is missing drops out of the
+# average instead of contributing zeros. Everything else is identical to the concat arm.
+# Output: outputs/diagnosis/DX_anatomy_silver_late_logit/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/backbones.yaml#ct_fm
+  - ../../../components/encoders.yaml#from_pretrained
+  - ../../../components/tasks.yaml#diagnosis
+  - ../../../components/tasks.yaml#diagnosis_organ_silver
+  - ../../../components/training.yaml#diagnosis
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/anatomy.yaml#anatomy_masks
+  - ../../../components/fusions.yaml#late_logit
+experiment:
+  id: DX_anatomy_silver_late_logit
+  name: diag.anatomy.silver.late
+  stage: diagnosis
+  family: diagnosis
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+task:
+  targets:
+    _replace_: true
+    pe_present: 1
+  regions: [heart, pa, lung]
+lineage:
+  transfer_modules: [image_encoder]
+  silver_method: medgemma
+  supervision_type: native_pe_and_accepted_silver_organ_multitask
+supervision:
+  require_masks: true
+  masks: segmentation/SEG_pseudo_anatomy
+  require_silver_labels: true
+  silver_labels: silver_label/medgemma/silver_labels.csv

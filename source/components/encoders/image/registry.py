@@ -18,27 +18,16 @@ def register_backbone(name: str, builder: Builder) -> None:
 
 
 def _ct_fm(config: Mapping[str, Any]) -> BaseImageEncoder:
-    from .ct_fm import build_ct_fm
+    # Entry point of the baseline zoo's CT-FM arms (source/model/3D_model/ctfm.py).
+    import importlib
 
-    return build_ct_fm(config)
+    return importlib.import_module("source.model.3D_model.ctfm").build_ctfm_lora_3d(config)
 
 
 def _ct_fm_features(config: Mapping[str, Any]) -> BaseImageEncoder:
-    from .ct_fm import build_ct_fm_features
+    import importlib
 
-    return build_ct_fm_features(config)
-
-
-def _ct_clip(config: Mapping[str, Any]) -> BaseImageEncoder:
-    from .ct_clip import build_ct_clip
-
-    return build_ct_clip(config)
-
-
-def _totalfm(config: Mapping[str, Any]) -> BaseImageEncoder:
-    from .totalfm import build_totalfm
-
-    return build_totalfm(config)
+    return importlib.import_module("source.model.3D_model.ctfm").build_ctfm_frozen_3d(config)
 
 
 def _penet_style(config: Mapping[str, Any]) -> BaseImageEncoder:
@@ -49,9 +38,18 @@ def _penet_style(config: Mapping[str, Any]) -> BaseImageEncoder:
 
 register_backbone("ct_fm", _ct_fm)
 register_backbone("ct_fm_features", _ct_fm_features)
-register_backbone("ct_clip", _ct_clip)
-register_backbone("totalfm", _totalfm)
 register_backbone("penet_style", _penet_style)
+
+
+def _register_baseline_zoo() -> None:
+    # 2D / 2.5D / 3D baselines (source/model); builders import their module lazily.
+    from source.model.registry import baseline_builders
+
+    for name, builder in baseline_builders().items():
+        register_backbone(name, builder)
+
+
+_register_baseline_zoo()
 
 
 def registered_backbones() -> tuple[str, ...]:

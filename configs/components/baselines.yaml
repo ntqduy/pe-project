@@ -1,0 +1,122 @@
+# Shared contracts of the 2D / 2.5D / 3D baseline experiments (configs/runs/02_diagnosis/baselines/<2D|2_5D|3D>).
+# Select a fragment with: path/to/baselines.yaml#<preset>
+#
+# Every baseline arm is: encoder (backbones.yaml) -> shared projection -> head (MLP | KAN),
+# built by source/model/classifier.py (task.architecture: baseline_classifier). Arms differ
+# only in the encoder and in what an arm's own run config overrides (batch size, peft),
+# so rows of one result table are comparable.
+_presets_:
+  diagnosis:
+    # PE present / absent from the image only, official INSPECT split.
+    # tools/baselines/run_case.py rewrites data.manifest to a k-fold / fraction copy
+    # (manifests/experiments/...) when a fold or training fraction is requested.
+    experiment:
+      stage: diagnosis
+      family: diagnosis
+      baseline_init: pretrained
+    data:
+      mode: full
+      profile: full_inspect
+      cohort: all_eligible_ctpa
+      manifest: manifests/diagnosis.csv
+      file_column: image_path
+      label_columns: [pe_present]
+      mask_columns: {}
+    task:
+      _replace_: true
+      primary_target: pe_present
+      targets:
+        pe_present: 1
+      regions: []
+      architecture: baseline_classifier
+      silver_targets: []
+      silver_loss_weight: 0.0
+    lineage:
+      transfer_modules: []
+      supervision_type: native_labels
+    supervision:
+      require_masks: false
+      masks: null
+      require_silver_labels: false
+      silver_labels: null
+    evaluation:
+      bootstrap_samples: 2000
+      confidence: 0.95
+      threshold_method: youden
+    # Grad-CAM preview written by evaluate: the 3 most confident correct (TP/TN alternating)
+    # and 3 most confident wrong (FP/FN alternating) validation studies, each as an .html
+    # viewer + .png montage (+ _mil_attention.png for 2D / 2.5D models), plus
+    # _ct.nii.gz / _gradcam.nii.gz on the input grid (sidecar affine) for ITK-SNAP / Slicer.
+    preview:
+      correct: 3
+      wrong: 3
+      nifti: true
+    seed: 42
+
+  head_mlp:
+    # Shared projection (Dropout -> Linear(F, 64) -> LayerNorm) then Linear-GELU-Dropout-Linear.
+    head:
+      type: mlp
+      projection_dim: 64
+      projection_dropout: 0.1
+      standardize_inputs: false
+      mlp: {hidden_dim: 64, dropout: 0.1}
+      kan: {hidden_dims: [16], grid: 5, spline_order: 3, grid_range: [-3.0, 3.0], seed: 42}
+
+  head_kan:
+    # Same projection, KAN [64, 16, out] from third_party/repos/pykan (B-splines, grid 5, k 3).
+    _base_:
+      - baselines.yaml#head_mlp
+    head:
+      type: kan
+
+  train_end_to_end:
+    # Whole encoder fine-tuned (3D, 2D and 2.5D arms). One budget for every arm.
+    peft:
+      _replace_: true
+      method: full
+    training:
+      epochs: 40
+      early_stopping_patience: 8
+      batch_size: 2
+      gradient_accumulation: 4
+      learning_rate: 0.0001
+      weight_decay: 0.05
+      scheduler: cosine
+      warmup_epochs: 2
+      min_lr_factor: 0.01
+      # Per-epoch train/validation AUROC curves (training_curves.png). The train pass re-reads
+      # the whole train split every epoch; set false (EPOCH_AUC=0) to halve epoch time.
+      record_epoch_auc: true
+
+  train_lora:
+    # Encoder frozen except LoRA adapters on its backbone-declared target modules.
+    _base_:
+      - baselines.yaml#train_end_to_end
+    peft:
+      _replace_: true
+      method: lora
+      rank: 8
+      alpha: 16
+      dropout: 0.05
+      target_modules: [attn, projection]
+    training:
+      learning_rate: 0.0003
+
+  train_frozen_features:
+    # Frozen encoder on cached pooled features: only projection + head train (cheap).
+    peft:
+      _replace_: true
+      method: frozen
+    head:
+      standardize_inputs: true
+    training:
+      epochs: 100
+      early_stopping_patience: 15
+      batch_size: 32
+      gradient_accumulation: 1
+      learning_rate: 0.001
+      weight_decay: 0.0001
+      scheduler: cosine
+      warmup_epochs: 0
+      record_epoch_auc: true

@@ -60,7 +60,7 @@ if __package__ in {None, ""}:
 import numpy as np
 
 from source.data.manifests import read_rows
-from source.data_preprocessing.volumes import PreprocessingSpec, preprocess_volume_with_metadata
+from source.data.build.volumes import PreprocessingSpec, preprocess_volume_with_metadata
 from source.utils.progress import format_duration
 from source.utils.workers import PREPROCESS_WORKER_GB, resolve_workers
 
@@ -81,7 +81,7 @@ prognosis_pe_positive) with two differences only:
   * studies whose CT-FM preprocessing failed are dropped (listed in
     <derived>/cache/<profile>/ct_fm/dropped_rows.csv).
 Splits, labels and every other column are copied unchanged. Use them only with
-model.backbone=ct_fm_features (configs/runs/01_foundation/ct_fm_frozen_*.yaml); every other
+model.backbone=ct_fm_features (configs/runs/01_foundation/ct_fm_frozen/*.yaml); every other
 model reads the base manifests in ../.
 """
 

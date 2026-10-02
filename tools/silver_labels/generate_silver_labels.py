@@ -24,10 +24,16 @@ from source.engine.experiment import (
     compact_result,
     prepare_resumable_run,
 )
-from source.silver.falcon import FalconExtractor
-from source.silver.generator import SILVER_METHODS, SilverGenerator
+from source.silver.generator import (
+    SILVER_METHODS,
+    SilverGenerator,
+    has_technical_failure,
+    resolve_confidence_threshold,
+)
 from source.silver.medgemma import MedGemmaExtractor
+from source.silver.providers import render_instruction
 from source.silver.qc import silver_qc_records, silver_qc_summary
+from source.silver.rules import RULE_VERSION
 from source.silver.schema import TARGETS, report_hash
 from source.utils.config import load_config
 from source.utils.console import silver_block
@@ -37,7 +43,12 @@ from source.utils.qc import qc_row
 from tools._common import import_symbol, select_patient_rows, write_csv_atomic
 
 # Tracks source/silver/schema.SCHEMA_VERSION so incompatible cached rows are recomputed.
-STATE_SCHEMA_VERSION = 5
+STATE_SCHEMA_VERSION = 6
+# Provider options that only place the model on a device; they never change an answer, and
+# device_map is rewritten per rank, so they stay out of the resume-cache signature.
+_PLACEMENT_KWARGS = frozenset({"device_map"})
+# Stands in for the report when the per-target prompts are hashed into the signature.
+_SIGNATURE_REPORT = "<report>"
 
 
 def _provider(
@@ -79,7 +90,7 @@ def _output_rows(
     reports: list[dict[str, Any]],
     *,
     experiment_id: str,
-    silver_config: Mapping[str, Any],
+    confidence_threshold: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     split_by_report = {str(row["report_id"]): str(row.get("split") or "") for row in reports}
     audit_by_key = {
@@ -87,13 +98,9 @@ def _output_rows(
     }
     label_rows: list[dict[str, Any]] = []
     confidence_rows: list[dict[str, Any]] = []
-    # medgemma is the only provider, so its threshold is the only one a row can be gated on.
-    medgemma_threshold = float(
-        silver_config.get(
-            "medgemma_confidence_threshold",
-            silver_config.get("confidence_threshold", 0.8),
-        )
-    )
+    # medgemma is the only provider, so its threshold -- the one the generator applied --
+    # is the only one a row can be gated on.
+    medgemma_threshold = float(confidence_threshold)
     for row in labels:
         key = (str(row["report_id"]), str(row["target"]))
         audit = audit_by_key.get(key, {})
@@ -154,8 +161,15 @@ def _output_rows(
     return label_rows, confidence_rows
 
 
-def _generator_signature(generator: SilverGenerator) -> dict[str, Any]:
-    """What a cached report was produced with; a change means the report is re-labelled."""
+def _generator_signature(
+    generator: SilverGenerator, provider_kwargs: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """What a cached report was produced with; a change means the report is re-labelled.
+
+    Covers everything that can change an answer: rules (RULE_VERSION), thresholds, the
+    model files, retries, the provider kwargs (prompt_template, max_new_tokens, dtype,
+    revision, ...) and the prompt text the provider actually uses.
+    """
     def provider_signature(extractor: Any) -> dict[str, Any] | None:
         if extractor is None:
             return None
@@ -163,20 +177,44 @@ def _generator_signature(generator: SilverGenerator) -> dict[str, Any]:
         model_path = Path(model_id)
         files = []
         if model_path.is_dir():
-            for pattern in ("config.json", "model.safetensors.index.json", "*.safetensors"):
+            # The tokenizer files carry the chat template the prompt is rendered with.
+            for pattern in ("config.json", "model.safetensors.index.json", "*.safetensors",
+                            "tokenizer_config.json", "chat_template.json", "chat_template.jinja"):
                 for path in sorted(model_path.glob(pattern)):
                     stat = path.stat()
-                    files.append((path.name, stat.st_size, stat.st_mtime_ns))
-        return {"model_id": model_id, "retries": extractor.retries, "files": files}
+                    files.append([path.name, stat.st_size, stat.st_mtime_ns])
+        kwargs = {
+            str(key): value for key, value in sorted(dict(provider_kwargs or {}).items())
+            if key not in _PLACEMENT_KWARGS
+        }
+        prompt = getattr(extractor.provider, "prompt_template", None)
+        if isinstance(prompt, str):
+            # Every target's full instruction (template, TargetSpec description, allowed
+            # values, target hint) around a fixed placeholder report, so editing any of them
+            # invalidates the cache, not only an edit of the template.
+            prompt = "\n\0\n".join(
+                render_instruction(prompt, _SIGNATURE_REPORT, target) for target in TARGETS
+            )
+        return {
+            "model_id": model_id,
+            "retries": extractor.retries,
+            "files": files,
+            # Round-tripped through JSON so it compares equal to the stored copy.
+            "provider_kwargs": json.loads(json.dumps(kwargs, sort_keys=True, default=str)),
+            "max_new_tokens": getattr(extractor.provider, "max_new_tokens", None),
+            "prompt_sha256": (
+                hashlib.sha256(prompt.encode("utf-8")).hexdigest() if isinstance(prompt, str) else None
+            ),
+        }
 
     return {
         "method": generator.method,
         "prompt_version": generator.prompt_version,
+        "rule_version": RULE_VERSION,
         "rule_rescue": generator.rule_rescue,
         "pe_consistency": generator.pe_consistency,
         "medgemma_confidence_threshold": generator.medgemma_confidence_threshold,
         "medgemma": provider_signature(generator.medgemma),
-        "falcon": provider_signature(generator.falcon),
     }
 
 
@@ -212,10 +250,9 @@ def _cached_report(
         return None
     if any(str(row.get("report_id")) != report_id for row in rows):
         return None
-    # Technical failures may clear on a later run, including rows temporarily rescued
-    # by a deterministic rule; never freeze those answers in the resume cache.
-    if any(row.get("status") == "no_result" or
-           "after_medgemma_failure" in str(row.get("reason") or "") for row in rows):
+    # Technical failures may clear on a later run, including rows a deterministic rule or
+    # pe_consistency filled in the meantime; never freeze those answers in the resume cache.
+    if has_technical_failure(rows, audits):
         return None
     return [dict(row) for row in rows], [dict(row) for row in audits]
 
@@ -255,8 +292,8 @@ def _generate_report(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate offline silver labels without expert review; the experiment id names "
-            "the sources it cascades (rule, falcon, medgemma and their combinations)"
+            "Generate offline silver labels without expert review: MedGemma labels every "
+            "target, backed up by explicit report rules (silver.rule_rescue)"
         )
     )
     parser.add_argument("--config", type=Path, required=True)
@@ -329,39 +366,27 @@ def main() -> int:
         if not all(report_ids) or len(report_ids) != len(set(report_ids)):
             raise RuntimeError("report_id values must be non-empty and unique")
 
-        falcon = None
         medgemma = None
         local_rank = context.local_rank if context.distributed and context.device.type == "cuda" else None
-        # Load exactly the models the method names, so a rule-only run costs no VRAM and a
-        # single-model run never loads the other one.
         normalized_method = str(method).strip().lower()
         if normalized_method not in SILVER_METHODS:
             raise RuntimeError(
                 f"unsupported silver method: {method}; "
                 f"expected one of {sorted(SILVER_METHODS)}"
             )
-        stages = SILVER_METHODS[normalized_method]
-        if "falcon" in stages:
-            provider, model_id = _provider(silver_config, "falcon", paths, local_rank=local_rank)
-            falcon = FalconExtractor(provider, model_id)
-        if "medgemma" in stages:
+        medgemma_config = dict(silver_config.get("medgemma") or {})
+        if "medgemma" in SILVER_METHODS[normalized_method]:
             provider, model_id = _provider(silver_config, "medgemma", paths, local_rank=local_rank)
             medgemma = MedGemmaExtractor(
                 provider,
                 model_id,
-                retries=int((silver_config.get("medgemma") or {}).get("retries", 1)),
+                retries=int(medgemma_config.get("retries", 1)),
             )
+        confidence_threshold = resolve_confidence_threshold(silver_config)
         generator = SilverGenerator(
             method,
-            falcon=falcon,
             medgemma=medgemma,
-            confidence_threshold=float(silver_config.get("confidence_threshold", 0.8)),
-            medgemma_confidence_threshold=float(
-                silver_config.get("medgemma_confidence_threshold", 0.8)
-            ),
-            agreement_confidence_threshold=float(
-                silver_config.get("agreement_confidence_threshold", 0.6)
-            ),
+            medgemma_confidence_threshold=confidence_threshold,
             prompt_version=str(silver_config.get("prompt_version") or "v1"),
             run_id=f"{experiment_id}_{uuid.uuid4().hex[:12]}",
             rule_rescue=bool(silver_config.get("rule_rescue", False)),
@@ -374,7 +399,7 @@ def main() -> int:
                 f"pe_consistency={generator.pe_consistency} "
                 f"medgemma_threshold={generator.medgemma_confidence_threshold}"
             )
-        generator_signature = _generator_signature(generator)
+        generator_signature = _generator_signature(generator, medgemma_config.get("provider_kwargs"))
         local_pairs = [
             _generate_report(generator, report, run_dir, generator_signature)
             for report in reports[context.rank :: context.world_size]
@@ -398,7 +423,7 @@ def main() -> int:
             audits,
             reports,
             experiment_id=experiment_id,
-            silver_config=silver_config,
+            confidence_threshold=generator.medgemma_confidence_threshold,
         )
         write_csv_atomic(label_rows, run_dir / "silver_labels.csv")
         write_csv_atomic(confidence_rows, run_dir / "silver_label_confidence.csv")

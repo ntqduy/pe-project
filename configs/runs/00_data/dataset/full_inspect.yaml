@@ -4,7 +4,7 @@
 # Reads the read-only release, applies the shared eligibility/noise-removal rules, checks
 # CT integrity, adjudicates labels per patient, verifies that the official split is
 # preserved and that no patient crosses it, then writes every derived manifest.
-# The cohort contract itself lives in source/dataset/profiles/, not here.
+# The cohort contract itself lives in source/data/profiles/, not here.
 # Output: ${PE_DERIVED_ROOT}/datasets/full_inspect/
 #   manifests/{ctpa,diagnosis,prognosis,paired_reports,reports}.csv
 #   data_quality.{md,json}, dataset.json, volumes/, audit/

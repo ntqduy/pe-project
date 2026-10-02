@@ -22,9 +22,11 @@ from source.distributed.setup import initialize_distributed, rank_zero_call, wra
 from source.engine.checkpoint import load_checkpoint
 from source.engine.experiment import OutputManager, compact_result, run_output_id
 from source.engine.factory import build_task_model
-from source.engine.task_steps import task_loss_step
+from source.engine.task_steps import diagnosis_evaluation_targets, task_loss_step
+from source.engine.schedulers import build_scheduler
 from source.engine.trainer import Trainer, move_to_device
 from source.engine.task_artifacts import (
+    best_epoch,
     cleanup_task_run,
     preview_log_lines,
     refresh_epoch_log,
@@ -45,7 +47,6 @@ from tools._common import (
     build_dataset,
     build_training_lineage,
     resolve_cli_config,
-    write_parquet_atomic,
 )
 
 
@@ -87,6 +88,16 @@ def _fit_feature_standardizer(model, dataset, config, context, *, batch_size, wo
     """
     from source.components.roi.masks import apply_counterfactual
 
+    own_fit = getattr(model, "fit_input_standardizer", None)
+    if callable(own_fit):
+        # Baseline classifiers (source/model/classifier.py) standardize their own embedding.
+        shard = (
+            Subset(dataset, range(context.rank, len(dataset), context.world_size))
+            if context.distributed
+            else dataset
+        )
+        loader = DataLoader(shard, batch_size=batch_size, shuffle=False, num_workers=workers)
+        return own_fit(loader, context.device, context.distributed)
     standardizer = getattr(getattr(model, "organ_adapters", None), "input_standardizer", None)
     if standardizer is None:
         if (config.get("organ_adapter") or {}).get("standardize_inputs"):
@@ -143,7 +154,7 @@ def _auc_rows(model, loader, config, context, log=None, label="epoch AUROC pass"
     task = dict(config.get("task") or {})
     data = dict(config.get("data") or {})
     stage = str((config.get("experiment") or {}).get("stage") or "")
-    if stage in {"ablation", "roi_student"}:
+    if stage == "ablation":
         stage = str(task.get("base_stage") or stage)
     primary = str(task.get("primary_target") or "pe_present")
     columns = list(data.get("label_columns") or ())
@@ -151,7 +162,8 @@ def _auc_rows(model, loader, config, context, log=None, label="epoch AUROC pass"
         raise ValueError(f"primary target {primary!r} is not present in data.label_columns")
     configured_targets = list((task.get("targets") or {}).keys())
     if stage == "diagnosis":
-        targets = [primary]
+        # Primary first; multitask native heads get their own AUROC columns.
+        targets = diagnosis_evaluation_targets(task, columns, primary)
     elif configured_targets:
         targets = [target for target in configured_targets if target in columns]
     else:
@@ -210,13 +222,14 @@ def _epoch_auc_metrics(model, train_loader, validation_loader, config, context, 
     task = dict(config.get("task") or {})
     data = dict(config.get("data") or {})
     stage = str((config.get("experiment") or {}).get("stage") or "")
-    if stage in {"ablation", "roi_student"}:
+    if stage == "ablation":
         stage = str(task.get("base_stage") or stage)
     primary = str(task.get("primary_target") or "pe_present")
     columns = list(data.get("label_columns") or ())
     configured_targets = list((task.get("targets") or {}).keys())
     if stage == "diagnosis":
-        targets = [primary]
+        # Primary first; multitask native heads get their own AUROC columns.
+        targets = diagnosis_evaluation_targets(task, columns, primary)
     elif configured_targets:
         targets = [target for target in configured_targets if target in columns]
     else:
@@ -278,68 +291,8 @@ def _epoch_auc_metrics(model, train_loader, validation_loader, config, context, 
     return values
 
 
-@torch.no_grad()
-def _distillation_rows(model, teacher, loader, config, context):
-    from torch.nn import functional
-
-    from source.components.roi.masks import apply_counterfactual
-
-    task = dict(config.get("task") or {})
-    distillation = dict(config.get("distillation") or {})
-    primary = str(task.get("primary_target", "pe_present"))
-    columns = list((config.get("data") or {}).get("label_columns") or ())
-    label_index = columns.index(primary)
-    temperature = float(distillation.get("temperature", 2.0))
-    alpha_supervised = float(distillation.get("alpha_supervised", 1.0))
-    alpha_distill = float(distillation.get("alpha_distill", 1.0))
-    model.eval()
-    teacher.eval()
-    rows = []
-    for batch in loader:
-        moved = move_to_device(batch, context.device)
-        student_volume = apply_counterfactual(
-            moved["volume"],
-            moved["masks"],
-            str(task.get("input_counterfactual") or ""),
-            matched_region=str(task.get("matched_region", "pa")),
-            masking_policy=task.get("masking_policy", "local_mean"),
-            seed=int(config.get("seed", 42)),
-            patient_ids=batch.get("patient_id"),
-            study_ids=batch.get("study_id"),
-        )
-        student = model(student_volume, moved["masks"])["logits"][primary].squeeze(-1)
-        teacher_logits = teacher(moved["volume"], moved["masks"])["logits"][primary].squeeze(-1)
-        truth = moved["labels"][:, label_index].float()
-        valid = moved["label_valid"][:, label_index].bool()
-        gt = functional.binary_cross_entropy_with_logits(student, truth, reduction="none")
-        soft = torch.sigmoid(teacher_logits.detach() / temperature)
-        kd = functional.binary_cross_entropy_with_logits(
-            student / temperature, soft, reduction="none"
-        ) * temperature**2
-        total = alpha_supervised * gt + alpha_distill * kd
-        for index, (patient, study) in enumerate(zip(batch["patient_id"], batch["study_id"])):
-            if not bool(valid[index]):
-                continue
-            rows.append(
-                {
-                    "patient_id": str(patient),
-                    "study_id": str(study),
-                    "target": float(truth[index].cpu()),
-                    "teacher_logit": float(teacher_logits[index].cpu()),
-                    "student_logit": float(student[index].cpu()),
-                    "gt_loss": float(gt[index].cpu()),
-                    "kd_loss": float(kd[index].cpu()),
-                    "total_loss": float(total[index].cpu()),
-                    "temperature": temperature,
-                    "lambda_kd": alpha_distill,
-                    "teacher_gradients_enabled": False,
-                }
-            )
-    return rows
-
-
 def main() -> int:
-    parser = base_parser("Train Diagnosis, Prognosis, or Contour with the shared engine")
+    parser = base_parser("Train Diagnosis or Prognosis with the shared engine")
     args = parser.parse_args()
     if args.resume:
         raise SystemExit(
@@ -381,7 +334,9 @@ def main() -> int:
             run_logger.log(experiment_header(config, run_dir, preflight.manifest))
         else:
             run_logger = None
-        seed_everything(int(config["seed"]) + context.rank)
+        # Same seed on every rank until DDP wraps the model: model construction and the
+        # feature-standardizer fit below must see identical initial weights on all ranks.
+        seed_everything(int(config["seed"]))
         train_data = build_dataset(config, paths, "train")
         validation_data = build_dataset(config, paths, "validation")
         if run_logger is not None:
@@ -402,7 +357,11 @@ def main() -> int:
         if run_logger is not None:
             run_logger.log(f"data loader {worker_note}")
         batch_size = int((config.get("training") or {}).get("batch_size", 1))
-        train_sampler = DistributedSampler(train_data, shuffle=True) if context.distributed else None
+        train_sampler = (
+            DistributedSampler(train_data, shuffle=True, seed=int(config["seed"]))
+            if context.distributed
+            else None
+        )
         validation_sampler = (
             DistributedSampler(validation_data, shuffle=False) if context.distributed else None
         )
@@ -421,6 +380,13 @@ def main() -> int:
             num_workers=workers,
         )
         model, peft_report = build_task_model(config)
+        pretrained_report = getattr(getattr(model, "image_encoder", None), "pretrained_report", None)
+        if run_logger is not None and pretrained_report is not None:
+            from source.model.base import format_pretrained_report
+
+            encoder_name = getattr(model.image_encoder, "backbone_name", config["model"].get("backbone"))
+            run_logger.log(format_pretrained_report(str(encoder_name), pretrained_report))
+            run_logger.log("pretrained_weights=" + json.dumps(pretrained_report, sort_keys=True, default=str))
         if run_logger is not None:
             run_logger.log(
                 "finetuning="
@@ -464,7 +430,11 @@ def main() -> int:
                     + ": fewer than 2 training rows, so these branches enter the adapters "
                     "unstandardized"
                 )
-        model = wrap_ddp(model, context)
+        # Encoders whose graph changes per step (PENet's stochastic depth) declare it.
+        unused = bool(getattr(getattr(model, "image_encoder", None), "ddp_find_unused_parameters", False))
+        model = wrap_ddp(model, context, **({"find_unused_parameters": True} if unused else {}))
+        # Per-rank stream from here on, so augmentation and dropout differ across ranks.
+        seed_everything(int(config["seed"]) + context.rank)
         parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
         if not parameters:
             raise RuntimeError("training has no trainable parameters")
@@ -490,6 +460,7 @@ def main() -> int:
             context,
             run_dir,
             lineage,
+            scheduler=build_scheduler(optimizer, training),
             precision=str(config["compute"].get("precision", "fp32")),
             early_stopping_patience=training.get("early_stopping_patience"),
             accumulation_steps=int(training.get("gradient_accumulation", 1)),
@@ -506,23 +477,13 @@ def main() -> int:
             int(training.get("epochs", 1)),
             epoch_metrics_fn=epoch_metrics_fn,
         )
-        distillation_rows = None
-        if bool((config.get("distillation") or {}).get("enabled")):
-            from source.distributed.gather import gather_prediction_rows
-
-            load_checkpoint(run_dir / "best.ckpt", model=model, strict=True)
-            teacher = getattr(loss_step, "teacher", None)
-            if teacher is None:
-                raise RuntimeError("enabled distillation did not construct a frozen teacher")
-            local_distillation = _distillation_rows(
-                model, teacher.to(context.device), validation_loader, config, context
-            )
-            expected = {
-                (str(row["patient_id"]), str(row["study_id"]))
-                for row in validation_data.rows
-            }
-            distillation_rows = gather_prediction_rows(
-                local_distillation, context, expected_ids=expected
+        # Every rank holds the same rank-reduced history, so all of them fail together here.
+        selected_epoch = best_epoch(training_result["history"])
+        if selected_epoch is None:
+            raise RuntimeError(
+                "no validation-selected checkpoint: the selection metric (primary_val_metric) "
+                "was non-finite in every epoch, so best.ckpt was never written; "
+                f"see {run_dir / 'logs' / 'history.csv'}"
             )
         if context.is_main:
             # All task-facing artifacts are based on the validation-selected checkpoint.
@@ -533,11 +494,6 @@ def main() -> int:
                 training_result,
                 lineage=lineage,
                 config=config,
-                extra_parameters={
-                    "dataset.profile": (config.get("data") or {}).get("profile"),
-                    "dataset.manifest": (config.get("data") or {}).get("manifest"),
-                    "dataset.split_policy": "official train/validation/test; no repartition",
-                },
             )
             preview_report = write_backbone_previews(
                 model,
@@ -554,21 +510,18 @@ def main() -> int:
             underlying = model.module if hasattr(model, "module") else model
             profile_batch = move_to_device(next(iter(validation_loader)), context.device)
             effective_stage = str(config["experiment"]["stage"])
-            if effective_stage in {"ablation", "roi_student"}:
+            if effective_stage == "ablation":
                 effective_stage = str((config.get("task") or {}).get("base_stage"))
-            if effective_stage == "diagnosis" and str((config.get("task") or {}).get("architecture", "soft_moe")) == "report_only":
-                forward = lambda: underlying(profile_batch["report_embedding"])
-            elif effective_stage == "diagnosis":
+            if effective_stage == "diagnosis":
                 forward = lambda: underlying(profile_batch["volume"], profile_batch["masks"])
-            elif effective_stage == "prognosis":
-                forward = lambda: underlying(profile_batch)
             else:
-                forward = lambda: underlying(profile_batch["volume"])
+                forward = lambda: underlying(profile_batch)
             profile = profile_model(
                 underlying,
                 forward,
                 warmup=1,
                 iterations=int((config.get("profiling") or {}).get("iterations", 5)),
+                batch_size=int(profile_batch["volume"].shape[0]),
             )
             training_peak = max((row["peak_vram_gb"] for row in training_result["history"]), default=0.0)
             audit = preflight.manifest or {}
@@ -586,19 +539,6 @@ def main() -> int:
                     "split_strategy", "patient_holdout"
                 ),
             }
-            if str(config["experiment"]["stage"]) == "roi_student":
-                evaluation_payload["sufficiency_experiment"] = {
-                    "roi_only_input": (config.get("task") or {}).get("input_counterfactual"),
-                    "ground_truth_supervision": True,
-                    "distillation_enabled": bool(
-                        (config.get("distillation") or {}).get("enabled", False)
-                    ),
-                    "comparison_arm": (
-                        "GT_plus_KD"
-                        if (config.get("distillation") or {}).get("enabled")
-                        else "GT_without_KD"
-                    ),
-                }
             result = compact_result(
                 config,
                 status="completed",
@@ -616,6 +556,8 @@ def main() -> int:
                     "modalities": (config.get("task") or {}).get("modalities", ["image"]),
                     "clinical_preprocessing": clinical_preprocessing,
                     "feature_standardization": feature_standardization,
+                    "pretrained_weights": pretrained_report,
+                    "head": (config.get("head") or {}).get("type"),
                 },
                 compute={
                     "strategy": config["compute"]["strategy"],
@@ -629,27 +571,16 @@ def main() -> int:
                 evaluation=evaluation_payload,
                 reproducibility=reproducibility,
             )
-            best_row = max(
-                training_result["history"],
-                key=lambda row: float(row["primary_val_metric"]),
+            # Same rule as the Trainer and best_epoch(): first epoch with the highest finite
+            # metric, so a NaN epoch can never be reported as the best one.
+            best_row = next(
+                row for row in training_result["history"] if int(row["epoch"]) == selected_epoch
             )
             result["lineage"] = {
                 **lineage,
                 "epoch": int(best_row["epoch"]),
                 "validation_metric": float(best_row["primary_val_metric"]),
             }
-            if distillation_rows is not None:
-                write_parquet_atomic(
-                    distillation_rows, run_dir / "distillation_validation_predictions.parquet"
-                )
-                result["evaluation"]["distillation"] = {
-                    "split": "validation",
-                    "rows": len(distillation_rows),
-                    "artifact": "distillation_validation_predictions.parquet",
-                    "teacher_frozen": True,
-                    "temperature": float(config["distillation"]["temperature"]),
-                    "lambda_kd": float(config["distillation"]["alpha_distill"]),
-                }
             manager.write_result(run_dir, result, split_artifacts=False)
             if run_logger is not None:
                 run_logger.log(

@@ -1,72 +1,66 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-import torch
 from torch import Tensor, nn
 
-from source.tasks.contour.losses import contour_loss
+from source.components.targets import normalize_target_spec
 from source.tasks.diagnosis.losses import diagnosis_loss, organ_auxiliary_loss
 from source.tasks.prognosis.losses import mortality_loss
 
 
-def _build_frozen_teacher(config: Mapping[str, Any], teacher_checkpoint: str) -> nn.Module:
-    """Build a same-architecture teacher model and load frozen weights for distillation.
+def diagnosis_evaluation_targets(
+    task: Mapping[str, Any], label_columns: Sequence[str], primary: str
+) -> list[str]:
+    """Diagnosis targets scored by evaluation and the epoch AUROC pass, primary first.
 
-    The teacher is constructed from the student's own config (ROI-student experiments
-    share the base diagnosis architecture; only the input counterfactual differs), so its
-    weights come entirely from ``teacher_checkpoint`` rather than the student's optimizer.
+    Besides the primary target these are the other native binary heads (``task.targets``
+    entries with a ``data.label_columns`` column, e.g. multitask pe_acute/pe_subsegmental).
+    They only add rows: the primary target's metrics, threshold and the checkpoint selection
+    are unchanged. Silver and multiclass heads have no native label column and are skipped.
     """
-    from source.distillation.teacher import FrozenTeacher
-    from source.engine.checkpoint import load_checkpoint
-    from source.engine.factory import build_task_model
-
-    teacher_model, _ = build_task_model(config)
-    load_checkpoint(teacher_checkpoint, model=teacher_model, strict=True)
-    return FrozenTeacher(teacher_model)
+    columns = {str(column) for column in label_columns}
+    silver = {str(name) for name in task.get("silver_targets") or ()}
+    configured = task.get("targets") or {}
+    if not isinstance(configured, Mapping):
+        configured = {str(name): 1 for name in configured}
+    targets = [str(primary)]
+    for name, spec in configured.items():
+        name = str(name)
+        if name in targets or name not in columns or name in silver:
+            continue
+        try:
+            binary = normalize_target_spec(spec).kind == "binary"
+        except (TypeError, ValueError):
+            binary = False
+        if binary:
+            targets.append(name)
+    return targets
 
 
 def task_loss_step(config: Mapping[str, Any]):
     stage = str((config.get("experiment") or {}).get("stage"))
     data = dict(config.get("data") or {})
     task = dict(config.get("task") or {})
-    if stage in {"ablation", "roi_student"}:
+    if stage == "ablation":
         stage = str(task.get("base_stage") or "")
     label_columns = tuple(data.get("label_columns") or ())
     counterfactual_seed = int(config.get("seed", 42))
 
-    distillation = dict(config.get("distillation") or {})
-    teacher: nn.Module | None = None
-    if distillation.get("enabled"):
-        teacher_checkpoint = distillation.get("teacher_checkpoint")
-        if not teacher_checkpoint:
-            raise ValueError("distillation.enabled requires distillation.teacher_checkpoint")
-        if stage != "diagnosis":
-            raise ValueError("distillation is only wired for the diagnosis stage")
-        if str(task.get("architecture", "soft_moe")) == "report_only":
-            raise ValueError("distillation is not supported for the report_only diagnosis architecture")
-        teacher = _build_frozen_teacher(config, str(teacher_checkpoint))
-
-    report_only = str(task.get("architecture", "soft_moe")) == "report_only"
-
     def diagnosis(model: nn.Module, batch: Mapping[str, Any]) -> Tensor:
         from source.components.roi.masks import apply_counterfactual
-        from source.distillation.losses import knowledge_distillation_loss
 
-        if report_only:
-            output = model(batch["report_embedding"])
-        else:
-            counterfactual = str(task.get("input_counterfactual") or "")
-            volume = apply_counterfactual(
-                batch["volume"], batch["masks"], counterfactual,
-                matched_region=str(task.get("matched_region", "pa")),
-                masking_policy=task.get("masking_policy", "local_mean"),
-                seed=counterfactual_seed,
-                patient_ids=batch.get("patient_id"),
-                study_ids=batch.get("study_id"),
-            )
-            output = model(volume, batch["masks"])
+        counterfactual = str(task.get("input_counterfactual") or "")
+        volume = apply_counterfactual(
+            batch["volume"], batch["masks"], counterfactual,
+            matched_region=str(task.get("matched_region", "pa")),
+            masking_policy=task.get("masking_policy", "local_mean"),
+            seed=counterfactual_seed,
+            patient_ids=batch.get("patient_id"),
+            study_ids=batch.get("study_id"),
+        )
+        output = model(volume, batch["masks"])
         labels = {name: batch["labels"][:, index] for index, name in enumerate(label_columns)}
         valid = {name: batch["label_valid"][:, index] for index, name in enumerate(label_columns)}
         loss, main_report = diagnosis_loss(output["logits"], labels, valid, task.get("loss_weights"))
@@ -114,25 +108,6 @@ def task_loss_step(config: Mapping[str, Any]):
                 task.get("silver_loss_weights"), allow_empty=True,
             )
             loss = loss + float(task.get("silver_loss_weight", 0.2)) * silver_loss
-        if teacher is not None:
-            teacher.to(batch["volume"].device)
-            with torch.no_grad():
-                teacher_output = teacher(batch["volume"], batch["masks"])
-            primary = str(task.get("primary_target", "pe_present"))
-            if primary not in output["logits"] or primary not in teacher_output["logits"]:
-                raise ValueError(f"distillation teacher/student are missing primary head {primary!r}")
-            temperature = float(distillation.get("temperature", 2.0))
-            alpha_supervised = float(distillation.get("alpha_supervised", 1.0))
-            alpha_distill = float(distillation.get("alpha_distill", 1.0))
-            knowledge = knowledge_distillation_loss(
-                output["logits"][primary],
-                teacher_output["logits"][primary],
-                temperature=temperature,
-            )
-            supervised = loss
-            loss = alpha_supervised * supervised + alpha_distill * knowledge
-            metrics["distillation.gt_loss"] = float(supervised.detach().cpu())
-            metrics["distillation.kd_loss"] = float(knowledge.detach().cpu())
         metrics["total_loss"] = float(loss.detach().cpu())
         return loss, metrics
 
@@ -171,34 +146,9 @@ def task_loss_step(config: Mapping[str, Any]):
             loss = mortality_loss(
                 output["logits"], batch["labels"][:, index], batch["label_valid"][:, index]
             )
-        concept_logits = output.get("concept_logits")
-        if concept_logits:
-            from source.components.targets import masked_multitask_loss
-
-            columns = output["concept_target_columns"]
-            concept_labels = {
-                name: batch["labels"][:, label_columns.index(column)]
-                for name, column in columns.items()
-                if column in label_columns
-            }
-            concept_valid = {
-                name: batch["label_valid"][:, label_columns.index(column)]
-                for name, column in columns.items()
-                if column in label_columns
-            }
-            concept_loss, _ = masked_multitask_loss(
-                concept_logits, concept_labels, concept_valid, output["concept_target_specs"],
-                task.get("concept_loss_weights"), allow_empty=True,
-            )
-            loss = loss + float(task.get("concept_loss_weight", 0.2)) * concept_loss
         return loss
 
-    def contour(model: nn.Module, batch: Mapping[str, Any]) -> Tensor:
-        return contour_loss(model(batch["volume"]), batch["masks"]["target"])
-
-    callbacks = {"diagnosis": diagnosis, "prognosis": prognosis, "contour": contour}
+    callbacks = {"diagnosis": diagnosis, "prognosis": prognosis}
     if stage not in callbacks:
         raise ValueError(f"no task loss for stage={stage}")
-    callback = callbacks[stage]
-    callback.teacher = teacher
-    return callback
+    return callbacks[stage]

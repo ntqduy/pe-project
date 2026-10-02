@@ -8,7 +8,7 @@ Per series it takes sigmoid of each window logit and keeps the maximum, which is
 ``third_party/repos/penet/test.py`` does.
 
     python tools/tasks/zeroshot_penet.py \
-      --config configs/runs/01_foundation/penet_zero_shot.yaml --allow-full
+      --config configs/runs/01_foundation/zero_shot/penet.yaml --allow-full
 
 Output (same tables as a trained diagnosis run, so the two can be compared row by row):
     result.csv            one row per split (validation, test), same columns as CT-FM runs
@@ -53,6 +53,7 @@ from source.metrics.result_table import (
     write_predictions_csv,
     write_result_csv,
 )
+from source.utils.config import parse_devices
 from source.utils.console import BAR, final_evaluation_block
 from source.utils.logger import RunLogger
 from tools._common import base_parser, resolve_cli_config, resolve_manifest
@@ -94,6 +95,26 @@ def _series_probability(model, volume, device, aggregate: str) -> tuple[float, i
     return value, len(probabilities)
 
 
+def _binary_label(value: Any) -> int | None:
+    """1/0 for a binary target in any stored form, None for missing or censored.
+
+    Parquet stores a label column with missing values as float, so 1/0 arrive as 1.0/0.0
+    (or "1.0"/"0.0" after a CSV round trip) and missing ones as NaN.
+    """
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        value = value.item()                      # numpy scalar -> Python scalar
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value) if value in (0, 1) else None      # NaN compares unequal to both
+    text = str(value if value is not None else "").strip().upper()
+    if text in {"TRUE", "1", "1.0"}:
+        return 1
+    if text in {"FALSE", "0", "0.0"}:
+        return 0
+    return None
+
+
 def _rows_for_split(manifest_rows, split, label_column, restrict):
     selected = []
     for row in manifest_rows:
@@ -101,12 +122,8 @@ def _rows_for_split(manifest_rows, split, label_column, restrict):
             continue
         if restrict is not None and str(row["patient_id"]) not in restrict:
             continue
-        raw = str(row.get(label_column, "")).strip().upper()
-        if raw in {"TRUE", "1"}:
-            label = 1
-        elif raw in {"FALSE", "0"}:
-            label = 0
-        else:
+        label = _binary_label(row.get(label_column))
+        if label is None:
             continue          # CENSORED / MISSING is not a binary target
         selected.append({"patient_id": str(row["patient_id"]), "study_id": str(row["study_id"]),
                          "y_true": label})
@@ -163,7 +180,9 @@ def main() -> int:
     restrict = _restriction(args.restrict_to)
     evaluation = dict(config.get("evaluation") or {})
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.gpus else "cpu")
+    # --gpus names physical IDs; this tool runs single-process, so use the first one.
+    gpu_ids = parse_devices(args.gpus)
+    device = torch.device(f"cuda:{gpu_ids[0]}" if torch.cuda.is_available() and gpu_ids else "cpu")
     model, model_meta = load_penet(checkpoint, repo)
     model.to(device)
     logger.log(f"penet checkpoint={checkpoint} device={device} meta={model_meta}")

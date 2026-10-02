@@ -75,7 +75,7 @@ class PrognosisModel(nn.Module):
         if image_encoder is not None:
             self.roi = ROIFeatureExtractor(self.regions)
             self.organ_adapters = OrganAdapterBank.from_config(
-                image_encoder.feature_dim,
+                image_encoder.feature_map_dim,
                 expert_dim,
                 self.regions,
                 organ_adapter,
@@ -88,7 +88,7 @@ class PrognosisModel(nn.Module):
 
         # All fusion inputs must share one width. The clinical adapters below always emit
         # expert_dim; the image organ-adapter bank only diverges from it when
-        # organ_adapter.enabled=False, in which case image_encoder.feature_dim must equal
+        # organ_adapter.enabled=False, in which case image_encoder.feature_map_dim must equal
         # expert_dim for a multimodal (image + ehr/spesi) experiment to be shape-consistent.
         branch_dim = (
             self.organ_adapters.output_dim if self.organ_adapters is not None else expert_dim

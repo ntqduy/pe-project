@@ -1,0 +1,14 @@
+# exp03_head_ablation - the case grid of this experiment (see ../exp01_baselines/experiment.yaml).
+# Both heads sit on the same shared projection (Linear(F, 64) + LayerNorm), so only the head
+# differs between the mlp and kan case of a model.
+title: "Head ablation: MLP vs KAN (3D, 100% train)"
+models:
+  - resnet18_3d
+  - convnext_3d
+  - vit_3d
+  - nnmamba_3d
+  - ctfm_frozen_3d
+  - ctfm_lora_3d
+heads: [mlp, kan]
+fractions: [100]
+overrides: {}

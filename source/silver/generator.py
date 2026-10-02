@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .adjudicator import adjudicate
 from .audit import AuditRecord, evidence_from_outputs, utc_timestamp
 from .confidence import route_confidence
-from .falcon import FalconExtractor
 from .medgemma import MedGemmaExtractor
 from .providers import MAX_STORED_RAW_CHARS, ProviderResponseError
 from .rules import RULE_VERSION, RuleDecision, apply_rule
@@ -16,26 +14,64 @@ from .schema import TARGETS, SilverLabel, target_spec
 # An explicit "no pulmonary embolism" rules out every PE location, so these targets are
 # false by implication even when the report does not name them one by one.
 PE_LOCATION_TARGETS = ("central", "lobar", "segmental", "subsegmental", "saddle")
+# pe_consistency reasons for a PE location answered true while pe_present is accepted
+# false; qc.py counts both as conflicts.
+LOCATION_TRUE_BUT_PE_FALSE = "pe_consistency:location_true_but_pe_present_false"
+LOCATION_MEDGEMMA_TRUE_BUT_PE_FALSE = "pe_consistency:location_medgemma_true_but_pe_present_false"
+# An accepted acuity while pe_present is accepted false is a contradiction (a conflict);
+# while pe_present is undecided it is only unsupported (missing_field in qc.py).
+ACUITY_WITHOUT_PE = "pe_consistency:acuity_without_pe"
+ACUITY_WITHOUT_PE_DECISION = "pe_consistency:acuity_without_pe_decision"
 
-# A method name IS its source list, in cascade order. Reading the name tells you exactly
-# which extractors ran and in which order, so no separate SL00/SL01/SL02 legend is needed.
-# MedGemma is the only generation method this project offers. The cascade machinery below
-# is unchanged and still stage-ordered, so adding a stage back is a one-line change here.
+# A method name IS its source list. MedGemma is the only generation method this project
+# offers; the deterministic rules only back it up (rule_rescue), they are not a stage.
 SILVER_METHODS: dict[str, tuple[str, ...]] = {
     "medgemma": ("medgemma",),
 }
+DEFAULT_CONFIDENCE_THRESHOLD = 0.8
+# Reason fragments of rows whose value does not come from a completed MedGemma call; such a
+# report must be asked again on resume even when a rule or pe_consistency filled the row.
+TECHNICAL_FAILURE_MARKERS = ("technical_failure", "after_medgemma_failure")
+
+
+def resolve_confidence_threshold(silver_config: Mapping[str, Any]) -> float:
+    """The one MedGemma acceptance threshold, for the generator and the recorded CSVs alike.
+
+    ``medgemma_confidence_threshold`` wins; the older generic ``confidence_threshold`` key
+    is still read when it is the only one configured.
+    """
+    value = silver_config.get("medgemma_confidence_threshold")
+    if value is None:
+        value = silver_config.get("confidence_threshold", DEFAULT_CONFIDENCE_THRESHOLD)
+    return float(value)
+
+
+def has_technical_failure(
+    rows: Sequence[Mapping[str, Any]], audits: Sequence[Mapping[str, Any]] = ()
+) -> bool:
+    """Whether any target of one report hit a provider/pipeline failure."""
+    if any(str(row.get("status")) == "no_result" for row in rows):
+        return True
+    if any(marker in str(row.get("reason") or "") for row in rows for marker in TECHNICAL_FAILURE_MARKERS):
+        return True
+    return any(
+        isinstance(record.get("medgemma_output"), Mapping) and "error" in record["medgemma_output"]
+        for record in audits
+    )
 
 
 class SilverGenerator:
-    """Deterministic cascade over the sources named by ``method``.
+    """MedGemma labels every target; the explicit rules (rules.py) only back it up.
 
-    One rule holds for every method: the cheapest deterministic source that can settle a
-    target wins, and nothing downstream is asked. Concretely, in stage order,
+    Per target:
 
-      rule      an explicit regex hit accepts immediately (no model is called)
-      one LLM   a value above the confidence threshold accepts; otherwise abstain
-      two LLMs  Falcon first; if it is not confident, MedGemma runs and the two are
-                adjudicated -- agreement accepts, disagreement abstains
+      MedGemma  a value at or above the confidence threshold, with evidence found in the
+                report, accepts; otherwise the target abstains
+      rule      with rule_rescue, an unambiguous explicit rule answer vetoes a confident
+                MedGemma value it contradicts, and fills an abstention or a technical
+                failure unless MedGemma answered the opposite value
+      report    with pe_consistency, the PE location/acuity targets are made to agree with
+                pe_present (see _enforce_pe_consistency)
 
     Abstaining is always preferred to guessing: a silver label is auxiliary supervision,
     and a wrong accepted row is worse than a missing one.
@@ -45,11 +81,8 @@ class SilverGenerator:
         self,
         method: str,
         *,
-        falcon: FalconExtractor | None = None,
         medgemma: MedGemmaExtractor | None = None,
-        confidence_threshold: float = 0.8,
-        medgemma_confidence_threshold: float | None = None,
-        agreement_confidence_threshold: float | None = None,
+        medgemma_confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
         prompt_version: str | None = None,
         run_id: str | None = None,
         rule_rescue: bool = False,
@@ -62,31 +95,13 @@ class SilverGenerator:
                 f"expected one of {sorted(SILVER_METHODS)}"
             )
         self.stages = SILVER_METHODS[normalized]
-        if "falcon" in self.stages and falcon is None:
-            raise ValueError(f"{normalized} requires configured Falcon")
         if "medgemma" in self.stages and medgemma is None:
             raise ValueError(f"{normalized} requires configured MedGemma")
         self.method = normalized
-        self.falcon = falcon
         self.medgemma = medgemma
-        self.confidence_threshold = float(confidence_threshold)
-        self.medgemma_confidence_threshold = float(
-            confidence_threshold
-            if medgemma_confidence_threshold is None
-            else medgemma_confidence_threshold
-        )
-        self.agreement_confidence_threshold = float(
-            confidence_threshold
-            if agreement_confidence_threshold is None
-            else agreement_confidence_threshold
-        )
-        for name, value in (
-            ("confidence_threshold", self.confidence_threshold),
-            ("medgemma_confidence_threshold", self.medgemma_confidence_threshold),
-            ("agreement_confidence_threshold", self.agreement_confidence_threshold),
-        ):
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be in [0, 1]")
+        self.medgemma_confidence_threshold = float(medgemma_confidence_threshold)
+        if not 0.0 <= self.medgemma_confidence_threshold <= 1.0:
+            raise ValueError("medgemma_confidence_threshold must be in [0, 1]")
         self.prompt_version = prompt_version
         self.run_id = run_id or uuid.uuid4().hex
         # MedGemma stays the primary labeller. With rule_rescue the deterministic regex
@@ -145,11 +160,15 @@ class SilverGenerator:
     ) -> list[SilverLabel]:
         """Make the PE location/acuity targets agree with pe_present within one report.
 
-        pe_present accepted false  -> every location is false (filled when not accepted);
-                                      a location accepted true or an acuity is withdrawn.
-        pe_present not accepted    -> a location "false" is unsupported: without knowing
-                                      whether there is a PE, "no lobar PE" is a guess.
-        pe_present accepted true   -> unchanged.
+        pe_present accepted false    -> a location MedGemma (or a rule) called true, accepted
+                                        or not, abstains as a conflict; every other location
+                                        (MedGemma said false or null) is false by implication.
+        pe_present not accepted      -> a location "false" is unsupported: without knowing
+                                        whether there is a PE, "no lobar PE" is a guess.
+        pe_present not accepted true -> an accepted acuity is withdrawn: it would describe
+                                        a PE that is not established.
+        A location filled over a technical failure says so in its reason, so the report is
+        not frozen in the resume cache.
         """
         by_target = {label.target: index for index, label in enumerate(labels)}
         pe = labels[by_target["pe_present"]]
@@ -167,25 +186,34 @@ class SilverGenerator:
                     continue
                 if current.status == "accepted" and current.value is True:
                     replace(target, value=None, status="abstained",
-                            reason="pe_consistency:location_true_but_pe_present_false")
+                            reason=LOCATION_TRUE_BUT_PE_FALSE)
                     continue
+                # A MedGemma "true" that was not accepted (unconfident, or vetoed by a
+                # rule) still disagrees with pe_present; overwriting it with false would
+                # hide the conflict that a confident "true" reports.
+                if current.medgemma_value is True:
+                    replace(target, value=None, status="abstained",
+                            reason=LOCATION_MEDGEMMA_TRUE_BUT_PE_FALSE)
+                    continue
+                reason = "pe_consistency:implied_by_pe_present_false"
+                if current.status == "no_result":
+                    reason += "_after_technical_failure"
                 replace(target, value=False, status="accepted", source="rule", provider="rule",
                         model_id=None, confidence=None, rule_version=RULE_VERSION,
-                        reason="pe_consistency:implied_by_pe_present_false")
+                        reason=reason)
             elif pe_value is None and current.status == "accepted" and current.value is False:
                 replace(target, value=None, status="abstained",
                         reason="pe_consistency:location_false_without_pe_decision")
         acuity = labels[by_target["acuity"]]
-        if pe_value is False and acuity.status == "accepted":
+        if pe_value is not True and acuity.status == "accepted":
             replace("acuity", value=None, status="abstained",
-                    reason="pe_consistency:acuity_without_pe")
+                    reason=ACUITY_WITHOUT_PE if pe_value is False else ACUITY_WITHOUT_PE_DECISION)
         return labels
 
     def _audit(self, label: SilverLabel, raw: Mapping[str, Any]) -> AuditRecord:
         rule_output = raw.get("rule_output")
-        falcon_output = raw.get("falcon_output")
         medgemma_output = raw.get("medgemma_output")
-        evidence_text, evidence_start, evidence_end = evidence_from_outputs(falcon_output, medgemma_output)
+        evidence_text, evidence_start, evidence_end = evidence_from_outputs(medgemma_output)
         rule_evidence = (rule_output or {}).get("evidence") if label.source == "rule" else None
         if isinstance(rule_evidence, Mapping):
             evidence_text = rule_evidence.get("text")
@@ -200,7 +228,6 @@ class SilverGenerator:
             final_value=label.value,
             final_source=label.source,
             rule_output=rule_output,
-            falcon_output=falcon_output,
             medgemma_output=medgemma_output,
             evidence_text=evidence_text,
             evidence_start=evidence_start,
@@ -218,49 +245,14 @@ class SilverGenerator:
         confidence = payload.get("confidence")
         return float(confidence) if isinstance(confidence, (int, float)) else None
 
-    def _rule_stage(
-        self, identifiers: dict[str, str], text: str, target: str, raw: dict[str, Any]
-    ) -> SilverLabel | None:
-        rule = apply_rule(text, target)
-        raw["rule_output"] = rule.as_dict()
-        if not rule.resolved:
-            return None
-        return SilverLabel(
-            **identifiers,
-            target=target,
-            value=rule.value,
-            status="accepted",
-            source="rule",
-            reason=rule.reason,
-            rule_version=RULE_VERSION,
-            provider="rule",
-        )
-
-    def _falcon_stage(
-        self, identifiers: dict[str, str], text: str, target: str, raw: dict[str, Any]
-    ) -> tuple[dict[str, Any], SilverLabel | None]:
-        """Run Falcon; return its raw output plus an accepted label when it is confident."""
-        falcon = self.falcon.extract(text, target)
-        raw["falcon_output"] = dict(falcon)
-        if falcon.get("value") is None or not route_confidence(falcon, self.confidence_threshold):
-            return falcon, None
-        return falcon, SilverLabel(
-            **identifiers,
-            target=target,
-            value=falcon["value"],
-            status="accepted",
-            source="falcon",
-            confidence=float(falcon["confidence"]),
-            reason="falcon_confident",
-            falcon_value=falcon["value"],
-            provider="falcon",
-            model_id=self.falcon.provider.model_id,
-        )
-
     def _rule_decision(self, text: str, target: str, raw: dict[str, Any]) -> RuleDecision:
-        """Explicit regex decision, or the PE-negative implication for location targets."""
+        """Explicit regex decision, or the PE-negative implication for location targets.
+
+        The implication only fills a location the report does not mention at all; a
+        hedged or contradictory location mention stays unresolved.
+        """
         decision = apply_rule(text, target)
-        if not decision.resolved and target in PE_LOCATION_TARGETS:
+        if decision.reason.startswith("no_explicit_evidence") and target in PE_LOCATION_TARGETS:
             pe = apply_rule(text, "pe_present")
             if pe.resolved and pe.value is False:
                 decision = RuleDecision(True, False, "implied_by_explicit_no_pe", pe.evidence)
@@ -361,9 +353,30 @@ class SilverGenerator:
                 model_id=model_id,
             )
         if decision is not None and decision.resolved:
-            return self._rule_label(
-                identifiers, target, decision, medgemma_value=value, why="after_medgemma_abstained"
+            # A rule only fills the abstention when it is the sole explicit answer: an
+            # unconfident MedGemma value of the opposite sign makes the target ambiguous.
+            if value is None or self._same_value(target, value, decision.value):
+                return self._rule_label(
+                    identifiers, target, decision, medgemma_value=value, why="after_medgemma_abstained"
+                )
+            return SilverLabel(
+                **identifiers,
+                target=target,
+                value=None,
+                status="abstained",
+                source="medgemma",
+                confidence=self._numeric(prediction),
+                reason=f"medgemma_rule_conflict_unconfident:rule={decision.value!r}",
+                medgemma_value=value,
+                provider="medgemma",
+                model_id=model_id,
             )
+        if evidence_rejected:
+            reason = "medgemma_evidence_not_in_report"
+        elif value is None:
+            reason = "medgemma_null_value"
+        else:
+            reason = "medgemma_below_confidence_threshold"
         return SilverLabel(
             **identifiers,
             target=target,
@@ -371,11 +384,7 @@ class SilverGenerator:
             status="abstained",
             source="medgemma",
             confidence=self._numeric(prediction),
-            reason=(
-                "medgemma_evidence_not_in_report"
-                if evidence_rejected
-                else "medgemma_uncertain_or_below_confidence_threshold"
-            ),
+            reason=reason,
             medgemma_value=value,
             provider="medgemma",
             model_id=model_id,
@@ -385,63 +394,7 @@ class SilverGenerator:
         self, identifiers: dict[str, str], text: str, target: str
     ) -> tuple[SilverLabel, dict[str, Any]]:
         raw: dict[str, Any] = {}
-        if "rule" in self.stages:
-            resolved = self._rule_stage(identifiers, text, target, raw)
-            if resolved is not None:
-                return resolved, raw
-
-        models = tuple(stage for stage in self.stages if stage in {"falcon", "medgemma"})
-        if not models:
-            # rule-only: an unresolved regex is the final answer, and it is an abstention.
-            return (
-                SilverLabel(
-                    **identifiers,
-                    target=target,
-                    value=None,
-                    status="abstained",
-                    source="rule",
-                    reason=str(raw["rule_output"].get("reason") or "rule_unresolved"),
-                    rule_version=RULE_VERSION,
-                    provider="rule",
-                ),
-                raw,
-            )
-        if models == ("medgemma",):
-            return self._medgemma_only(identifiers, text, target, raw), raw
-
-        falcon, accepted = self._falcon_stage(identifiers, text, target, raw)
-        if accepted is not None:
-            return accepted, raw
-        if models == ("falcon",):
-            return (
-                SilverLabel(
-                    **identifiers,
-                    target=target,
-                    value=None,
-                    status="abstained",
-                    source="falcon",
-                    confidence=self._numeric(falcon),
-                    reason="falcon_uncertain",
-                    falcon_value=falcon.get("value"),
-                    provider="falcon",
-                    model_id=self.falcon.provider.model_id,
-                ),
-                raw,
-            )
-        medgemma = self.medgemma.extract(text, target)
-        raw["medgemma_output"] = dict(medgemma)
-        return (
-            adjudicate(
-                identifiers,
-                target,
-                falcon,
-                medgemma,
-                self.falcon.provider.model_id,
-                self.medgemma.provider.model_id,
-                self.agreement_confidence_threshold,
-            ),
-            raw,
-        )
+        return self._medgemma_only(identifiers, text, target, raw), raw
 
     def generate(self, reports: list[Mapping[str, Any]]) -> list[SilverLabel]:
         seen: set[str] = set()

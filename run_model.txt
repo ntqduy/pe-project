@@ -1,9 +1,9 @@
-bash scripts/diagnosis/run_zeroshot_radar.sh
-GPUS=0 OVERWRITE=1 SLICE_ORDER=inferior_to_superior bash scripts/diagnosis/run_zeroshot_penet.sh
-PROFILE=full_inspect GPUS=0 ACTION=all bash scripts/diagnosis/run_ctfm_diagnosis.sh
+bash scripts/diagnosis/zero_shot/radar.sh
+GPUS=0 OVERWRITE=1 SLICE_ORDER=inferior_to_superior bash scripts/diagnosis/zero_shot/penet.sh
+PROFILE=full_inspect GPUS=0 ACTION=all bash scripts/diagnosis/foundation/ctfm_frozen.sh
 
-PROFILE=full_inspect GPUS=0 ACTION=all bash scripts/prognosis/run_ctfm_prognosis_all.sh
-PROFILE=full_inspect GPUS=0 ACTION=all bash scripts/prognosis/run_ctfm_prognosis_pe.sh
+PROFILE=full_inspect GPUS=0 ACTION=all bash scripts/prognosis/foundation/ctfm_frozen_all.sh
+PROFILE=full_inspect GPUS=0 ACTION=all bash scripts/prognosis/foundation/ctfm_frozen_pe.sh
 
 
 

@@ -29,13 +29,16 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=use_gcs_storage.sh
 source "$PROJECT_ROOT/scripts/tool/use_gcs_storage.sh"
+# shellcheck source=_flags.sh
+source "$PROJECT_ROOT/scripts/tool/_flags.sh"
 PROFILE="${PROFILE:-full_inspect}"
 TASK="${TASK:-diagnosis}"
 COHORT="${COHORT:-all}"
 TARGET="${TARGET:-}"
 ACTION="${ACTION:-all}"
 PYTHON="${PYTHON:-python3}"
-GPUS="${GPUS:-0}"
+# GPUS= (set but empty) runs on CPU; only an unset GPUS defaults to GPU 0.
+GPUS="${GPUS-0}"
 EPOCHS="${EPOCHS:-100}"
 EARLY_STOPPING="${EARLY_STOPPING:-15}"
 NUM_WORKERS="${NUM_WORKERS:-auto}"
@@ -46,35 +49,32 @@ case "$FEATURE_INPUT" in
   grid) FEATURE_ARGS=(--set "data.file_column=image_path" --set "data.preload_inputs=false") ;;
   *) printf 'error: FEATURE_INPUT must be pooled or grid (got %s)\n' "$FEATURE_INPUT" >&2; exit 2 ;;
 esac
-if [[ "${SMOKE:-0}" == "1" ]]; then
+if is_true SMOKE; then
   EPOCHS=1
 fi
-RAW_ROOT="${PE_RAW_INSPECT_ROOT:-/mnt/Stanford_INSPECT_dataset}"
-if [[ -n "${PE_DERIVED_ROOT:-}" ]]; then
-  DERIVED_ROOT="$PE_DERIVED_ROOT"
-elif [[ -n "${PE_CLOUD_ROOT:-}" && -d "${PE_CLOUD_ROOT}/derived" ]]; then
-  # This is the layout used by the mounted workspace in this project.
-  DERIVED_ROOT="${PE_CLOUD_ROOT}/derived"
-else
-  DERIVED_ROOT="${PE_CLOUD_ROOT}/data/derived"
-fi
+# Boolean flags (1/0, true/false, yes/no, on/off); parsed once so a typo fails up front.
+OVERWRITE_ON=0; if is_true OVERWRITE; then OVERWRITE_ON=1; fi
+REBUILD_CACHE_ON=0; if is_true REBUILD_CACHE; then REBUILD_CACHE_ON=1; fi
+VERIFY_CACHE_ON=0; if is_true VERIFY_CACHE; then VERIFY_CACHE_ON=1; fi
+RAW_ROOT="$PE_RAW_INSPECT_ROOT"
+DERIVED_ROOT="$PE_DERIVED_ROOT"
 DATASET_ROOT="${DERIVED_ROOT}/datasets/${PROFILE}"
 
 case "$TASK" in
   diagnosis)
-    CONFIG="${PROJECT_ROOT}/configs/runs/01_foundation/ct_fm_frozen_diagnosis.yaml"
+    CONFIG="${PROJECT_ROOT}/configs/runs/01_foundation/ct_fm_frozen/diagnosis.yaml"
     MANIFEST="manifests/ct_fm/diagnosis.csv"
     RUN_ID="DX_ctfm_frozen"
     ;;
   prognosis)
     case "$COHORT" in
       all|all_patient)
-        CONFIG="${PROJECT_ROOT}/configs/runs/01_foundation/ct_fm_frozen_prognosis_all.yaml"
+        CONFIG="${PROJECT_ROOT}/configs/runs/01_foundation/ct_fm_frozen/prognosis_all.yaml"
         MANIFEST="manifests/ct_fm/prognosis_all_patient.csv"
         RUN_ID="PR_ctfm_frozen_all"
         ;;
       pe|pe_positive|PE_positive)
-        CONFIG="${PROJECT_ROOT}/configs/runs/01_foundation/ct_fm_frozen_prognosis_pe.yaml"
+        CONFIG="${PROJECT_ROOT}/configs/runs/01_foundation/ct_fm_frozen/prognosis_pe.yaml"
         MANIFEST="manifests/ct_fm/prognosis_pe_positive.csv"
         RUN_ID="PR_ctfm_frozen_pe"
         ;;
@@ -126,10 +126,6 @@ case "$EARLY_STOPPING" in
 esac
 (( EARLY_STOPPING >= 1 )) || { printf 'error: EARLY_STOPPING must be >= 1\n' >&2; exit 2; }
 
-if [[ -z "${PE_CLOUD_ROOT:-}" && -z "${PE_DERIVED_ROOT:-}" ]]; then
-  printf 'error: set PE_CLOUD_ROOT or PE_DERIVED_ROOT\n' >&2
-  exit 2
-fi
 if [[ ! -f "${DATASET_ROOT}/manifests/diagnosis.csv" ]]; then
   printf 'error: existing official-split manifests not found under %s\n' "${DATASET_ROOT}" >&2
   printf '       build the selected dataset profile first; this script will not create a split\n' >&2
@@ -146,8 +142,8 @@ if [[ "$ACTION" == "prepare" || "$ACTION" == "all" ]]; then
   # this EPOCHS run's epoch_<EPOCHS>/ folder (on full_inspect a cache rebuild is ~20 h, not a
   # run reset). Other EPOCHS values of the same run are separate folders and never collide.
   PREPARE_ARGS=(--device "$([[ -n "$GPUS" ]] && echo "cuda:${GPUS%%,*}" || echo cpu)" --workers "$WORKERS")
-  [[ -n "${REBUILD_CACHE:-}" ]] && PREPARE_ARGS+=(--overwrite)
-  [[ -n "${VERIFY_CACHE:-}" ]] && PREPARE_ARGS+=(--verify)
+  [[ "$REBUILD_CACHE_ON" == "1" ]] && PREPARE_ARGS+=(--overwrite)
+  [[ "$VERIFY_CACHE_ON" == "1" ]] && PREPARE_ARGS+=(--verify)
   "$PYTHON" "${PROJECT_ROOT}/tools/data/build_ctfm_cache.py" \
     --dataset-root "$DATASET_ROOT" \
     --raw-root "$RAW_ROOT" \
@@ -168,7 +164,7 @@ TRAIN_ARGS=(
 TRAIN_ARGS+=("${TARGET_ARGS[@]}" "${FEATURE_ARGS[@]}")
 [[ -n "${BATCH_SIZE:-}" ]] && TRAIN_ARGS+=(--set "training.batch_size=${BATCH_SIZE}")
 TRAIN_ARGS+=(--set "compute.num_workers=${NUM_WORKERS}")
-[[ -n "${OVERWRITE:-}" ]] && TRAIN_ARGS+=(--overwrite)
+[[ "$OVERWRITE_ON" == "1" ]] && TRAIN_ARGS+=(--overwrite)
 
 # Manifests written before pooled features existed lack pooled_path; prepare adds it by
 # pooling the cached grids (no CT-FM recomputation).
@@ -214,9 +210,10 @@ RUN_STATE=absent
 EPOCH_DIR=""
 RUN_DIFFERENCE=""
 if [[ "$ACTION" == "train" || "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
-  STATUS_LINE="$(cd "$PROJECT_ROOT" && "$PYTHON" tools/run_status.py "${TRAIN_ARGS[@]}")"
-  read -r RUN_STATE EPOCH_DIR RUN_DIFFERENCE <<< "$STATUS_LINE"
-  if [[ -z "${OVERWRITE:-}" && "$RUN_STATE" == "different" ]]; then
+  # Tab-separated, so an output path containing spaces stays one field.
+  STATUS_LINE="$(cd "$PROJECT_ROOT" && "$PYTHON" tools/run_status.py "${TRAIN_ARGS[@]}" --format tsv)"
+  IFS=$'\t' read -r RUN_STATE EPOCH_DIR RUN_DIFFERENCE <<< "$STATUS_LINE"
+  if [[ "$OVERWRITE_ON" != "1" && "$RUN_STATE" == "different" ]]; then
     printf 'error: %s holds a completed run made with other settings (differs in: %s)\n' \
       "$EPOCH_DIR" "$RUN_DIFFERENCE" >&2
     printf '       rerun with the same settings to reuse it, or OVERWRITE=1 to replace it\n' >&2
@@ -231,9 +228,9 @@ if [[ "$ACTION" == "train" || "$ACTION" == "all" ]]; then
   fi
   require_feature_column
   cd "$PROJECT_ROOT"
-  if [[ -z "${OVERWRITE:-}" && ( "$RUN_STATE" == "trained" || "$RUN_STATE" == "evaluated" ) ]]; then
+  if [[ "$OVERWRITE_ON" != "1" && ( "$RUN_STATE" == "trained" || "$RUN_STATE" == "evaluated" ) ]]; then
     printf '==> train: skipped, %s already holds a completed run (OVERWRITE=1 retrains)\n' "$EPOCH_DIR"
-  elif [[ -z "${OVERWRITE:-}" && "$RUN_STATE" == "incomplete" ]]; then
+  elif [[ "$OVERWRITE_ON" != "1" && "$RUN_STATE" == "incomplete" ]]; then
     # Task training cannot resume; say so here instead of failing inside the launcher.
     printf 'error: %s holds an unfinished run; OVERWRITE=1 replaces it\n' "$EPOCH_DIR" >&2
     exit 2
@@ -252,7 +249,7 @@ if [[ "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
   fi
   require_feature_column
   cd "$PROJECT_ROOT"
-  if [[ -z "${OVERWRITE:-}" && "$RUN_STATE" == "evaluated" ]]; then
+  if [[ "$OVERWRITE_ON" != "1" && "$RUN_STATE" == "evaluated" ]]; then
     printf '==> evaluate: skipped, %s/result.csv already exists (OVERWRITE=1 re-evaluates)\n' "$EPOCH_DIR"
   else
     EVAL_ARGS=(
@@ -268,7 +265,7 @@ if [[ "$ACTION" == "evaluate" || "$ACTION" == "all" ]]; then
     )
     EVAL_ARGS+=("${TARGET_ARGS[@]}" "${FEATURE_ARGS[@]}")
     EVAL_ARGS+=(--set "compute.num_workers=${NUM_WORKERS}")
-    [[ -n "${OVERWRITE:-}" ]] && EVAL_ARGS+=(--overwrite)
+    [[ "$OVERWRITE_ON" == "1" ]] && EVAL_ARGS+=(--overwrite)
     "$PYTHON" tools/launch.py --quiet "${EVAL_ARGS[@]}"
   fi
 fi

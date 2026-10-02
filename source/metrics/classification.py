@@ -44,8 +44,15 @@ def select_threshold_on_validation(
 def binary_classification_metrics(
     y_true: Sequence[int],
     y_prob: Sequence[float],
-    threshold: float,
+    threshold: float | None,
+    *,
+    y_pred: Sequence[int] | None = None,
 ) -> dict[str, float]:
+    """Discrimination from ``y_prob``; threshold metrics from ``y_prob >= threshold``.
+
+    ``y_pred`` supplies stored 0/1 predictions instead (``threshold`` may then be None and is
+    reported as NaN), for predictions whose operating threshold is not known.
+    """
     array, metrics = _dependencies()
     truth = array.asarray(y_true, dtype=int)
     probability = array.asarray(y_prob, dtype=float)
@@ -53,7 +60,15 @@ def binary_classification_metrics(
         raise ValueError("truth and probability must be non-empty paired arrays")
     if not array.isfinite(probability).all() or ((probability < 0) | (probability > 1)).any():
         raise ValueError("probabilities must be finite and within [0,1]")
-    prediction = (probability >= float(threshold)).astype(int)
+    if y_pred is not None:
+        prediction = array.asarray(y_pred, dtype=float)
+        if prediction.shape != truth.shape or not array.isin(prediction, (0.0, 1.0)).all():
+            raise ValueError("y_pred must be 0/1 and paired with y_true")
+        prediction = prediction.astype(int)
+    elif threshold is None:
+        raise ValueError("a threshold or y_pred is required")
+    else:
+        prediction = (probability >= float(threshold)).astype(int)
     tn, fp, fn, tp = metrics.confusion_matrix(truth, prediction, labels=[0, 1]).ravel()
     divide = lambda numerator, denominator: float(numerator / denominator) if denominator else float("nan")
     both_classes = len(array.unique(truth)) == 2
@@ -68,5 +83,5 @@ def binary_classification_metrics(
         "npv": divide(tn, tn + fn),
         "f1": float(metrics.f1_score(truth, prediction, zero_division=0)),
         "brier": float(metrics.brier_score_loss(truth, probability)),
-        "threshold": float(threshold),
+        "threshold": float(threshold) if threshold is not None else float("nan"),
     }

@@ -82,19 +82,23 @@ def paired_patient_bootstrap(
     confidence: float = 0.95,
     seed: int = 42,
     patient_column: str = "patient_id",
-) -> dict[str, dict[str, float | int]]:
+    reference_metric_fn: Callable[[list[dict[str, Any]]], Mapping[str, float]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Paired patient-level bootstrap for a counterfactual/ROI comparison against a reference.
 
     Resamples the SAME patients for both variants on each replicate, so the resulting delta
     distribution reflects within-patient pairing rather than two independent bootstraps. Reports
     each variant's point estimate plus the paired delta (comparison - reference) with its own CI.
+    ``reference_metric_fn`` scores the reference rows when they need their own settings (for
+    example the reference model's own operating threshold); it defaults to ``metric_fn``.
     """
+    reference_fn = metric_fn if reference_metric_fn is None else reference_metric_fn
     if n_bootstrap < 1 or not 0 < confidence < 1:
         raise ValueError("bootstrap count and confidence are invalid")
     reference, comparison, patients = align_predictions_by_patient(
         reference_rows, comparison_rows, patient_column=patient_column
     )
-    reference_point = dict(metric_fn([dict(row) for row in reference]))
+    reference_point = dict(reference_fn([dict(row) for row in reference]))
     comparison_point = dict(metric_fn([dict(row) for row in comparison]))
     names = sorted(set(reference_point) & set(comparison_point))
     if not names:
@@ -115,7 +119,7 @@ def paired_patient_bootstrap(
         comparison_replicate = [
             dict(row) for patient in selected for row in comparison_by_patient[str(patient)]
         ]
-        reference_result = metric_fn(reference_replicate)
+        reference_result = reference_fn(reference_replicate)
         comparison_result = metric_fn(comparison_replicate)
         for name in names:
             reference_value = float(reference_result[name])
@@ -123,7 +127,7 @@ def paired_patient_bootstrap(
             if np.isfinite(reference_value) and np.isfinite(comparison_value):
                 delta_samples[name].append(comparison_value - reference_value)
     alpha = (1 - confidence) / 2
-    output: dict[str, dict[str, float | int]] = {}
+    output: dict[str, dict[str, Any]] = {}
     minimum_valid = max(20, n_bootstrap // 2)
     for name in names:
         valid = np.asarray(delta_samples[name], dtype=float)
@@ -141,7 +145,19 @@ def paired_patient_bootstrap(
             }
             continue
         if valid.size < minimum_valid:
-            raise RuntimeError(f"insufficient valid paired-bootstrap replicates for {name}: {valid.size}/{n_bootstrap}")
+            # Same rule as patient_bootstrap: this metric keeps its point delta without an
+            # interval, and the other metrics keep theirs instead of aborting the evaluation.
+            output[name] = {
+                "reference_value": reference_value,
+                "comparison_value": comparison_value,
+                "delta": comparison_value - reference_value,
+                "delta_ci_low": float("nan"),
+                "delta_ci_high": float("nan"),
+                "valid_replicates": int(valid.size),
+                "sample_count": len(patients),
+                "ci_note": f"insufficient valid paired-bootstrap replicates ({valid.size}/{n_bootstrap})",
+            }
+            continue
         output[name] = {
             "reference_value": reference_value,
             "comparison_value": comparison_value,

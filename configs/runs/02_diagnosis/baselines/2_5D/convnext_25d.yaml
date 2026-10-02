@@ -1,0 +1,24 @@
+# ConvNeXt-T 2.5D slice-MIL (ImageNet-22k) + head.
+# Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
+# Contracts: backbone -> components/backbones.yaml#registry.convnext_25d, head/task/budget ->
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbones.yaml#registry
+  - ../../../../components/encoders.yaml#from_pretrained
+  - ../../../../components/baselines.yaml#diagnosis
+  - ../../../../components/baselines.yaml#head_mlp
+  - ../../../../components/baselines.yaml#train_end_to_end
+
+experiment:
+  id: DX_base_convnext_25d
+  name: baseline.convnext_25d
+  baseline_backbone: convnext_25d
+
+model:
+  backbone: convnext_25d
+
+training:
+  batch_size: 2
+  gradient_accumulation: 4

@@ -40,3 +40,10 @@ RSPECT_download/
 RSPECT_unzipped/
 
 output/
+
+# Local credentials (TotalSegmentator license key, connection notes); never versioned.
+connect.txt
+
+# Local code-graph indexes (graphify, codegraph); rebuilt on demand.
+graphify-out/
+.codegraph/

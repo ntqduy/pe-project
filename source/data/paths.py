@@ -123,7 +123,7 @@ class ProjectPaths:
         """Root of the derived dataset the run reads from.
 
         ``mode`` stays ``full`` (full-data manifests, never a pilot code path). ``profile``
-        selects one dataset profile built by ``source/data_preprocessing`` -- the cohort
+        selects one dataset profile built by ``source/data/build`` -- the cohort
         under ``derived/datasets/<profile>/``. Without a profile this is the historical
         flat derived root, so pre-profile manifests keep resolving unchanged.
         """

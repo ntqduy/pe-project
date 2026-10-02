@@ -1,0 +1,4 @@
+# Upstream clones, run outputs and the manuscript are not this project's code.
+third_party/
+output/
+paper/

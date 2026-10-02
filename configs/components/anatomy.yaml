@@ -18,8 +18,8 @@ _presets_:
     # No stage-0 manifest has a *_mask_path column and none is invented: anatomy masks are a
     # stage-1 artifact. They are read straight from the stored ROI run manifest, through the
     # same `roi_manifest` + `roi_mask_ids` mechanism (and the same PASS/SUSPICIOUS QC filter)
-    # that the ROI-only students and the counterfactual arms use. A branch, the region erased
-    # from it and the student trained on it therefore refer to exactly the same voxels.
+    # that the counterfactual arms use. A branch and the region erased from it therefore refer
+    # to exactly the same voxels.
     #
     #   ROI2  strict heart        ROI4  PA tree        ROI6  lung parenchyma minus vessels
     #

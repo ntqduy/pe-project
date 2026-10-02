@@ -1,12 +1,6 @@
 # Task, cohort, and supervision contracts.
 # Select a fragment with: path/to/tasks.yaml#<preset>
 _presets_:
-  contour:
-    task:
-      primary_target: embolus_mask
-      output_regions: 1
-      decoder_channels: 64
-
   diagnosis:
     task:
       primary_target: pe_present
@@ -35,9 +29,8 @@ _presets_:
   diagnosis_anatomy_reference:
     # The anatomy-aware reference architecture and data contract (diag.anatomy.concat / DX18).
     #
-    # Shared by the reference model itself, by every counterfactual removal run, and by every
-    # ROI-only student. This is not cosmetic: a counterfactual run loads the reference
-    # checkpoint strictly and a distilled student builds its teacher from its own config, so an
+    # Shared by the reference model itself and by every counterfactual removal run. This is not
+    # cosmetic: a counterfactual run loads the reference checkpoint strictly, so an
     # architectural difference here breaks checkpoint loading instead of silently changing science.
     data:
       mode: full
@@ -130,7 +123,7 @@ _presets_:
   prognosis_primary_cohort:
     # Primary prognosis cohort contract: confirmed acute PE, 30-day mortality.
     #
-    # Every 04_prognosis run inherits this one data contract, so the modality ablation and the
+    # Every 03_prognosis run inherits this one data contract, so the modality ablation and the
     # fusion comparison are measured on exactly the same patients, split and columns. Fill the
     # real column names here once and every prognosis arm picks them up.
     #
@@ -155,92 +148,3 @@ _presets_:
       ehr_columns_common: []
       spesi_columns: [spesi]
       spesi_availability_column: has_spesi
-
-  roi_student:
-    # ROI-only student contract (SUFFICIENCY arm).
-    #
-    # The student starts from C0 — the same representation the reference model started from —
-    # and is trained on organ-only input: everything outside the ROI is replaced by the shared
-    # local-mean policy, so the student never sees the rest of the chest. Its score answers
-    # "is this region alone sufficient?", which the counterfactual arms cannot answer.
-    # The ROI masks come from the stored data.roi artifacts (ROI2 heart, ROI4 PA, ROI6 lung
-    # parenchyma, ROI8 matched random control) through components/anatomy.yaml#anatomy_masks, which
-    # every anatomy-aware arm shares; segmentation is never re-run.
-    task:
-      base_stage: diagnosis
-      masking_policy: {type: local_mean, local_radius_voxels: 3}
-    lineage:
-      backbone: CT-FM
-      initialization: C0
-      source_experiment: AL_image_report_c0
-      source_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/pretraining/alignment/AL_image_report_c0/best.ckpt
-      transfer_modules: [image_encoder]
-      dapt: DINO
-      alignment: true
-      supervision_type: ground_truth_roi_student
-    distillation:
-      enabled: false
-    supervision:
-      require_rois: true
-      rois: roi/ROI_anatomy_and_controls
-
-  roi_student_kd:
-    # Adds frozen-teacher knowledge distillation on top of the ROI-only student contract.
-    #
-    # The teacher is the trained full-volume reference model (diag.anatomy.concat). It stays in
-    # eval mode, never enters the student optimizer, and only its primary PE logit is distilled.
-    # Total loss = alpha_supervised * ground-truth loss + alpha_distill * KD loss, so the paired
-    # GT-only and GT+KD arms isolate exactly what the teacher adds.
-    # Requires diag.anatomy.concat to have been trained first.
-    distillation:
-      enabled: true
-      teacher_checkpoint: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/best.ckpt
-      temperature: 2.0
-      alpha_supervised: 1.0
-      alpha_distill: 1.0
-
-  silver_adaptation:
-    # Shared contract for silver-supervised encoder adaptation (C0 -> C_silver).
-    # The silver_adaptation runs differ only in silver_training.silver_source.
-    # Only rows with status=accepted are used; abstained and no_result rows are ignored.
-    init:
-      encoder: C0
-      experiment: AL_image_report_c0
-      checkpoint: pretraining/alignment/AL_image_report_c0/best.ckpt
-    silver_training:
-      # Keys are silver method names that silver_source selects from; values are the run
-      # directories those methods write. Each key must exist in source/silver/generator.py.
-      sources:
-        medgemma: silver_label/medgemma/silver_labels.csv
-      targets:
-        pe_present: 1
-        acuity: 4
-        central: 1
-        lobar: 1
-        segmental: 1
-        subsegmental: 1
-        saddle: 1
-        rv_enlargement: 1
-        rv_lv_abnormal: 1
-        septal_bowing: 1
-        reflux: 1
-        pleural_effusion: 1
-        pericardial_effusion: 1
-        chronic_lung_disease: 1
-      # Unlisted weights default to 1.0. No class weights are fabricated.
-      loss_weights: {}
-    supervision:
-      require_silver_labels: true
-    peft:
-      method: full
-    training:
-      epochs: 50
-      batch_size: 1
-      learning_rate: 0.0001
-      weight_decay: 0.0001
-      gradient_accumulation: 4
-      early_stopping_patience: 10
-    validation:
-      binary_threshold: 0.5
-      minimum_samples: 2
-    seed: 42

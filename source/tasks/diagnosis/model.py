@@ -77,7 +77,7 @@ class DiagnosisModel(nn.Module):
         self.targets = dict(targets or DEFAULT_TARGETS)
         self.roi = ROIFeatureExtractor(self.regions)
         self.organ_adapters = OrganAdapterBank.from_config(
-            image_encoder.feature_dim,
+            image_encoder.feature_map_dim,
             expert_dim,
             self.regions,
             organ_adapter,

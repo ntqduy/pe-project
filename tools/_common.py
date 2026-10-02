@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib
-import json
 import os
 import uuid
 from collections.abc import Mapping, Sequence
@@ -69,53 +68,19 @@ def select_patient_rows(
     return [dict(row) for row in rows if str(row.get("patient_id") or "").strip() in selected]
 
 
-class PrecomputedReportDataset:
-    """Wrap a dataset to add a ``report_embedding`` tensor from precomputed manifest columns.
-
-    Shared by the image-report alignment stage and the report-only diagnosis baseline so
-    both consume report representations the same way instead of each loading a live text
-    encoder.
-    """
-
-    def __init__(self, base: Any, columns: Sequence[str]):
-        self.base = base
-        self.columns = tuple(columns)
-        if not self.columns:
-            raise ValueError("report_embedding_columns is required")
-
-    def __len__(self) -> int:
-        return len(self.base)
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        import torch
-
-        item = self.base[index]
-        row = self.base.rows[index]
-        item["report_embedding"] = torch.tensor(
-            [float(row[column]) for column in self.columns],
-            dtype=torch.float32,
-        )
-        return item
-
-
 def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) -> Any:
-    from source.data.dataset import CTPADataset, ReportEmbeddingDataset
-    from source.data.transforms import Compose, CTWindowNormalize, ResizeVolume
+    from source.data.dataset import CTPADataset
     data = dict(config.get("data") or {})
     supervision = dict(config.get("supervision") or {})
     task = dict(config.get("task") or {})
     stage = str((config.get("experiment") or {}).get("stage") or "")
-    silver_training = dict(config.get("silver_training") or {})
-    transforms: list[Any] = []
     preprocessing = dict(config.get("preprocessing") or {})
-    if stage == "diagnosis" and str(task.get("architecture", "soft_moe")) == "report_only":
-        return ReportEmbeddingDataset(
-            resolve_manifest(config, paths),
-            split,
-            embedding_columns=tuple(
-                (config.get("alignment") or {}).get("report_embedding_columns") or ()
-            ),
-            label_columns=tuple(data.get("label_columns") or ()),
+    if preprocessing.get("window") or preprocessing.get("shape"):
+        # The shared cache is already HU-clipped, min-max scaled and 128^3; every encoder maps
+        # that to its own convention (encoder input contract / source/model IntensityAdapter).
+        raise ValueError(
+            "preprocessing.window / preprocessing.shape are not supported: the volume cache is "
+            "already windowed and resampled; set the encoder's intensity mapping instead"
         )
     if (config.get("model") or {}).get("cached_features"):
         # Precomputed CT-FM features are not an image: HU windowing, resizing and
@@ -126,18 +91,7 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
                 f"task.input_counterfactual={counterfactual!r} needs an image-space model input; "
                 "cached CT-FM features (model.backbone=ct_fm_features) cannot erase an ROI"
             )
-        if preprocessing.get("window") or preprocessing.get("shape"):
-            raise ValueError("preprocessing.window/shape cannot be applied to cached CT-FM features")
     input_contract = image_input_contract(config)
-    if input_contract and "window" in preprocessing:
-        raise ValueError(
-            "preprocessing.window re-scales intensities that the image encoder converts from "
-            f"the cache's own HU range {input_contract.get('hu_range')}; remove the window"
-        )
-    if "window" in preprocessing:
-        transforms.append(CTWindowNormalize(*preprocessing["window"]))
-    if preprocessing.get("shape"):
-        transforms.append(ResizeVolume(tuple(preprocessing["shape"])))
     silver_path = supervision.get("silver_labels")
     if silver_path:
         # Silver tables are written by the silver stage under the output root; a relative
@@ -145,11 +99,7 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
         silver_path = Path(str(silver_path))
         if not silver_path.is_absolute():
             silver_path = paths.output_asset(silver_path)
-    silver_targets = (
-        tuple((silver_training.get("targets") or {}).keys())
-        if stage == "silver_encoder_adaptation"
-        else tuple(task.get("silver_targets") or ())
-    )
+    silver_targets = tuple(task.get("silver_targets") or ())
     roi_manifest = data.get("roi_manifest")
     if roi_manifest:
         roi_manifest = Path(str(roi_manifest))
@@ -159,7 +109,7 @@ def build_dataset(config: Mapping[str, Any], paths: ProjectPaths, split: str) ->
         resolve_manifest(config, paths),
         paths.dataset_root_for(config),
         split,
-        transform=Compose(transforms) if transforms else None,
+        transform=None,
         image_column=str(data.get("file_column", "image_path")),
         label_columns=tuple(data.get("label_columns") or ()),
         ehr_columns=tuple(data.get("ehr_columns") or ()),
@@ -266,27 +216,6 @@ def write_parquet_atomic(rows: Sequence[Mapping[str, Any]], destination: Path) -
         pd.DataFrame([dict(row) for row in rows]).to_parquet(temporary, index=False)
         os.replace(temporary, destination)
         pd.read_parquet(destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def write_jsonl_atomic(rows: Sequence[Mapping[str, Any]], destination: Path) -> None:
-    """Write JSON Lines atomically, one compact object per line.
-
-    An empty sequence still writes an empty file: a stage that produced no rows and a
-    stage that never ran must not look the same on disk.
-    """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    payload = "".join(
-        json.dumps(dict(row), sort_keys=True, default=str) + "\n" for row in rows
-    ).encode("utf-8")
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("xb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
 

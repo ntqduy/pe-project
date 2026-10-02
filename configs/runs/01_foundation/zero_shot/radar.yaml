@@ -1,0 +1,71 @@
+# diag.zeroshot.radar — the released RADAR (DAMO abdominal-CT generalist) applied unchanged.
+#
+# Question: does a vision-language CT generalist trained on 400k abdominal CTs recognise PE
+# on CTPA without any adaptation? No training of any kind; weights are loaded and run.
+# RADAR has no PE finding among its 146 shipped ones, so this arm scores RADAR's own
+# pulmonary-artery organ token against a text pair written here (radar.prompts). It is an
+# out-of-scope probe: RADAR saw abdominal portal-venous CT (lung bases only), resamples to
+# 5 mm slices and clips at 400 HU. See third_party/versions.yaml (components.radar).
+# It reads the raw release NIfTI, not volumes/*.npy (RADAR has its own input contract).
+# Run with tools/tasks/zeroshot_radar.py (project env), which launches
+# tools/tasks/zeroshot_radar_worker.py in the RADAR env (radar.python).
+# Output: outputs/diagnosis/DX_zeroshot_radar/
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+  - ../../../components/tasks.yaml#diagnosis
+experiment:
+  id: DX_zeroshot_radar
+  name: diag.zeroshot.radar
+  stage: diagnosis
+  family: diagnosis
+task:
+  _replace_: true
+  architecture: external_zero_shot
+  primary_target: pe_present
+  targets:
+    pe_present: 1
+  regions: []
+  silver_targets: []
+radar:
+  repo: third_party/repos/damo-radar
+  # RADAR pre-trained on RAD-CT (Chinese reports, bert-base-chinese): the released headline model.
+  checkpoint: third_party/repos/damo-radar/ckpt/checkpoint_radar_pretrain.pth
+  # Python of the conda env built from the RADAR requirements.txt. null = $RADAR_PYTHON,
+  # else <conda base>/envs/radar/bin/python.
+  python: null
+  # RADAR organ whose token is scored; one of the 36 organs of its segmentation head.
+  organ: 肺动脉                      # pulmonary artery
+  organ_label: pulmonary artery
+  finding: 栓塞                      # embolism; the scored item is "<organ>_<finding>"
+  prompts:
+    # Training default caption for an organ the report does not mention; re-encoding it
+    # reproduces every shipped negative embedding (cosine 0.98).
+    negative:
+      - normal.
+    # Report-style sentences, averaged like the shipped positives. Written for this project,
+    # not by the RADAR authors; changing them changes the arm.
+    positive:
+      - 肺动脉栓塞                                  # pulmonary artery embolism
+      - 肺动脉内见充盈缺损                          # filling defect in the pulmonary artery
+      - 肺动脉分支内见低密度充盈缺损                # low-density filling defect in PA branches
+      - 双肺下叶肺动脉分支栓塞                      # embolism in lower-lobe PA branches
+      - 考虑肺动脉栓塞                              # consistent with pulmonary embolism
+  # Leave null to resolve <PE_RAW_INSPECT_ROOT>/CT/full; set it for another release layout.
+  release_root: null
+data:
+  mode: full
+  manifest: manifests/diagnosis.csv
+  file_column: image_path
+  label_columns: [pe_present]
+  mask_columns: {}
+lineage:
+  backbone: radar
+  initialization: released_pretrained
+  source_experiment: null
+  source_checkpoint: third_party/repos/damo-radar/ckpt/checkpoint_radar_pretrain.pth
+  transfer_modules: []
+  supervision_type: none
+supervision:
+  require_masks: false
+  require_silver_labels: false

@@ -1,0 +1,72 @@
+# data.segmentation — pseudo-anatomy masks for every CTPA study.
+#
+# Question: which studies have usable anatomy masks?
+# TotalSegmentator is the canonical mask source; LungMask only contributes an independent
+# lung Dice cross-check and never replaces a TotalSegmentator mask.
+# Support artifact: consumed by anatomy-aware training, ROI construction and counterfactuals.
+#
+# Output: outputs/segmentation/SEG_pseudo_anatomy/
+#   masks/<patient_id>/<study_id>/<anatomy>.nii.gz   26 masks per study: lung, lung_left,
+#       lung_right, the five lung lobes (lung_{upper,lower}_lobe_left,
+#       lung_{upper,middle,lower}_lobe_right), heart,
+#       strict_heart, myocardium, mediastinum, central_pa, lung_arteries, lung_veins,
+#       lung_vessels, airways, pa_tree, hilar_vessels, body, body_wall, rv, lv, ra, la,
+#       lung_lungmask (the independent LungMask cross-check)
+#   previews/<patient_id>_<study_id>.png          contact sheet for the first preview_cases
+#                                                 studies: every mask on its largest axial
+#                                                 slice + coronal overview
+#   qc_summary.csv                                one flat row per (study, anatomy): status,
+#                                                 voxels, mL, z range, duplicate_of, reason
+#   manifest.parquet, result.json                 mask index for ROI construction; run summary
+#   state/<patient_id>/<study_id>.json            resume state for interrupted runs
+#   logs/run.log                                  terminal log with per-step timings
+# Raw per-task TotalSegmentator output is written to a local temporary directory
+# (scratch_dir) and deleted once the masks are built; it never reaches the output tree.
+# The id says "pseudo": these are public-model masks, not expert-validated segmentations.
+_base_:
+  - ../../../paths.yaml
+  - ../../../compute/default.yaml
+experiment:
+  id: SEG_pseudo_anatomy
+  name: data.segmentation
+  stage: segmentation
+  family: segmentation
+data:
+  mode: full
+  manifest: manifests/ctpa.csv
+  file_column: image_path
+segmentation:
+  backend: totalsegmentator
+  executable: TotalSegmentator
+  repository: third_party/repos/TotalSegmentator
+  weights_directory: third_party/weights/segmentation/totalsegmentator
+  fast: false
+  # null = write the contact sheet for every processed study; N = only the first N studies
+  # of the manifest (a fixed set, also across resumed runs). Drawing it took ~2 of ~10 min
+  # per study on smoke_30, so a full cohort draws a checkable sample instead of every study.
+  preview_cases: 20
+  preview_window_width: 700
+  preview_window_level: 100
+  # Local directory for raw TotalSegmentator task output (null = system temp, e.g. /tmp).
+  # Keep it off the gcsfuse mount: it is rewritten for every study and deleted afterwards.
+  scratch_dir: null
+  # TotalSegmentator worker processes. Its default of 6 saving processes (several GB each)
+  # gets OOM-killed on a 16 GB VM, after which nnU-Net hangs; keep 1 unless RAM allows more.
+  totalseg_resample_threads: 1
+  totalseg_saving_threads: 1
+  # Kill a TotalSegmentator task (and its workers) that runs longer than this.
+  task_timeout_sec: 3600
+  devices: []
+  # null = one worker per GPU in devices. Set a number to run more studies at once; on CPU
+  # (devices: []) that is the only way to get past one study at a time.
+  workers: null
+  lungmask:
+    enabled: true
+    executable: lungmask
+    checkpoint: third_party/weights/segmentation/lungmask/R231.pth
+    model_name: R231
+    force_cpu: false
+  lung_cross_model_qc:
+    accept_dice: 0.90
+    fail_below_dice: 0.70
+seed: 42

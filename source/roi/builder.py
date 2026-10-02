@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -10,8 +11,14 @@ from typing import Any
 import numpy as np
 
 from source.engine.experiment import atomic_write_json
-from source.imaging.nifti import load_nifti, mask_qc, same_geometry, save_binary_mask
+from source.imaging.nifti import load_nifti, mask_qc, same_geometry, save_binary_mask, superior_axis
 from source.imaging.preview import write_overlay_previews
+from source.segmentation.resume import (
+    fingerprint_matches,
+    guard_resume_settings,
+    settings_fingerprint,
+    without_keys,
+)
 
 from .masks import body_mask_from_hu, dilate_mask, subtract_masks, union_masks
 from .random_controls import matched_random_control, stable_control_seed
@@ -19,10 +26,74 @@ from .registry import ROI_DEFINITIONS, roi_filename, roi_name
 
 SOURCE_OK = {"PASS", "SUSPICIOUS", "pass"}
 ROI_OPERATIONS = {code: definition.operation for code, definition in ROI_DEFINITIONS.items()}
-STATE_SCHEMA_VERSION = 5
+# 6: settings fingerprint + source-mask digest in the state; ROI8 eligible region includes
+#    body_wall and valid CT, z-range kept along the affine's S-I axis; LAS-oriented previews.
+STATE_SCHEMA_VERSION = 6
+# ROI settings that only change speed or diagnostic previews. Every other key can change the
+# masks, so a resumed run must have been built with the same values.
+RESUME_IGNORED_KEYS = frozenset({
+    "preview_cases",
+    "preview_rois",
+    "preview_slices_per_roi",
+    "preview_window_level",
+    "preview_window_width",
+    "segmentation_run",
+    "workers",
+})
 
 
-def _cached_rows(path: Path) -> list[dict[str, Any]] | None:
+def _segmentation_settings_fingerprint(run_dir: Path) -> str | None:
+    """Fingerprint of the upstream segmentation run's mask settings (its config snapshot)."""
+    snapshot_path = run_dir / "resolved_config.yaml"
+    if not snapshot_path.is_file():
+        return None
+    import yaml
+
+    from source.segmentation.pipeline import resume_settings_from_snapshot
+
+    snapshot = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    if not isinstance(snapshot, Mapping):
+        return None
+    return settings_fingerprint(resume_settings_from_snapshot(snapshot))
+
+
+def resume_settings(
+    roi_config: Mapping[str, Any],
+    *,
+    seed: int,
+    source_segmentation_manifest: Path,
+) -> dict[str, Any]:
+    """Output-affecting ROI settings, upstream segmentation run included."""
+    settings = without_keys(roi_config, RESUME_IGNORED_KEYS)
+    control = dict(settings.get("control_roi") or {})
+    # The defaults _process_study applies, so an omitted key equals its explicit default.
+    settings.update(
+        central_pa_dilation_mm=float(settings.get("central_pa_dilation_mm", 2.0)),
+        subtract_airways=bool(settings.get("subtract_airways", False)),
+        body_threshold_hu=float(settings.get("body_threshold_hu", -900)),
+        control_roi={**control, "seed": int(control.get("seed", seed))},
+    )
+    segmentation_run = Path(source_segmentation_manifest).parent
+    return {
+        "roi": settings,
+        # family/name rather than the absolute path, so a run can resume on another machine.
+        "segmentation_run": "/".join(segmentation_run.parts[-2:]),
+        "segmentation_settings": _segmentation_settings_fingerprint(segmentation_run),
+    }
+
+
+def _source_digest(study_rows: Sequence[Mapping[str, Any]]) -> str:
+    """Identity of the segmentation masks a study's ROIs were built from."""
+    items = sorted(
+        (str(row.get("anatomy")), str(row.get("status")), str(row.get("mask_sha1")))
+        for row in study_rows
+    )
+    return hashlib.sha256(json.dumps(items).encode("utf-8")).hexdigest()[:16]
+
+
+def _cached_rows(
+    path: Path, settings_fingerprint: str | None, source_digest: str
+) -> list[dict[str, Any]] | None:
     if not path.is_file():
         return None
     try:
@@ -30,6 +101,12 @@ def _cached_rows(path: Path) -> list[dict[str, Any]] | None:
     except (OSError, json.JSONDecodeError):
         return None
     if payload.get("schema_version") != STATE_SCHEMA_VERSION:
+        return None
+    # Different settings fail at run level (guard_resume_settings); a regenerated source
+    # mask only invalidates this study.
+    if not fingerprint_matches(payload.get("settings_fingerprint"), settings_fingerprint):
+        return None
+    if payload.get("source_digest") != source_digest:
         return None
     rows = payload.get("rows")
     if not isinstance(rows, list):
@@ -128,6 +205,7 @@ def _process_study(
     source_segmentation_run: str,
     source_segmentation_manifest: Path,
     progress: Callable[[str], None] | None,
+    settings_fingerprint: str | None = None,
 ) -> list[dict[str, Any]]:
     first = study_rows[0]
     patient_id = str(first.get("patient_id") or "")
@@ -138,7 +216,8 @@ def _process_study(
             f"invalid segmentation group: patient={patient_id!r}, study={study_id!r}, image={image_path}"
         )
     state_path = run_dir / "state" / patient_id / f"{study_id}.json"
-    cached = _cached_rows(state_path)
+    source_digest = _source_digest(study_rows)
+    cached = _cached_rows(state_path, settings_fingerprint, source_digest)
     if cached is not None:
         if progress:
             progress(f"roi study={study_id} patient={patient_id} status=cached")
@@ -168,6 +247,7 @@ def _process_study(
     }
     volume, reference = load_nifti(image_path)
     spacing = tuple(float(value) for value in reference.header.get_zooms()[:3])
+    si_axis = superior_axis(reference.affine)
     output_root = run_dir / "rois" / patient_id / study_id
     rows: list[dict[str, Any]] = []
     built: dict[str, np.ndarray] = {}
@@ -416,6 +496,7 @@ def _process_study(
         if forbidden_values
         else np.zeros(body.shape, dtype=bool)
     )
+    valid_ct = np.isfinite(volume)
     for control_for, label in (("ROI2", "heart"), ("ROI4", "pa"), ("ROI6", "lung")):
         target = built.get(control_for)
         random_recipe = _recipe(
@@ -462,12 +543,14 @@ def _process_study(
                 body=body,
                 body_wall=body_wall,
                 forbidden=forbidden_union,
+                valid_ct=valid_ct,
                 spacing=spacing,
                 seed=control_seed,
                 exclusion_margin_mm=float(control_config.get("exclusion_margin_mm", 5.0)),
                 max_attempts=int(control_config.get("max_attempts", 500)),
                 require_exact_voxel_match=bool(control_config.get("require_exact_voxel_match", True)),
                 preserve_z_range=bool(control_config.get("preserve_z_range", True)),
+                superior_axis=si_axis,
             )
         # RuntimeError is the exact-voxel-match guard. Rigid translation preserves the voxel
         # count by construction, so it should be unreachable, but a control that cannot meet
@@ -504,6 +587,8 @@ def _process_study(
         state_path,
         {
             "schema_version": STATE_SCHEMA_VERSION,
+            "settings_fingerprint": None if settings_fingerprint is None else str(settings_fingerprint),
+            "source_digest": source_digest,
             "patient_id": patient_id,
             "study_id": study_id,
             "rows": rows,
@@ -540,6 +625,12 @@ def build_roi_dataset(
     preview_cases = None if raw_preview_cases is None else max(0, int(raw_preview_cases))
     output: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    # Fails loudly when the run directory was built with different ROI/segmentation settings.
+    fingerprint = guard_resume_settings(
+        run_dir,
+        resume_settings(roi_config, seed=seed, source_segmentation_manifest=source_segmentation_manifest),
+        stage="roi",
+    )
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
@@ -552,6 +643,7 @@ def build_roi_dataset(
                 source_segmentation_run=source_segmentation_run,
                 source_segmentation_manifest=source_segmentation_manifest,
                 progress=progress,
+                settings_fingerprint=fingerprint,
             ): study_id
             for index, (study_id, rows) in enumerate(selected)
         }

@@ -1,0 +1,24 @@
+# ViT-S/16 2.5D slice-MIL (ImageNet-21k) + head.
+# Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
+# Contracts: backbone -> components/backbones.yaml#registry.vit_25d, head/task/budget ->
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbones.yaml#registry
+  - ../../../../components/encoders.yaml#from_pretrained
+  - ../../../../components/baselines.yaml#diagnosis
+  - ../../../../components/baselines.yaml#head_mlp
+  - ../../../../components/baselines.yaml#train_end_to_end
+
+experiment:
+  id: DX_base_vit_25d
+  name: baseline.vit_25d
+  baseline_backbone: vit_25d
+
+model:
+  backbone: vit_25d
+
+training:
+  batch_size: 2
+  gradient_accumulation: 4

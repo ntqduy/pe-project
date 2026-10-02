@@ -6,16 +6,15 @@ _presets_:
     #
     # Every named selection below inherits this registry, so `model.backbone` is a genuine
     # config variable: any run can select another encoder with
-    # `--set model.backbone=ct_clip`, and the contract travels with it.
+    # `--set model.backbone=resnet18_3d`, and the contract travels with it.
     # `source/utils/config.resolve_backbone` copies the selected entry into `model` and drops
     # this registry from the resolved config, so one backbone's contract never changes another
     # experiment's config hash.
     #
     # ct_fm is staged: its contract below was read off the actual checkpoint (strict load of
     # all 161 tensors, forward pass verified), not off the repository name.
-    # BLOCKER: factory / output_adapter / feature_dim are still empty for ct_clip and totalfm,
-    # whose weights are not staged. They must come from the actually inspected checkpoint and
-    # never be copied from ct_fm. Preflight fails until they are filled.
+    # A new external backbone's factory / output_adapter / feature_dim must come from the
+    # actually inspected checkpoint and never be copied from ct_fm; preflight fails until set.
     backbones:
       ct_fm:
         # Upstream ships no Lighter .ckpt: the only public CT-FM weight is the HuggingFace
@@ -58,22 +57,6 @@ _presets_:
         cached_features: true
         feature_representation: ct_fm_features_v1
         weight_sha256: b521ff13764ad0fce67f8ad2e5aa9ccc0823f69e4544b446581d8a2dee686215
-      ct_clip:
-        display_name: CT-CLIP
-        repo: third_party/repos/CT-CLIP/CT_CLIP
-        checkpoint: third_party/weights/foundation/ct_clip/model.pt
-        factory: ""
-        output_adapter: ""
-        feature_dim: 0
-        strict_load: true
-      totalfm:
-        display_name: TotalFM
-        repo: third_party/repos/TotalFM
-        checkpoint: third_party/weights/foundation/totalfm/totalfm_en_checkpoint_best_loss.pt
-        factory: ""
-        output_adapter: ""
-        feature_dim: 0
-        strict_load: true
       penet_style:
         display_name: PENet-style
         integration: local
@@ -82,6 +65,165 @@ _presets_:
         widths: [32, 64, 128, 256]
         blocks_per_stage: 2
         load_pretrained: false
+
+      # ---------------------------------------------------------------------------------
+      # Baseline zoo (source/model, registered in source/model/registry.py).
+      # integration: baseline -> preflight checks the registration, feature_dim and any pinned
+      # local weight file; whether weights actually loaded is logged at build time
+      # ("PRETRAINED LOADED | ..." or "NO PRETRAINED - training from scratch | ...").
+      # pretrained.required: true (every arm with published weights) makes a failed load an
+      # error, so a grid never silently mixes a scratch run into a "pretrained" row; false
+      # would turn it into an explicit from-scratch run. SCRATCH=1 / --scratch
+      # (model.pretrained.enabled=false) is the deliberate from-scratch switch for any arm.
+      # Inputs are the shared cache (RAS, 1.5 mm, [0,1] of [-1000,1000] HU); `intensity`
+      # maps it to each pre-training convention (source/model/base.py:IntensityAdapter).
+      # ---------------------------------------------------------------------------------
+      # 2D = N axial slices, 2.5D = N triplets of adjacent slices (as RGB), each encoded by an
+      # ImageNet timm backbone and pooled by gated-attention MIL (source/model/2D_model/mil.py).
+      resnet18_2d: &slice_resnet
+        display_name: ResNet-18 2D slice-MIL
+        integration: baseline
+        feature_dim: 512
+        timm_name: resnet18.a1_in1k
+        slice_mode: 2d
+        mil:
+          num_slices: 32
+          slice_size: 224
+          slice_offset: 1
+          pooling: attention
+          attention_hidden: 128
+          chunk_size: 32
+          gradient_checkpointing: false
+        pretrained: {enabled: true, required: true, source: timm ImageNet}
+      resnet18_25d:
+        <<: *slice_resnet
+        display_name: ResNet-18 2.5D slice-MIL
+        slice_mode: 2.5d
+      convnext_2d: &slice_convnext
+        display_name: ConvNeXt-T 2D slice-MIL
+        integration: baseline
+        feature_dim: 768
+        timm_name: convnext_tiny.fb_in22k_ft_in1k
+        slice_mode: 2d
+        mil: &slice_mil
+          num_slices: 32
+          slice_size: 224
+          slice_offset: 1
+          pooling: attention
+          attention_hidden: 128
+          chunk_size: 32
+          gradient_checkpointing: true
+        pretrained: {enabled: true, required: true, source: timm ImageNet-22k -> 1k}
+      convnext_25d:
+        <<: *slice_convnext
+        display_name: ConvNeXt-T 2.5D slice-MIL
+        slice_mode: 2.5d
+      vit_2d: &slice_vit
+        display_name: ViT-S/16 2D slice-MIL
+        integration: baseline
+        feature_dim: 384
+        timm_name: vit_small_patch16_224.augreg_in21k_ft_in1k
+        slice_mode: 2d
+        mil: *slice_mil
+        pretrained: {enabled: true, required: true, source: timm ImageNet-21k -> 1k}
+      vit_25d:
+        <<: *slice_vit
+        display_name: ViT-S/16 2.5D slice-MIL
+        slice_mode: 2.5d
+      swin_2d: &slice_swin
+        display_name: Swin-T 2D slice-MIL
+        integration: baseline
+        feature_dim: 768
+        timm_name: swin_tiny_patch4_window7_224.ms_in1k
+        slice_mode: 2d
+        mil: *slice_mil
+        pretrained: {enabled: true, required: true, source: timm ImageNet-1k}
+      swin_25d:
+        <<: *slice_swin
+        display_name: Swin-T 2.5D slice-MIL
+        slice_mode: 2.5d
+      # 3D
+      resnet18_3d:
+        display_name: ResNet-18 3D (MedicalNet)
+        integration: baseline
+        feature_dim: 512
+        intensity: {mode: zscore}
+        pretrained: {enabled: true, required: true, source: MedicalNet 23 datasets (HF TencentMedicalNet)}
+      resnet50_3d:
+        display_name: ResNet-50 3D (MedicalNet)
+        integration: baseline
+        feature_dim: 2048
+        intensity: {mode: zscore}
+        pretrained: {enabled: true, required: true, source: MedicalNet 23 datasets (HF TencentMedicalNet)}
+      densenet121_3d:
+        display_name: DenseNet-121 3D (ImageNet inflated)
+        integration: baseline
+        feature_dim: 1024
+        pretrained: {enabled: true, required: true, timm_name: densenet121.tv_in1k}
+      convnext_3d:
+        display_name: ConvNeXt-T 3D (ImageNet inflated)
+        integration: baseline
+        feature_dim: 768
+        variant: tiny
+        drop_path_rate: 0.1
+        gradient_checkpointing: true
+        pretrained: {enabled: true, required: true, timm_name: convnext_tiny.fb_in22k_ft_in1k}
+      vit_3d:
+        display_name: ViT-S/16 3D (ImageNet inflated)
+        integration: baseline
+        feature_dim: 384
+        timm_name: vit_small_patch16_224.augreg_in21k_ft_in1k
+        input_size: 128
+        patch_size: 16
+        gradient_checkpointing: true
+        pretrained: {enabled: true, required: true}
+      swin_3d:
+        display_name: Swin 3D (Swin-UNETR self-supervised CT)
+        integration: baseline
+        feature_dim: 768
+        feature_size: 48
+        intensity: {mode: unit}
+        gradient_checkpointing: true
+        pretrained:
+          enabled: true
+          required: true
+          path: third_party/weights/baselines/swin_unetr_ssl/model_swinvit.pt
+          url: https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/model_swinvit.pt
+          allow_download: true
+      nnmamba_3d:
+        display_name: nnMamba4cls 3D
+        integration: baseline
+        # Embedding width: concat of the c2/c3/c4 means (14 x channels). The c4 feature map that
+        # ROI / anatomy pooling reads has 8 x channels = 256 (encoder.feature_map_dim).
+        feature_dim: 448
+        channels: 32
+        blocks: 3
+        intensity: {mode: unit}
+        pretrained: {enabled: false, required: false, note: upstream publishes no classification weights}
+      mamba_mae_3d:
+        display_name: Mamba-MAE ViM-S 3D
+        integration: baseline
+        feature_dim: 384
+        input_size: 128
+        intensity: {mode: zscore}
+        pretrained: {enabled: true, required: true, path: third_party/weights/Mamba_MAE.pth}
+      vmamba_3d:
+        display_name: VMamba-B 3D (ImageNet inflated)
+        integration: baseline
+        feature_dim: 1024
+        variant: base
+        drop_path_rate: 0.2
+        gradient_checkpointing: true
+        pretrained: {enabled: true, required: true, path: third_party/weights/vssm_base_VMamba.pth}
+      penet_3d:
+        display_name: PENet 3D (released PE weights)
+        integration: baseline
+        feature_dim: 2048
+        intensity: {mode: penet}
+        # Same slice order as the zero-shot PENet run on this cohort (scripts/diagnosis/zero_shot/penet.sh
+        # SLICE_ORDER; check it with CHECK_SLICE_ORDER=1 before changing).
+        slice_order: inferior_to_superior
+        pretrained: {enabled: true, required: true, path: third_party/weights/penet_best.pth.tar}
 
   ct_fm:
     # Select the ct_fm entry of the shared backbone registry.
@@ -106,31 +248,7 @@ _presets_:
     experiment:
       baseline_backbone: ct_fm_features
 
-  ct_clip:
-    # Select the ct_clip entry of the shared backbone registry.
-    #
-    # The contract itself lives in registry.yaml; this file only says which one to use, and
-    # records that choice as the run's baseline so that overriding `model.backbone` gives the
-    # run its own output directory instead of overwriting this one.
-    _base_:
-      - backbones.yaml#registry
-    model:
-      backbone: ct_clip
-    experiment:
-      baseline_backbone: ct_clip
 
-  totalfm:
-    # Select the totalfm entry of the shared backbone registry.
-    #
-    # The contract itself lives in registry.yaml; this file only says which one to use, and
-    # records that choice as the run's baseline so that overriding `model.backbone` gives the
-    # run its own output directory instead of overwriting this one.
-    _base_:
-      - backbones.yaml#registry
-    model:
-      backbone: totalfm
-    experiment:
-      baseline_backbone: totalfm
 
   penet_style:
     # Randomly initialized non-foundation 3D baseline requested in the study email.

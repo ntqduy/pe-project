@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -53,14 +54,48 @@ LUNG_SIDES = {
 # Directories written by the previous output layout inside masks/<patient>/<study>/.
 # ``tasks`` held raw TotalSegmentator output, ``canonical`` the project masks.
 LEGACY_STUDY_DIRECTORIES = ("tasks", "canonical")
-# Dataset IDs from the pinned TotalSegmentator map_tasks_config.py. Check the actual
-# nnU-Net checkpoint tree before running, so an empty directory cannot trigger downloads.
+# Dataset IDs from the pinned TotalSegmentator map_tasks_config.py. The nnU-Net checkpoint
+# tree is checked before running so that a missing model fails here instead of being
+# downloaded mid-run: TotalSegmentator calls download_pretrained_weights() for every model a
+# task needs, including the crop models below, whenever the folder is absent.
 TASK_WEIGHT_IDS = {
     "trunk_cavities": (343,),
     "heartchambers_highres": (301,),
     "lung_vessels": (117,),
     "body": (299,),
 }
+# Rough "total" models that python_api.totalsegmentator() runs first to crop the input:
+# tasks whose config sets ``crop`` with ``robust_crop`` use the 3 mm model (297), and
+# ``total --roi_subset`` uses the 6 mm model (298) unless --robust_crop/--roi_subset_robust
+# asks for the 3 mm one. ``--body_seg`` adds the 6 mm body model (300) for uncropped tasks.
+CROP_WEIGHT_IDS = {
+    "heartchambers_highres": (297,),   # crop ["heart"], robust_crop True
+    "lung_vessels": (297,),            # crop: the five lobes, robust_crop True
+}
+TOTAL_ROI_SUBSET_CROP_ID = 298
+ROBUST_CROP_FLAGS = {"-rc", "--robust_crop", "-rsr", "--roi_subset_robust"}
+BODY_SEG_FLAGS = {"-bs", "--body_seg"}
+
+
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    """Kill a timed-out or interrupted task together with the worker processes it spawned."""
+    if os.name == "nt":
+        # os.killpg does not exist on Windows; taskkill /T kills the whole child tree.
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if process.poll() is None:
+            process.kill()
+        return
+    import signal
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 @dataclass(frozen=True)
@@ -101,9 +136,24 @@ class TotalSegmentatorRunner:
         self._verify_weights()
         return resolved
 
+    def required_weight_ids(self) -> dict[str, tuple[int, ...]]:
+        """Every nnU-Net dataset the configured tasks load, crop models included."""
+        extra = set(self.extra_arguments)
+        robust = bool(extra & ROBUST_CROP_FLAGS)
+        total_crop = 297 if robust else TOTAL_ROI_SUBSET_CROP_ID
+        required: dict[str, tuple[int, ...]] = {
+            task: (*ids, *CROP_WEIGHT_IDS.get(task, ())) for task, ids in TASK_WEIGHT_IDS.items()
+        }
+        required["total"] = (*((297,) if self.fast else (291, 292, 293, 294, 295)), total_crop)
+        if extra & BODY_SEG_FLAGS:
+            for task in TASK_CLASSES:
+                if task != "total" and task not in CROP_WEIGHT_IDS:
+                    required[task] = (*required[task], 300)
+        return {task: tuple(dict.fromkeys(ids)) for task, ids in required.items()}
+
     def _verify_weights(self) -> None:
         assert self.weights_directory is not None
-        required = {**TASK_WEIGHT_IDS, "total": (297,) if self.fast else (291, 292, 293, 294, 295)}
+        required = self.required_weight_ids()
         missing = []
         for task, dataset_ids in required.items():
             for dataset_id in dataset_ids:
@@ -182,23 +232,25 @@ class TotalSegmentatorRunner:
         if log:
             log(f"TotalSegmentator task={task} command={subprocess.list2cmdline(command)}")
         started = time.perf_counter()
+        # Own process group / session, so a timeout or interrupt also kills the nnU-Net
+        # worker processes (see the except clauses below).
+        group = (
+            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            if os.name == "nt"
+            else {"start_new_session": True}
+        )
         process = subprocess.Popen(
             command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=environment,
-            start_new_session=True,  # own process group, so a timeout also kills its workers
+            **group,
         )
         try:
             stdout, stderr = process.communicate(timeout=self.task_timeout_sec)
         except subprocess.TimeoutExpired:
-            import signal
-
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _kill_process_tree(process)
             stdout, stderr = process.communicate()
             message = (
                 f"timeout after {self.task_timeout_sec:.0f} s (a worker may have been OOM-killed); "
@@ -207,6 +259,12 @@ class TotalSegmentatorRunner:
             if log:
                 log(f"TotalSegmentator task={task} {message}")
             return destination, message
+        except BaseException:
+            # The child's own process group / session does not receive Ctrl+C, so an
+            # interrupt (or any other error while waiting) must take the task tree with it.
+            with contextlib.suppress(Exception):
+                _kill_process_tree(process)
+            raise
         result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         if log and result.stdout.strip():
             log(f"TotalSegmentator task={task} stdout:\n{result.stdout.strip()}")

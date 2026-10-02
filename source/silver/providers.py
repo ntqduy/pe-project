@@ -101,16 +101,7 @@ class TransformersProvider:
         self.prompt_template = (prompt_template or _DEFAULT_PROMPT).strip()
 
     def _prompt(self, report: str, target: str, feedback: str | None = None) -> str:
-        spec = target_spec(target)
-        instruction = (
-            f"{self.prompt_template}\n"
-            f"Target: {spec.name}\n"
-            f"Definition: {spec.description}\n"
-            f"Allowed value: {spec.allowed_prompt_values}\n"
-            f"{_target_hint(spec.name)}"
-            "Report:\n"
-            f"{report}"
-        )
+        instruction = render_instruction(self.prompt_template, report, target)
         if feedback:
             instruction += (
                 "\n\nYour previous answer could not be used: "
@@ -200,6 +191,20 @@ def _target_hint(target: str) -> str:
         ),
     }
     return hints.get(target, "")
+
+
+def render_instruction(prompt_template: str, report: str, target: str) -> str:
+    """The user message for one target: template, target spec, hint, then the report."""
+    spec = target_spec(target)
+    return (
+        f"{prompt_template.strip()}\n"
+        f"Target: {spec.name}\n"
+        f"Definition: {spec.description}\n"
+        f"Allowed value: {spec.allowed_prompt_values}\n"
+        f"{_target_hint(spec.name)}"
+        "Report:\n"
+        f"{report}"
+    )
 
 
 def build_transformers_provider(model_id: str, **kwargs: Any) -> TransformersProvider:

@@ -14,15 +14,9 @@ from source.utils.config import infer_compute_strategy
 from tools._common import base_parser, resolve_cli_config
 
 ENTRYPOINTS = {
-    "foundation": "tools/pretrain_model/materialize_foundation.py",
-    "dapt": "tools/pretrain_model/train_dapt.py",
-    "alignment": "tools/pretrain_model/train_alignment.py",
     "silver": "tools/silver_labels/generate_silver_labels.py",
-    "silver_encoder_adaptation": "tools/pretrain_model/train_silver_encoder.py",
     "diagnosis": "tools/tasks/train_task.py",
     "prognosis": "tools/tasks/train_task.py",
-    "contour": "tools/tasks/train_task.py",
-    "roi_student": "tools/tasks/train_task.py",
     "counterfactual": "tools/tasks/counterfactual.py",
 }
 
@@ -66,7 +60,7 @@ def main() -> int:
     )
     silver_selection = bool(args.patient_ids or args.max_reports is not None or args.allow_full)
     if args.evaluate:
-        if stage not in {"diagnosis", "prognosis", "contour"}:
+        if stage not in {"diagnosis", "prognosis"}:
             raise SystemExit(f"evaluation is not supported for stage={stage!r}")
         if args.max_reports is not None:
             raise SystemExit("task evaluation uses --max-cases, not --max-reports")
@@ -104,8 +98,6 @@ def main() -> int:
     paths = ProjectPaths.resolve(config)
     require_preflight(config, paths)
     physical = tuple(config["compute"].get("devices") or ())
-    if stage == "foundation" and len(physical) > 1:
-        raise SystemExit("foundation materialization supports CPU or one GPU; use one device")
     child_arguments = ["--config", str(args.config)]
     for override in args.overrides:
         child_arguments += ["--set", override]

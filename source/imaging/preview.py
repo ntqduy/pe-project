@@ -71,7 +71,9 @@ def _write_slice(
     overlay_color: str = "orange",
     window_width: float = 700.0,
     window_level: float = 100.0,
+    aspect: float = 1.0,
 ) -> Path:
+    """Draw one axial slice of LAS-reoriented arrays (see ``las_axial``)."""
     try:
         import matplotlib
 
@@ -80,15 +82,15 @@ def _write_slice(
     except ModuleNotFoundError as exc:
         raise RuntimeError("matplotlib is required for preview generation") from exc
 
-    image_slice = np.asarray(volume[:, :, slice_index], dtype=float).T
-    mask_slice = binary_mask[:, :, slice_index].T
+    image_slice = np.asarray(las_axial(volume, slice_index), dtype=float)
+    mask_slice = las_axial(binary_mask, slice_index)
     if window_width <= 0:
         raise ValueError("preview window_width must be positive")
     lower = float(window_level - window_width / 2.0)
     upper = float(window_level + window_width / 2.0)
     destination.parent.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(5, 5), constrained_layout=True)
-    axis.imshow(image_slice, cmap="gray", origin="lower", vmin=lower, vmax=upper)
+    axis.imshow(image_slice, cmap="gray", origin="lower", vmin=lower, vmax=upper, aspect=aspect)
     overlay = np.ma.masked_where(~mask_slice, mask_slice)
     from matplotlib.colors import ListedColormap
 
@@ -99,6 +101,7 @@ def _write_slice(
         origin="lower",
         vmin=0,
         vmax=1,
+        aspect=aspect,
     )
     if mask_slice.any():
         axis.contour(mask_slice.astype(float), levels=[0.5], colors=[overlay_color], linewidths=0.9)
@@ -135,10 +138,20 @@ def write_overlay_previews(
     window_width: float = 700.0,
     window_level: float = 100.0,
 ) -> tuple[Path, ...]:
-    """Write one to three representative CTPA overlays without a large image dump."""
-    volume, _ = load_nifti(volume_path)
-    mask, _ = load_nifti(mask_path)
-    binary = np.asarray(mask, dtype=bool)
+    """Write one to three representative CTPA overlays without a large image dump.
+
+    Like the segmentation contact sheet, the CT and the mask are reoriented to LAS first,
+    so the display (anterior up, patient left = image right) and the slice index (counted
+    from the inferior end) do not depend on the on-disk orientation.
+    """
+    image = load_image(volume_path)
+    transform, spacing = _las_orientation(image)
+    volume = _as_las(np.asarray(image.dataobj), transform)
+    mask, mask_image = load_nifti(mask_path)
+    mask_transform, _ = _las_orientation(mask_image)
+    binary = _as_las(np.asarray(mask, dtype=bool), mask_transform)
+    if binary.shape != volume.shape:
+        raise ValueError(f"preview mask shape {binary.shape} does not match CT shape {volume.shape}")
     indices = representative_slice_indices(binary, maximum_slices)
     outputs = []
     for ordinal, slice_index in enumerate(indices, start=1):
@@ -162,6 +175,7 @@ def write_overlay_previews(
                 overlay_color=overlay_color,
                 window_width=window_width,
                 window_level=window_level,
+                aspect=spacing[1] / spacing[0],
             )
         )
     return tuple(outputs)

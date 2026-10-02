@@ -1,0 +1,24 @@
+# Mamba-MAE ViM-S 3D (BraTS MAE weights, adapted to 1-channel CT) + head. Needs the mamba_mae mamba_ssm fork.
+# Baseline arm of the diagnosis baseline zoo (see scripts/diagnosis/baselines/README.md).
+# Contracts: backbone -> components/backbones.yaml#registry.mamba_mae_3d, head/task/budget ->
+# components/baselines.yaml. Effective batch = batch_size x gradient_accumulation = 8.
+_base_:
+  - ../../../../paths.yaml
+  - ../../../../compute/default.yaml
+  - ../../../../components/backbones.yaml#registry
+  - ../../../../components/encoders.yaml#from_pretrained
+  - ../../../../components/baselines.yaml#diagnosis
+  - ../../../../components/baselines.yaml#head_mlp
+  - ../../../../components/baselines.yaml#train_end_to_end
+
+experiment:
+  id: DX_base_mamba_mae_3d
+  name: baseline.mamba_mae_3d
+  baseline_backbone: mamba_mae_3d
+
+model:
+  backbone: mamba_mae_3d
+
+training:
+  batch_size: 1
+  gradient_accumulation: 8

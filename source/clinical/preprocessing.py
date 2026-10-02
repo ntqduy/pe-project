@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -99,12 +98,3 @@ class ClinicalPreprocessor(nn.Module):
             "fill": self.fill.detach().cpu().tolist(),
             "observed_count": self.observed_count.detach().cpu().tolist(),
         }
-
-    @torch.no_grad()
-    def import_state(self, payload: Mapping[str, Any]) -> None:
-        for name in ("center", "scale", "fill", "observed_count"):
-            value = torch.as_tensor(payload[name], device=getattr(self, name).device, dtype=getattr(self, name).dtype)
-            if value.shape != getattr(self, name).shape:
-                raise ValueError(f"invalid clinical preprocessing state for {name}")
-            getattr(self, name).copy_(value)
-        self.fitted.fill_(bool(payload.get("fitted", True)))

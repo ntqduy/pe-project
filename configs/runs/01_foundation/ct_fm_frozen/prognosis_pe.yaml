@@ -1,0 +1,12 @@
+# CT-FM frozen prognosis restricted to patients with positive PE.
+# The official split is inherited from the source manifest; filtering never reassigns it.
+_base_:
+  - prognosis_all.yaml
+
+experiment:
+  id: PR_ctfm_frozen_pe
+  name: foundation.ct_fm_frozen.prognosis_pe_positive
+
+data:
+  cohort: pe_positive_only
+  manifest: manifests/ct_fm/prognosis_pe_positive.csv

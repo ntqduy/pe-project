@@ -15,6 +15,12 @@ and evaluate.py use (``<outputs>/<family>/<id>/epoch_<training.epochs>``) and st
 The folder name only carries the id and the epoch budget, so a completed run made with, say,
 another early-stopping patience sits in the same folder; it reads as different, not as done.
 The run scripts use this to skip stages whose output already exists.
+
+The default text line is for people; run_dir may contain spaces, so scripts must not split it
+on whitespace. They use a machine-readable format instead:
+
+    --format tsv    <state> TAB <run_dir> TAB <sections>   (bash: IFS=$'\\t' read -r ...)
+    --format json   {"state": ..., "run_dir": ..., "different": [...]}
 """
 from __future__ import annotations
 
@@ -83,18 +89,27 @@ def run_state(run_dir: Path) -> str:
 
 def main() -> int:
     parser = base_parser("Report whether a task run is absent, incomplete, trained or evaluated")
+    parser.add_argument("--format", choices=("text", "tsv", "json"), default="text",
+                        help="text for people; tsv or json for scripts (run_dir may contain spaces)")
     args = parser.parse_args()
     config = resolve_cli_config(args)
     paths = ProjectPaths.resolve(config)
     family = str(config["experiment"].get("family") or config["experiment"]["stage"])
     run_dir = OutputManager(paths).run_dir(family, run_output_id(config))
     state = run_state(run_dir)
+    difference: list[str] = []
     if state in {"trained", "evaluated"}:
         difference = settings_difference(run_dir, config)
         if difference:
-            print(f"different {run_dir} {','.join(difference)}")
-            return 0
-    print(f"{state} {run_dir}")
+            state = "different"
+    if args.format == "json":
+        print(json.dumps({"state": state, "run_dir": str(run_dir), "different": difference}))
+    elif args.format == "tsv":
+        print("\t".join((state, str(run_dir), ",".join(difference))))
+    elif difference:
+        print(f"different {run_dir} {','.join(difference)}")
+    else:
+        print(f"{state} {run_dir}")
     return 0
 
 

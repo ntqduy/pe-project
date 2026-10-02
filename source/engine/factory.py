@@ -17,9 +17,65 @@ from source.components.encoders.ehr import EHREncoder
 from source.components.encoders.spesi import SpesiEncoder
 from source.components.encoders.image.registry import build_image_encoder
 from source.components.peft.freeze import apply_peft
-from source.tasks.contour.model import ContourModel
 from source.tasks.diagnosis.model import DEFAULT_TARGETS, DiagnosisModel
 from source.tasks.prognosis.model import PrognosisModel
+
+
+# task.architecture of the 2D / 2.5D / 3D baseline zoo (source/model): encoder -> shared
+# projection -> MLP or KAN head, for diagnosis and image-only prognosis alike.
+BASELINE_ARCHITECTURE = "baseline_classifier"
+
+
+def _build_baseline_classifier(
+    config: Mapping[str, Any], stage: str, task: Mapping[str, Any], model_config: Mapping[str, Any]
+) -> tuple[nn.Module, dict[str, Any]]:
+    from source.model.classifier import BaselineClassifier
+
+    if stage not in {"diagnosis", "prognosis"}:
+        raise ValueError(f"{BASELINE_ARCHITECTURE} supports diagnosis and prognosis, got stage={stage!r}")
+    if stage == "prognosis" and set(task.get("modalities") or ("image",)) != {"image"}:
+        raise ValueError(f"{BASELINE_ARCHITECTURE} is image-only; set task.modalities: [image]")
+    primary = str(task.get("primary_target") or ("pe_present" if stage == "diagnosis" else "mortality_30d"))
+    targets = task.get("targets") or {primary: 1}
+    if isinstance(targets, list):
+        targets = {name: 1 for name in targets}
+    wants_weights = bool((model_config.get("pretrained") or {}).get("enabled", True))
+    external = str(model_config.get("integration") or "external") != "baseline" and "factory" in model_config
+    if external and not wants_weights:
+        # --scratch on a CT-FM arm: model.load_pretrained is forced on by encoder.init_source,
+        # so the baseline switch model.pretrained.enabled is honoured here.
+        if bool(model_config.get("cached_features")):
+            raise ValueError("cached CT-FM features were extracted with pretrained weights; a scratch run is impossible")
+        model_config = {**model_config, "load_pretrained": False}
+    encoder = build_image_encoder(model_config)
+    if not hasattr(encoder, "pretrained_report"):
+        # CT-FM encoders predate the baseline zoo; report what their own loader did.
+        from source.model.base import format_pretrained_report, scratch_report
+
+        load = getattr(encoder, "load_report", None)
+        if bool(model_config.get("cached_features")):
+            encoder.pretrained_report = {
+                "status": "delegated", "source": str(model_config.get("checkpoint")),
+                "reason": "cached features were extracted with these frozen weights (tools/data/build_ctfm_cache.py)",
+            }
+        elif load:
+            missing, unexpected = list(load.get("missing_keys") or []), list(load.get("unexpected_keys") or [])
+            total = int(load.get("model_tensors") or 0)
+            encoder.pretrained_report = {
+                "status": "loaded", "source": load.get("checkpoint"),
+                "matched_tensors": total - len(missing), "model_tensors": total,
+                "missing_keys": missing, "unexpected_keys": unexpected, "shape_mismatch": [],
+                "notes": ["strict load" if load.get("strict") else "non-strict load"],
+            }
+        else:
+            encoder.pretrained_report = scratch_report("model.load_pretrained=false / --scratch")
+        print(format_pretrained_report(str(getattr(encoder, "backbone_name", model_config.get("backbone"))),
+                                       encoder.pretrained_report), flush=True)
+    peft_report = apply_peft(encoder, dict(config.get("peft") or {"method": "full"}))
+    model = BaselineClassifier(
+        encoder, stage, targets, primary_target=primary, head=dict(config.get("head") or {})
+    )
+    return model, peft_report
 
 
 def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, Any]]:
@@ -28,41 +84,19 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
     model_config = dict(config.get("model") or {})
     model_config["data_mode"] = str((config.get("data") or {}).get("mode"))
     task = dict(config.get("task") or {})
-    if stage in {"ablation", "counterfactual", "roi_student"}:
+    if stage in {"ablation", "counterfactual"}:
         stage = str(task.get("base_stage") or "")
-        if stage not in {"diagnosis", "prognosis", "contour"}:
+        if stage not in {"diagnosis", "prognosis"}:
             raise ValueError(
-                f"{experiment.get('stage')} task.base_stage must be diagnosis, prognosis, or contour"
+                f"{experiment.get('stage')} task.base_stage must be diagnosis or prognosis"
             )
     peft_report: dict[str, Any] = {"method": "none", "modified_modules": []}
-    if (config.get("probe") or {}).get("enabled"):
-        from source.tasks.representation_probe import RepresentationProbe
-
-        if stage not in {"diagnosis", "prognosis"}:
-            raise ValueError("representation probes support diagnosis and prognosis")
-        encoder = build_image_encoder(model_config)
-        # task.targets selects single-task or multitask probing, normalized exactly as the
-        # full diagnosis model normalizes it. A probe that names no target stays single-task
-        # PE rather than inheriting the full diagnosis target set.
-        probe_targets = task.get("targets") if stage == "diagnosis" else None
-        if isinstance(probe_targets, list):
-            probe_targets = {name: 1 for name in probe_targets}
-        return (
-            RepresentationProbe(encoder, stage, probe_targets),
-            {"method": "frozen", "modified_modules": []},
-        )
+    if str(task.get("architecture") or "") == BASELINE_ARCHITECTURE:
+        return _build_baseline_classifier(config, stage, task, model_config)
     if stage == "diagnosis":
         targets = task.get("targets") or DEFAULT_TARGETS
         if isinstance(targets, list):
             targets = {name: 1 for name in targets}
-        if str(task.get("architecture", "soft_moe")) == "report_only":
-            from source.tasks.diagnosis.report_baseline import ReportOnlyDiagnosisModel
-
-            report_dim = len((config.get("alignment") or {}).get("report_embedding_columns") or ())
-            model = ReportOnlyDiagnosisModel(
-                report_dim, targets=targets, hidden_dim=int(task.get("hidden_dim", 256))
-            )
-            return model, peft_report
         encoder = build_image_encoder(model_config)
         peft_report = apply_peft(encoder, dict(config.get("peft") or {"method": "full"}))
         model = DiagnosisModel(
@@ -78,38 +112,6 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
             auxiliary_default_source=str(task.get("auxiliary_default_source", "native")),
         )
     elif stage == "prognosis":
-        concept_config = dict(config.get("concept_bottleneck") or {})
-        concepts = {}
-        if concept_config.get("enabled"):
-            from source.concepts.schema import enabled_concept_specs
-
-            concepts = enabled_concept_specs(concept_config)
-        if concepts:
-            from source.tasks.prognosis.concept_model import ConceptBottleneckPrognosisModel
-
-            image = build_image_encoder(model_config)
-            peft_report = apply_peft(image, dict(config.get("peft") or {"method": "full"}))
-            clinical = (
-                EHREncoder(
-                    int(task.get("ehr_input_dim", 1)),
-                    int(task.get("ehr_hidden_dim", 64)),
-                    int(task.get("ehr_output_dim", 64)),
-                    include_missingness=bool(task.get("ehr_include_missingness", True)),
-                    preprocessing=dict(config.get("clinical_preprocessing") or {}),
-                )
-                if "ehr" in set(task.get("modalities") or ())
-                else None
-            )
-            model = ConceptBottleneckPrognosisModel(
-                image,
-                concepts,
-                clinical_encoder=clinical,
-                regions=tuple(task.get("regions", ("heart", "pa", "lung"))),
-                expert_dim=int(task.get("expert_dim", 128)),
-                concept_embedding_dim=int(task.get("concept_embedding_dim", 64)),
-                hidden_dim=int(task.get("hidden_dim", 256)),
-            )
-            return model, peft_report
         modalities = set(task.get("modalities") or ("image", "ehr", "spesi"))
         image = build_image_encoder(model_config) if "image" in modalities else None
         if image is not None:
@@ -138,14 +140,6 @@ def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, An
             fusion=config.get("fusion"),
             targets=tuple((task.get("targets") or {task.get("primary_target", "mortality_30d"): 1}).keys()),
             primary_target=str(task.get("primary_target", "mortality_30d")),
-        )
-    elif stage == "contour":
-        encoder = build_image_encoder(model_config)
-        peft_report = apply_peft(encoder, dict(config.get("peft") or {"method": "full"}))
-        model = ContourModel(
-            encoder,
-            regions=int(task.get("output_regions", 1)),
-            decoder_channels=int(task.get("decoder_channels", 64)),
         )
     else:
         raise ValueError(f"task model factory does not support stage={stage!r}")

@@ -14,7 +14,12 @@ from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
 from source.engine.experiment import OutputManager, compact_result, prepare_resumable_run
 from source.segmentation.labels import study_pe_labels
-from source.segmentation.pipeline import generate_pseudo_anatomy
+from source.segmentation.pipeline import (
+    generate_pseudo_anatomy,
+    resume_settings,
+    resume_settings_from_snapshot,
+)
+from source.segmentation.resume import verify_resume_settings
 from source.utils.config import load_config, parse_devices
 from source.utils.environment import environment_report
 from source.utils.logger import RunLogger
@@ -127,6 +132,14 @@ def main() -> int:
     manager = OutputManager(paths)
     experiment_id = str(config["experiment"]["id"])
     snapshot = {**config, "resolved_paths": paths.as_dict()}
+    if not args.overwrite:
+        # Before prepare_resumable_run rewrites the config snapshot it may be compared with.
+        verify_resume_settings(
+            manager.run_dir("segmentation", experiment_id),
+            resume_settings(segmentation),
+            stage="segmentation",
+            from_snapshot=resume_settings_from_snapshot,
+        )
     run_dir, resumed = prepare_resumable_run(
         manager, "segmentation", experiment_id, snapshot, overwrite=args.overwrite
     )

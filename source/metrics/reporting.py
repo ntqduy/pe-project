@@ -22,9 +22,9 @@ def stard_ai_checklist(config: Mapping[str, Any], result_evaluation: Mapping[str
             "reference_standard": {
                 "status": "see result", "primary_target": result_evaluation.get("primary_target")
             },
-            "participant_flow": {"status": "see lineage.json train/validation/test_patient_ids"},
+            "participant_flow": {"status": "see result.json evaluation_checkpoint.lineage.train/validation/test_patient_ids"},
             "ai_model_description": {
-                "status": "see lineage.json", "architecture": task.get("architecture"),
+                "status": "see result.json evaluation_checkpoint.lineage", "architecture": task.get("architecture"),
                 "regions": task.get("regions"), "input_counterfactual": task.get("input_counterfactual"),
             },
             "human_ai_comparison": {"status": "not applicable - no human reader arm in this pipeline"},
@@ -60,13 +60,13 @@ def tripod_ai_checklist(config: Mapping[str, Any], result_evaluation: Mapping[st
                 "status": "see resolved_config.yaml", "modalities": task.get("modalities"),
                 "ehr_columns": data.get("ehr_columns"), "spesi_columns": data.get("spesi_columns"),
             },
-            "sample_size": {"status": "see lineage.json train/validation/test_patient_ids counts"},
+            "sample_size": {"status": "see result.json evaluation_checkpoint.lineage.train/validation/test_patient_ids counts"},
             "missing_data": {
                 "status": "see clinical preprocessing (train-fit only)",
                 "missingness_indicators": task.get("ehr_include_missingness"),
             },
             "model_development": {
-                "status": "see lineage.json", "fusion_type": config.get("fusion", {}).get("type"),
+                "status": "see result.json evaluation_checkpoint.lineage", "fusion_type": config.get("fusion", {}).get("type"),
                 "organ_adapter": config.get("organ_adapter"),
             },
             "model_performance": {

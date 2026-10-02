@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from .falcon import FalconExtractor
+from .extractor import StructuredExtractor
 
 
-class MedGemmaExtractor(FalconExtractor):
-    """Same strict structured contract, with a separately pinned medical model ID."""
+class MedGemmaExtractor(StructuredExtractor):
+    """The strict structured contract, with the separately pinned medical model ID."""

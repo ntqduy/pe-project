@@ -16,6 +16,7 @@ from source.imaging.preview import write_segmentation_contact_sheet
 
 from .labels import parse_pe_present
 from .lungmask import LungMaskRunner
+from .resume import fingerprint_matches, guard_resume_settings, without_keys
 from .totalsegmentator import LUNG_LOBES, LUNG_SIDES, TASK_CLASSES, TotalSegmentatorRunner
 
 ANATOMIES = (
@@ -45,6 +46,25 @@ ANATOMIES = (
 # 4: flat masks/<patient>/<study>/<anatomy>.nii.gz, one contact-sheet preview per study.
 # 5: + lung_left/lung_right and the five lung lobes (26 masks per study).
 STATE_SCHEMA_VERSION = 5
+# Segmentation settings that only change speed, devices, paths or diagnostic previews. Every
+# other key can change the masks, so a resumed run must have been built with the same values
+# (see source/segmentation/resume.py).
+RESUME_IGNORED_KEYS = frozenset({
+    "devices",
+    "executable",
+    "preview_cases",
+    "preview_window_level",
+    "preview_window_width",
+    "raw_image_root",
+    "repository",
+    "scratch_dir",
+    "task_timeout_sec",
+    "totalseg_resample_threads",
+    "totalseg_saving_threads",
+    "weights_directory",
+    "workers",
+})
+LUNGMASK_RESUME_IGNORED_KEYS = frozenset({"checkpoint", "executable", "force_cpu"})
 
 ANATOMY_TASK = {
     "lung": "total",
@@ -94,7 +114,28 @@ def _device(gpu_id: int | None) -> str:
     return "cpu" if gpu_id is None else f"gpu:{gpu_id}"
 
 
-def _cached_rows(state_path: Path) -> list[dict[str, Any]] | None:
+def resume_settings(segmentation_config: Mapping[str, Any]) -> dict[str, Any]:
+    """Output-affecting segmentation settings; a resumed run must match them exactly."""
+    settings = without_keys(segmentation_config, RESUME_IGNORED_KEYS)
+    # The defaults _process_study applies, so an omitted key equals its explicit default.
+    settings.update(
+        backend=str(settings.get("backend") or "totalsegmentator"),
+        fast=bool(settings.get("fast", False)),
+        body_wall_thickness_mm=float(settings.get("body_wall_thickness_mm", 15.0)),
+        hilar_proximity_mm=float(settings.get("hilar_proximity_mm", 12.0)),
+        extra_arguments=[str(value) for value in settings.get("extra_arguments") or ()],
+    )
+    settings["lungmask"] = without_keys(
+        segmentation_config.get("lungmask"), LUNGMASK_RESUME_IGNORED_KEYS
+    )
+    return settings
+
+
+def resume_settings_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    return resume_settings(dict(snapshot.get("segmentation") or {}))
+
+
+def _cached_rows(state_path: Path, settings_fingerprint: str | None = None) -> list[dict[str, Any]] | None:
     if not state_path.is_file():
         return None
     try:
@@ -102,6 +143,14 @@ def _cached_rows(state_path: Path) -> list[dict[str, Any]] | None:
     except (OSError, json.JSONDecodeError):
         return None
     if payload.get("schema_version") != STATE_SCHEMA_VERSION:
+        return None
+    # States written before fingerprints existed are covered by the run-level check.
+    recorded = payload.get("settings_fingerprint")
+    if (
+        settings_fingerprint is not None
+        and recorded is not None
+        and not fingerprint_matches(recorded, settings_fingerprint)
+    ):
         return None
     rows = payload.get("rows")
     if not isinstance(rows, list) or len(rows) != len(ANATOMIES):
@@ -196,6 +245,7 @@ def _process_study(
     gpu_id: int | None,
     preview: bool,
     progress: Callable[[str], None] | None,
+    settings_fingerprint: str | None = None,
 ) -> list[dict[str, Any]]:
     patient_id = str(row.get("patient_id") or "")
     study_id = str(row.get("study_id") or "")
@@ -203,7 +253,7 @@ def _process_study(
     if not patient_id or not study_id:
         raise ValueError("segmentation rows require patient_id and study_id")
     state_path = run_dir / "state" / patient_id / f"{study_id}.json"
-    cached = _cached_rows(state_path)
+    cached = _cached_rows(state_path, settings_fingerprint)
     if cached is not None:
         if progress:
             progress(f"segmentation study={study_id} patient={patient_id} status=cached")
@@ -399,6 +449,7 @@ def _process_study(
         state_path,
         {
             "schema_version": STATE_SCHEMA_VERSION,
+            "settings_fingerprint": None if settings_fingerprint is None else str(settings_fingerprint),
             "patient_id": patient_id,
             "study_id": study_id,
             "rows": rows,
@@ -440,6 +491,10 @@ def generate_pseudo_anatomy(
     )
     results: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    # Fails loudly when the run directory was built with different mask settings.
+    fingerprint = guard_resume_settings(
+        run_dir, resume_settings(segmentation_config), stage="segmentation"
+    )
 
     def submit(index: int, row: Mapping[str, Any]) -> list[dict[str, Any]]:
         return _process_study(
@@ -452,6 +507,7 @@ def generate_pseudo_anatomy(
             gpu_id=assignments[index % len(assignments)],
             preview=preview_cases is None or index < preview_cases,
             progress=progress,
+            settings_fingerprint=fingerprint,
         )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:

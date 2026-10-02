@@ -1,0 +1,35 @@
+# Normalise line endings in the repository; shell scripts must stay LF in every working tree
+# (a CRLF script copied to the Linux VM, e.g. via `gcloud storage rsync`, fails with
+# "$'\r': command not found").
+* text=auto
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+*.md    text
+*.txt   text
+*.json  text
+*.csv   text
+
+# Binary artifacts (never diffed or eol-converted).
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.pdf      binary
+*.ckpt     binary
+*.pt       binary
+*.pth      binary
+*.safetensors binary
+*.nii      binary
+*.nii.gz   binary
+*.gz       binary
+*.npy      binary
+*.npz      binary
+*.parquet  binary
+*.h5       binary
+*.zip      binary

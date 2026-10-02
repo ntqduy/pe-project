@@ -5,7 +5,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from numbers import Real
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 
 TargetKind = Literal["binary", "categorical", "continuous"]
@@ -13,7 +13,8 @@ Status = Literal["accepted", "abstained", "no_result"]
 SILVER_STATUSES: tuple[Status, ...] = ("accepted", "abstained", "no_result")
 # 4 writes the authoritative normalized table as silver_labels.csv. Mixed target values
 # remain canonical JSON scalars in the CSV value column and every row carries report_hash.
-SCHEMA_VERSION = 4
+# 5 drops the falcon_value/verifier_value fields of the removed two-model cascade.
+SCHEMA_VERSION = 5
 REPORT_HASH_LENGTH = 20
 
 
@@ -130,17 +131,31 @@ def _validate_confidence(confidence: Any) -> float | None:
 
 
 _TRUE_WORDS = {"true", "yes", "y", "present", "positive", "seen", "identified", "reported", "1"}
-_FALSE_WORDS = {"false", "no", "n", "absent", "negative", "none", "not present", "not seen", "0"}
+_FALSE_WORDS = {"false", "no", "n", "absent", "negative", "not present", "not seen", "0"}
+# "None" is how a Python-minded model writes null, not the answer "no finding".
 _NULL_WORDS = {
-    "", "null", "none_reported", "unknown", "not mentioned", "not_mentioned", "not stated",
+    "", "null", "none", "none_reported", "unknown", "not mentioned", "not_mentioned", "not stated",
     "not reported", "uncertain", "indeterminate", "n/a", "na", "nan",
 }
-# A qualitative grade or side can only describe a finding that is present, so a binary
-# answer such as "small" or "bilateral" means true (e.g. "SMALL BILATERAL PLEURAL EFFUSIONS").
+# A qualitative grade can only describe a finding that is present, so a binary answer such
+# as "small" means true (e.g. "SMALL BILATERAL PLEURAL EFFUSIONS"). A side alone does not:
+# "normal right ventricle" names the side of a normal structure.
 _PRESENCE_WORDS = (
     "trace", "tiny", "minimal", "small", "mild", "moderate", "large", "severe", "massive",
-    "bilateral", "left", "right", "loculated", "extensive", "diffuse", "multiple",
+    "loculated", "extensive", "diffuse", "multiple",
 )
+# Words that keep a grade from meaning presence ("no large effusion", "possible small ...",
+# "extensive bilateral emboli, unlikely chronic").
+_NOT_PRESENCE_WORDS = {
+    "no", "not", "without", "absent", "none", "negative", "normal", "unremarkable", "resolved",
+    "possible", "possibly", "probable", "likely", "unlikely", "questionable", "suspected", "may",
+    "might", "cannot", "exclude", "excluded", "doubtful", "doubt", "equivocal", "indeterminate",
+}
+# Targets a grade cannot describe: "small" says nothing about whether a ratio is mentioned
+# or abnormal, so such an answer is read as null rather than true.
+_UNGRADED_TARGETS = frozenset({"rv_lv_ratio_mentioned", "rv_lv_ratio_abnormal"})
+# Trailing sentence punctuation a model sometimes adds to a one-word answer ("No.").
+_ANSWER_PUNCTUATION = ".!,;:"
 _ACUITY_ALIASES = {
     "acute_on_chronic": "acute_on_chronic", "acute_and_chronic": "acute_on_chronic",
     "acute": "acute", "subacute": "acute", "chronic": "chronic",
@@ -165,22 +180,24 @@ def normalize_target_value(target: str, value: Any) -> tuple[bool | str | float 
         if isinstance(value, Real) and float(value) in (0.0, 1.0):
             return bool(value), f"numeric_{value}_as_boolean"
         if isinstance(value, str):
-            text = " ".join(value.strip().lower().replace("_", " ").split())
+            text = " ".join(value.lower().replace("_", " ").split()).rstrip(_ANSWER_PUNCTUATION).strip()
             if text in _NULL_WORDS or text.replace(" ", "_") in _NULL_WORDS:
                 return None, f"text_{value!r}_as_null"
             if text in _TRUE_WORDS:
                 return True, f"text_{value!r}_as_true"
             if text in _FALSE_WORDS:
                 return False, f"text_{value!r}_as_false"
-            words = set(text.replace(",", " ").replace("-", " ").split())
-            if words & set(_PRESENCE_WORDS) and not words & {"no", "not", "without", "absent", "none"}:
+            words = set(text.replace(",", " ").replace("-", " ").replace(";", " ").split())
+            if words & set(_PRESENCE_WORDS) and not words & _NOT_PRESENCE_WORDS:
+                if spec.name in _UNGRADED_TARGETS:
+                    return None, f"grade_{value!r}_not_applicable_as_null"
                 return True, f"grade_{value!r}_as_true"
         return value, None
     if spec.kind == "categorical":
         if isinstance(value, str):
             if value in spec.values:
                 return value, None
-            key = "_".join(value.strip().lower().replace("-", " ").split())
+            key = "_".join(value.strip().lower().replace("-", " ").rstrip(_ANSWER_PUNCTUATION).split())
             # Category names first: "indeterminate" is a valid acuity, not a missing value.
             mapped = _ACUITY_ALIASES.get(key) if spec.name == "acuity" else None
             if mapped is None and key in spec.values:
@@ -241,16 +258,12 @@ class SilverLabel:
     model_revision: str | None = None
     reason: str | None = None
     rule_version: str | None = None
-    falcon_value: bool | str | float | None = None
-    verifier_value: bool | str | float | None = None
     medgemma_value: bool | str | float | None = None
 
     def __post_init__(self) -> None:
         canonical = canonical_target(self.target)
         object.__setattr__(self, "target", canonical)
         object.__setattr__(self, "value", validate_target_value(canonical, self.value))
-        object.__setattr__(self, "falcon_value", validate_target_value(canonical, self.falcon_value))
-        object.__setattr__(self, "verifier_value", validate_target_value(canonical, self.verifier_value))
         object.__setattr__(self, "medgemma_value", validate_target_value(canonical, self.medgemma_value))
         if self.status not in SILVER_STATUSES:
             raise ValueError(f"unsupported silver status: {self.status!r}")
@@ -290,17 +303,6 @@ class SilverLabel:
             "schema_version": SCHEMA_VERSION,
         }
 
-    @classmethod
-    def from_storage_dict(cls, row: Mapping[str, Any]) -> "SilverLabel":
-        required = {"patient_id", "study_id", "report_id", "target", "value", "status", "source"}
-        missing = sorted(required - set(row))
-        if missing:
-            raise ValueError("silver row missing required fields: " + ", ".join(missing))
-        kwargs = {field: row.get(field) for field in cls.__dataclass_fields__}
-        for field in ("value", "falcon_value", "verifier_value", "medgemma_value"):
-            kwargs[field] = decode_storage_value(kwargs.get(field))
-        return cls(**kwargs)
-
 
 def decode_storage_value(value: Any) -> bool | str | float | None:
     if value is None:
@@ -327,47 +329,3 @@ def decode_storage_value(value: Any) -> bool | str | float | None:
             return numeric
     raise ValueError(f"invalid stored silver value: {value!r}")
 
-
-def validate_label_rows(
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    expected_report_ids: Sequence[str] | None = None,
-    require_complete: bool = True,
-) -> list[dict[str, Any]]:
-    """Strictly validate and canonicalize normalized report-target rows."""
-
-    normalized: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    identity_by_report: dict[str, tuple[str, str]] = {}
-    for index, row in enumerate(rows):
-        try:
-            label = SilverLabel.from_storage_dict(row)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"invalid silver row {index}: {exc}") from exc
-        key = (label.report_id, label.target)
-        if key in seen:
-            raise ValueError(f"duplicate silver report-target row: {key}")
-        seen.add(key)
-        identity = (label.patient_id, label.study_id)
-        previous = identity_by_report.setdefault(label.report_id, identity)
-        if previous != identity:
-            raise ValueError(f"report_id maps to multiple patient/study identities: {label.report_id}")
-        normalized.append(label.as_storage_dict())
-    if expected_report_ids is not None:
-        expected = tuple(str(value).strip() for value in expected_report_ids)
-        if not all(expected) or len(expected) != len(set(expected)):
-            raise ValueError("expected report IDs must be non-empty and unique")
-        actual_reports = set(identity_by_report)
-        if actual_reports != set(expected):
-            raise ValueError(
-                "silver report coverage mismatch: "
-                f"missing={sorted(set(expected)-actual_reports)} extra={sorted(actual_reports-set(expected))}"
-            )
-        if require_complete:
-            expected_keys = {(report_id, target) for report_id in expected for target in TARGETS}
-            if seen != expected_keys:
-                raise ValueError(
-                    "silver target coverage mismatch: "
-                    f"missing={len(expected_keys-seen)} extra={len(seen-expected_keys)}"
-                )
-    return normalized

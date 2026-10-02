@@ -25,8 +25,6 @@ def experiment_header(config: Mapping[str, Any], output: Path, manifest: Mapping
             f"Data         : {data.get('mode')} / {data.get('manifest', '-')}",
             f"Backbone     : {model.get('backbone', '-')}",
             f"Init         : {lineage.get('initialization', 'public')}",
-            f"DAPT         : {lineage.get('dapt', (config.get('dapt') or {}).get('method', '-'))}",
-            f"Alignment    : {'ON' if lineage.get('alignment') else 'OFF'}",
             f"Silver       : {lineage.get('silver_method', '-')}",
             f"Architecture : {task.get('architecture', '-')}",
             f"PEFT         : {(config.get('peft') or {}).get('method', '-')}",

@@ -14,6 +14,9 @@ from source.components.roi.feature_extractor import ROIFeatureExtractor
 # CT-FM adapter (source/components/encoders/image/ct_fm.py) weights every feature cell by the
 # fraction of it inside the scanned body box, so canvas padding never enters the embedding.
 BODY_WEIGHTED_POOLING = "body_weighted_mean"
+# Pooling tag prefix of a slice-MIL encoder (source/model/2D_model/mil.py): its global_embedding
+# is the configured MIL aggregate (gated attention, mean or max) over the sampled slices.
+SLICE_MIL_POOLING_PREFIX = "slice_mil_"
 
 
 @dataclass(frozen=True)
@@ -70,10 +73,16 @@ def global_embedding(image: ImageFeatures) -> Tensor:
     Cached CT-FM places each body crop on a fixed canvas padded with air (17-75% of the cells
     on smoke_30). Those cells carry a nearly patient-independent CT-FM "air" vector, so a plain
     mean over every cell mixes it into the embedding in a proportion set by body size. Such an
-    encoder already returns a body-weighted embedding; every other encoder keeps the plain
-    spatial mean of its feature map.
+    encoder already returns a body-weighted embedding.
+
+    A slice-MIL encoder's own aggregate is its designed whole-volume embedding (the same one
+    the baseline classifier reads), so the global branch uses it too. Its gated-attention pool
+    is then part of every anatomy forward pass; with a plain spatial mean it would get no
+    gradient and DDP would fail on its unused (trainable) parameters. ROI branches still pool
+    the feature map. Every other encoder keeps the plain spatial mean of its feature map.
     """
-    if (image.metadata or {}).get("pooling") == BODY_WEIGHTED_POOLING:
+    pooling = str((image.metadata or {}).get("pooling") or "")
+    if pooling == BODY_WEIGHTED_POOLING or pooling.startswith(SLICE_MIL_POOLING_PREFIX):
         return image.global_embedding
     return global_average_pool(image.feature_map)
 
@@ -88,12 +97,20 @@ def pool_anatomy_features(
 
     image = image_encoder.forward_features(volume)
     z_global = global_embedding(image)
-    if z_global.shape[1] != int(image_encoder.feature_dim):
+    if z_global.shape[1] != int(image_encoder.feature_map_dim):
         raise ValueError(
-            "encoder feature_dim must equal spatial feature-map channels: "
-            f"configured={image_encoder.feature_dim} observed={z_global.shape[1]}"
+            "encoder feature_map_dim must equal spatial feature-map channels: "
+            f"configured={image_encoder.feature_map_dim} observed={z_global.shape[1]}"
         )
-    regional, regional_present = roi(image.feature_map, masks)
+    # A slice-MIL map is [B, C, h, w, N] over N sampled axial slices: the masks are read on
+    # exactly those slices (source/model/2D_model/mil.py metadata), not resized along z.
+    metadata = image.metadata or {}
+    regional, regional_present = roi(
+        image.feature_map,
+        masks,
+        slice_groups=metadata.get("slice_channel_indices"),
+        slice_depth=metadata.get("slice_depth"),
+    )
     raw = {"global": z_global, **regional}
     available = {
         "global": torch.ones(volume.shape[0], dtype=torch.bool, device=volume.device),

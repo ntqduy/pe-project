@@ -7,10 +7,12 @@ pushed through a monotone transform and scored directly.
 
 This tool does that, and reports with the same metrics, threshold rule, patient-level
 bootstrap and output layout as ``evaluate.py``, so its row sits in the same table as a
-CT-FM arm.
+CT-FM arm. Outputs go to ``<outputs>/<family>/<id>/score_baseline/`` (result.json,
+predictions.parquet, calibration_curve.parquet, logs/run.log), next to -- never inside -- the
+``epoch_<E>/`` bundles that train_task.py writes for the same config.
 
     python tools/tasks/score_baseline.py \
-      --config configs/runs/04_prognosis/modality/spesi.yaml \
+      --config configs/runs/03_prognosis/modality/spesi.yaml \
       --score-column spesi --allow-full \
       --restrict-to <derived>/cache/<profile>/clinical/spesi_evaluable.csv
 """
@@ -29,13 +31,15 @@ from source.data.manifests import read_rows
 from source.data.paths import ProjectPaths
 from source.engine.experiment import OutputManager, atomic_write_json
 from source.metrics.bootstrap import bootstrap_prognosis_predictions
-from source.metrics.calibration import calibration_curve_points
+from source.metrics.calibration import DEFAULT_CALIBRATION_MIN_EVENTS, calibration_curve_points
 from source.metrics.classification import select_threshold_on_validation
 from source.metrics.prognosis import prognosis_metrics
 from source.utils.logger import RunLogger
 from tools._common import base_parser, resolve_cli_config, resolve_manifest, write_parquet_atomic
 
 TRANSFORMS = ("platt", "raw_sigmoid", "minmax")
+# <outputs>/<family>/<id>/score_baseline/: never an epoch_<E>/ or smoke/ folder of a trained run.
+OUTPUT_FOLDER = "score_baseline"
 
 
 def _finite(value: Any) -> float | None:
@@ -71,12 +75,15 @@ def _split_rows(
     score_column: str,
     label_column: str,
     restrict: set[tuple[str, str]] | None,
+    split_column: str = "split",
 ) -> tuple[list[dict[str, Any]], int]:
     """Rows usable for scoring in one split, plus how many were dropped as unscorable."""
     rows: list[dict[str, Any]] = []
     dropped = 0
     for row in manifest_rows:
-        if str(row.get("split")) != split or not _keep(row, restrict):
+        # data.split_column, normalized as preflight reads it.
+        row_split = str(row.get(split_column) or "").strip().lower()
+        if row_split != split or not _keep(row, restrict):
             continue
         score = _finite(row.get(score_column))
         label = _finite(row.get(label_column))
@@ -143,6 +150,8 @@ def main() -> int:
     parser.add_argument("--allow-full", action="store_true")
     args = parser.parse_args()
 
+    if args.resume:
+        raise SystemExit("--resume is not supported for a fixed-score baseline; use --overwrite")
     config = resolve_cli_config(args)
     if not args.allow_full:
         raise SystemExit("scoring the whole split needs an explicit --allow-full")
@@ -150,8 +159,11 @@ def main() -> int:
     manager = OutputManager(paths)
     experiment = dict(config["experiment"])
     family = str(experiment.get("family") or experiment["stage"])
-    run_dir = manager.run_dir(family, str(experiment["id"]))
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # Its own folder beside the trained epoch_<E>/ bundles of the same id (tools/launch.py
+    # trains this config there), so --overwrite replaces only the baseline's outputs. Same
+    # collision rule as train_task.py: an existing baseline is replaced only with --overwrite.
+    output_id = f"{experiment.get('output_id') or experiment['id']}/{OUTPUT_FOLDER}"
+    run_dir = manager.prepare(family, output_id, overwrite=args.overwrite, directories=("logs",))
     logger = RunLogger(run_dir / "logs" / "run.log")
 
     evaluation = dict(config.get("evaluation") or {})
@@ -159,18 +171,26 @@ def main() -> int:
     label_column = args.label_column or str(task.get("primary_target") or "")
     if not label_column:
         raise SystemExit("no label column: pass --label-column or set task.primary_target")
+    split_column = str((config.get("data") or {}).get("split_column") or "split")
+    calibration_min_events = int(
+        evaluation.get("calibration_min_events", DEFAULT_CALIBRATION_MIN_EVENTS)
+    )
 
     manifest = resolve_manifest(config, paths)
     manifest_rows = read_rows(manifest)
     if manifest_rows and args.score_column not in manifest_rows[0]:
         raise SystemExit(f"{manifest} has no column {args.score_column!r}")
+    if manifest_rows and split_column not in manifest_rows[0]:
+        raise SystemExit(f"{manifest} has no split column {split_column!r} (data.split_column)")
     restrict = _restriction(args.restrict_to)
 
     logger.log(f"score_baseline column={args.score_column} label={label_column} manifest={manifest}")
     counts: dict[str, Any] = {}
     splits: dict[str, list[dict[str, Any]]] = {}
     for split in ("validation", "test"):
-        rows, dropped = _split_rows(manifest_rows, split, args.score_column, label_column, restrict)
+        rows, dropped = _split_rows(
+            manifest_rows, split, args.score_column, label_column, restrict, split_column
+        )
         splits[split] = rows
         counts[split] = {"scored": len(rows), "dropped_unscorable": dropped}
         logger.log(f"split={split} scored={len(rows)} dropped={dropped}")
@@ -196,10 +216,12 @@ def main() -> int:
     samples = int(evaluation.get("bootstrap_samples", 2000))
     confidence = float(evaluation.get("confidence", 0.95))
     point = prognosis_metrics(
-        [row["y_true"] for row in rows], [row["y_prob"] for row in rows], threshold
+        [row["y_true"] for row in rows], [row["y_prob"] for row in rows], threshold,
+        calibration_min_events=calibration_min_events,
     )
     interval = bootstrap_prognosis_predictions(
-        rows, threshold, n_bootstrap=samples, confidence=confidence, seed=int(config.get("seed", 42))
+        rows, threshold, n_bootstrap=samples, confidence=confidence, seed=int(config.get("seed", 42)),
+        calibration_min_events=calibration_min_events,
     )
     curve = calibration_curve_points(
         [row["y_true"] for row in rows],
@@ -226,6 +248,7 @@ def main() -> int:
             "threshold_method": str(evaluation.get("threshold_method", "youden")),
             "threshold_split": "validation",
             "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
+            "calibration_min_events": calibration_min_events,
             "point_metrics": point,
             "metrics": interval,
             "calibration_curve": curve,

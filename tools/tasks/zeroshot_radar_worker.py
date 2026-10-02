@@ -100,7 +100,10 @@ def preprocess(path: str) -> tuple[torch.Tensor, dict[str, Any]]:
     volume = torch.from_numpy(np.asanyarray(image.dataobj, dtype=np.float32))[None]   # [1, H, W, D]
     _, h, w, d = volume.shape
     scale = [spacing[i] / REFERENCE_SPACING_MM[i] for i in range(3)]
-    target = [int(h * scale[1]), int(w * scale[0]), int(d * scale[2])]          # as in the demo
+    # H, W, D are the stored (x, y, z) = (L, A, S) axes, so each takes its own spacing. The
+    # demo pairs H with the y spacing and W with x; that is identical for the square in-plane
+    # pixels of axial CT and only differs (wrongly) for anisotropic in-plane spacing.
+    target = [int(h * scale[0]), int(w * scale[1]), int(d * scale[2])]
     volume = transforms.Resize(spatial_size=target, mode="trilinear")(volume)
     if hasattr(volume, "as_tensor"):                                             # MONAI MetaTensor
         volume = volume.as_tensor()

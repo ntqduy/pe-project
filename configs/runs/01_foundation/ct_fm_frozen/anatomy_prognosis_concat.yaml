@@ -1,0 +1,48 @@
+# CT-FM frozen + trainable organ adapters + concatenation fusion for image-only prognosis.
+# The seven INSPECT endpoints are kept as masked multitask targets; cohort selection is made
+# by the wrapper through the existing official-split all-patient or PE-positive manifest.
+_base_:
+  - prognosis_all.yaml
+  - ../../../components/anatomy.yaml#organ_adapter
+  - ../../../components/anatomy.yaml#anatomy_masks
+  - ../../../components/fusions.yaml#concat_mlp
+
+experiment:
+  id: PR_ctfm_anatomy_concat
+  name: foundation.ct_fm_frozen.anatomy_concat.prognosis
+  stage: prognosis
+  family: prognosis
+
+data:
+  manifest: manifests/ct_fm/prognosis_all_patient.csv
+  # Organ pooling needs the full grid and the masks, not the pooled copy the base config reads.
+  file_column: image_path
+  preload_inputs: false
+  cohort: all_comers
+
+task:
+  _replace_: true
+  primary_target: 1_month_mortality
+  targets:
+    1_month_mortality: 1
+    6_month_mortality: 1
+    12_month_mortality: 1
+    1_month_readmission: 1
+    6_month_readmission: 1
+    12_month_readmission: 1
+    12_month_PH: 1
+  modalities: [image]
+  regions: [heart, pa, lung]
+  architecture: concat_mlp
+
+peft:
+  method: frozen
+
+supervision:
+  require_masks: true
+  masks: segmentation/SEG_pseudo_anatomy
+  require_rois: true
+  rois: roi/ROI_anatomy_and_controls
+  require_ehr: false
+  require_spesi: false
+

@@ -4,12 +4,27 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .generator import (
+    ACUITY_WITHOUT_PE,
+    LOCATION_MEDGEMMA_TRUE_BUT_PE_FALSE,
+    LOCATION_TRUE_BUT_PE_FALSE,
+)
 from .schema import TARGETS, decode_storage_value, validate_target_value
 
 PREVIEW_CHARS = 240
 PREVIEW_SAMPLES_PER_STATUS = 3
 QC_RECORD_SCHEMA_VERSION = 1
 QC_ISSUES = ("conflict", "low_conf", "missing_field", "impossible_value")
+# Abstention reasons meaning "an answer was given but is not trusted enough": MedGemma below
+# its confidence threshold, or quoting evidence that is not in the report.
+_LOW_CONFIDENCE_REASONS = ("below_confidence_threshold", "evidence_not_in_report")
+# pe_consistency withdrawals that contradict an accepted pe_present=false. Withdrawals made
+# because pe_present itself abstained (location_false_without_pe_decision,
+# acuity_without_pe_decision) are not contradictions: the answer is merely unsupported,
+# which is what missing_field records.
+_PE_CONSISTENCY_CONFLICTS = frozenset({
+    LOCATION_TRUE_BUT_PE_FALSE, LOCATION_MEDGEMMA_TRUE_BUT_PE_FALSE, ACUITY_WITHOUT_PE,
+})
 
 
 def _impossible_value(row: Mapping[str, Any]) -> str | None:
@@ -35,18 +50,19 @@ def _issue(row: Mapping[str, Any]) -> str | None:
     """Classify one label row, or None when nothing is wrong with it.
 
     Ordered most specific first. Anything non-accepted that is not an explicit
-    disagreement or an explicit uncertainty means no source found the finding stated in
-    the report, which is what missing_field records.
+    disagreement (MedGemma vs rule, or a PE location/acuity contradicting pe_present) or an
+    untrusted answer means no source found the finding stated in the report, which is
+    what missing_field records.
     """
     status = str(row.get("status") or "")
     reason = str(row.get("reason") or "")
     if status == "accepted":
         return "impossible_value" if _impossible_value(row) else None
-    if "disagree" in reason or "rule_conflict" in reason:
+    if "rule_conflict" in reason or reason in _PE_CONSISTENCY_CONFLICTS:
         return "conflict"
     if status == "no_result":
         return "missing_field"
-    if reason.endswith("_uncertain"):
+    if any(marker in reason for marker in _LOW_CONFIDENCE_REASONS):
         return "low_conf"
     return "missing_field"
 
@@ -81,34 +97,42 @@ def silver_qc_records(
                 "source": row.get("source"),
                 "provider": row.get("provider"),
                 "confidence": row.get("confidence"),
-                "falcon_value": row.get("falcon_value"),
                 "medgemma_value": row.get("medgemma_value"),
             }
         )
     return records
 
 
-def _provider_disagreement(audits: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    both_ran = 0
+def _rule_medgemma_disagreement(audits: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """How often an explicit rule answer and a MedGemma value contradict each other.
+
+    Counted on every target where both answered (rule_rescue on), whichever won, so it
+    measures the agreement of the two extractors rather than only the vetoed rows.
+    """
+    both_answered = 0
     disagreed = 0
     per_target: Counter[str] = Counter()
     for record in audits:
-        falcon_output = record.get("falcon_output")
+        rule_output = record.get("rule_output")
         medgemma_output = record.get("medgemma_output")
-        if not falcon_output or not medgemma_output:
+        if not isinstance(rule_output, Mapping) or not isinstance(medgemma_output, Mapping):
             continue
-        falcon_value = falcon_output.get("value")
+        rule_value = rule_output.get("value") if rule_output.get("resolved") else None
         medgemma_value = medgemma_output.get("value")
-        if falcon_value is None or medgemma_value is None:
+        if rule_value is None or medgemma_value is None:
             continue
-        both_ran += 1
-        if falcon_value != medgemma_value:
+        both_answered += 1
+        if all(isinstance(value, float) for value in (rule_value, medgemma_value)):
+            differs = abs(rule_value - medgemma_value) > 0.05  # same tolerance as the generator
+        else:
+            differs = rule_value != medgemma_value
+        if differs:
             disagreed += 1
             per_target[str(record.get("target"))] += 1
     return {
-        "both_providers_ran": both_ran,
+        "both_answered": both_answered,
         "disagreed": disagreed,
-        "disagreement_rate": disagreed / both_ran if both_ran else 0.0,
+        "disagreement_rate": disagreed / both_answered if both_answered else None,
         "by_target": dict(sorted(per_target.items())),
     }
 
@@ -158,7 +182,7 @@ def silver_qc_summary(
     reports: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the silver-generation QC artifact: prevalence, disposition rates,
-    provider disagreement, impossible-value checks, missingness, and report previews."""
+    rule-vs-MedGemma disagreement, impossible-value checks, missingness, and report previews."""
     statuses = Counter(str(row["status"]) for row in labels)
     source_status = Counter((str(row["source"]), str(row["status"])) for row in labels)
     target_status = Counter((str(row["target"]), str(row["status"])) for row in labels)
@@ -199,7 +223,7 @@ def silver_qc_summary(
             issue: sum(1 for row in labels if _issue(row) == issue) for issue in QC_ISSUES
         },
         "missingness_by_target": _missingness(labels, report_count),
-        "provider_disagreement": _provider_disagreement(audits),
+        "rule_medgemma_disagreement": _rule_medgemma_disagreement(audits),
         "impossible_values": _impossible_values(labels),
         "sample_report_previews": _sample_previews(labels, reports),
         "expert_review_queue": False,

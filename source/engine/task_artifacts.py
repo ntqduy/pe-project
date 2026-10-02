@@ -158,7 +158,6 @@ def write_training_artifacts(
     *,
     lineage: Mapping[str, Any] | None = None,
     config: Mapping[str, Any] | None = None,
-    extra_parameters: Mapping[str, Any] | None = None,
 ) -> Path:
     """Materialize the user-facing artifact bundle inside the run's ``epoch_<E>/`` folder.
 
@@ -213,11 +212,26 @@ def write_training_artifacts(
     return destination
 
 
-def cleanup_task_run(run_dir: Path) -> None:
-    """Remove compatibility duplicates after a task has produced its epoch bundle."""
+def cleanup_task_run(run_dir: Path, *, keep: Sequence[Path] = ()) -> None:
+    """Remove compatibility duplicates after a task has produced its epoch bundle.
+
+    ``keep`` names files the caller has just written at the run root; they are current
+    outputs, not the legacy root copies matched below. bootstrap_metrics.parquet and
+    reporting_checklist.json are never removed here: a full-test evaluation writes them at
+    the run root in every layout, so they are not legacy copies.
+    """
+    kept = {Path(path).resolve() for path in keep}
+    # A root checkpoint is only a duplicate once the bundle holds its copy; in an older layout
+    # without checkpoint/ it is the only copy and must survive.
+    bundles = (run_dir / "checkpoint", *(path / "checkpoint" for path in run_dir.glob("epoch_*")))
+    for name in ("best.ckpt", "last.ckpt"):
+        path = run_dir / name
+        if path.is_file() and any((bundle / name).is_file() for bundle in bundles):
+            path.unlink()
+    has_bundle_checkpoint = any((bundle / "best.ckpt").is_file() for bundle in bundles)
+    if not has_bundle_checkpoint:
+        kept.update((run_dir / name).resolve() for name in ("best.ckpt.metadata.json", "last.ckpt.metadata.json"))
     for name in (
-        "best.ckpt",
-        "last.ckpt",
         "best.ckpt.metadata.json",
         "last.ckpt.metadata.json",
         "config.yaml",
@@ -226,21 +240,19 @@ def cleanup_task_run(run_dir: Path) -> None:
         "environment.json",
     ):
         path = run_dir / name
-        if path.is_file():
+        if path.is_file() and path.resolve() not in kept:
             path.unlink()
     for name in ("logs", "checkpoints", "figures", "qc"):
         path = run_dir / name
+        # An old checkpoints/ folder may hold the only weights of a pre-bundle run.
+        if name == "checkpoints" and not has_bundle_checkpoint:
+            continue
         if path.is_dir():
             shutil.rmtree(path)
     # Predictions now live in epoch_<N>/predictions.csv; root copies are legacy.
-    for pattern in (
-        "predictions.parquet",
-        "calibration_curve*.parquet",
-        "bootstrap_metrics.parquet",
-        "reporting_checklist.json",
-    ):
+    for pattern in ("predictions.parquet", "calibration_curve*.parquet"):
         for path in run_dir.glob(pattern):
-            if path.is_file():
+            if path.is_file() and path.resolve() not in kept:
                 path.unlink()
     # run_dir is normally the epoch_<E> bundle itself; older run folders hold epoch_<N>/.
     for epoch_dir in (run_dir, *run_dir.glob("epoch_*")):
@@ -374,7 +386,7 @@ def _display_ct_for_features(image_path: Path | None) -> tuple[Any, dict[str, An
     Returns the canvas and the metadata of this rebuild, so the caller can check it against
     the cache sidecar (same shape, affine and bounds means the same canvas CT-FM received).
     """
-    from source.data_preprocessing.volumes import PreprocessingSpec, preprocess_volume_with_metadata
+    from source.data.build.volumes import PreprocessingSpec, preprocess_volume_with_metadata
     from source.imaging.grid import read_sidecar
 
     sidecar = read_sidecar(image_path) if image_path is not None else None
@@ -518,6 +530,7 @@ def _technical_rows(
     oriented: bool,
     reference: float | None,
     preview_probability: float,
+    selection_text: str = "các study đầu của validation theo thứ tự manifest; không chọn theo đúng/sai",
 ) -> list[tuple[str, str]]:
     """(label, value) rows of the collapsible technical section of one preview."""
     from source.imaging.cam_preview import contribution_text, display_rows, format_number
@@ -548,7 +561,8 @@ def _technical_rows(
         "Model 3D: một forward trên cả volume. CT-FM chạy trên các patch 3D 24×128×128 không chồng "
         "lấn rồi ghép thành một feature map; không có bước gộp slice 2D"
         if cached
-        else "Model 3D: một forward trên cả volume; không có bước gộp slice 2D"
+        else getattr(encoder, "architecture_note", "")
+        or "Model 3D: một forward trên cả volume; không có bước gộp slice 2D"
     )
     spacing_text = (
         " × ".join(format_number(value, 4) for value in display_spacing) + " mm"
@@ -620,8 +634,121 @@ def _technical_rows(
         ("CAM ngoài cơ thể (QC)", outside_text),
         ("Phân bố CAM dương theo ô z", profile_text),
         ("Kiểm tra xác suất", probability_check),
-        ("Chọn ca", "các study đầu của validation theo thứ tự manifest; không chọn theo đúng/sai"),
+        ("Chọn ca", selection_text),
     ]
+
+
+def _preview_indices(
+    dataset: Any,
+    maximum_patients: int,
+    selection: Mapping[str, Any] | None,
+    threshold: float | None,
+    reference: Mapping[tuple[str, str], float] | None,
+    target: str,
+) -> tuple[list[int], str]:
+    """Which validation studies to explain, and a one-line description of the rule.
+
+    ``selection = {"correct": 3, "wrong": 3}`` picks the most confident correct cases
+    (alternating TP / TN) and the most confident errors (alternating FP / FN), judged with
+    evaluate's validation threshold and probabilities. Without them (training-time preview)
+    it falls back to the first ``maximum_patients`` studies.
+    """
+    default = list(range(min(int(maximum_patients), len(dataset))))
+    options = dict(selection or {})
+    correct_n, wrong_n = int(options.get("correct", 0)), int(options.get("wrong", 0))
+    base = _base_dataset(dataset)
+    if not (correct_n or wrong_n) or threshold is None or not reference or base is None:
+        return default, "các study đầu của validation theo thứ tự manifest; không chọn theo đúng/sai"
+    pools: dict[str, list[tuple[float, int]]] = {"TP": [], "TN": [], "FP": [], "FN": []}
+    for index, row in enumerate(base.rows):
+        probability = reference.get((str(row.get("patient_id")), str(row.get("study_id"))))
+        try:
+            truth = float(row.get(target))
+        except (TypeError, ValueError):
+            continue
+        if probability is None or not math.isfinite(truth) or not math.isfinite(float(probability)):
+            continue
+        outcome = _outcome(int(truth), int(float(probability) >= float(threshold)))
+        pools[outcome].append((abs(float(probability) - float(threshold)), index))
+    for pool in pools.values():
+        pool.sort(reverse=True)
+
+    def take(first: str, second: str, count: int) -> list[int]:
+        chosen: list[int] = []
+        queues = [list(pools[first]), list(pools[second])]
+        turn = 0
+        while len(chosen) < count and (queues[0] or queues[1]):
+            queue = queues[turn % 2] if queues[turn % 2] else queues[(turn + 1) % 2]
+            chosen.append(queue.pop(0)[1])
+            turn += 1
+        return chosen
+
+    indices = take("TP", "TN", correct_n) + take("FP", "FN", wrong_n)
+    counts = ", ".join(f"{name}={len(pool)}" for name, pool in pools.items())
+    text = (
+        f"{correct_n} ca đúng (xen kẽ TP/TN) + {wrong_n} ca sai (xen kẽ FP/FN) tự tin nhất theo |p − threshold| "
+        f"trên validation (threshold của evaluate); số ca có sẵn: {counts}"
+    )
+    return indices, text
+
+
+def _write_cam_nifti(
+    stem: Path, ct: Any, cam: Any, metadata: Mapping[str, Any] | None, hu_known: bool
+) -> list[str]:
+    """``<stem>_ct.nii.gz`` + ``<stem>_gradcam.nii.gz`` on the model's input grid.
+
+    Both carry the cache sidecar's ``output_affine`` (world coordinates of the input array),
+    so they overlay in ITK-SNAP / 3D Slicer, and also on the original CT when the affine is
+    known. The CAM is the positive map scaled to [0, 1] per study; CT is int16 HU when the
+    cache recorded its HU window, float otherwise. Without a sidecar the affine is identity.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    affine = np.eye(4)
+    try:
+        candidate = np.asarray((metadata or {}).get("output_affine"), dtype=float)
+        if candidate.shape == (4, 4) and np.isfinite(candidate).all():
+            affine = candidate
+    except (TypeError, ValueError):
+        pass
+    ct_array = np.asarray(ct)
+    ct_array = np.round(ct_array).astype(np.int16) if hu_known else ct_array.astype(np.float32)
+    cam_array = np.asarray(cam, dtype=np.float32)
+    peak = float(cam_array.max()) if cam_array.size else 0.0
+    cam_array = cam_array / peak if peak > 0 else cam_array
+    names = [f"{stem.name}_ct.nii.gz", f"{stem.name}_gradcam.nii.gz"]
+    nib.save(nib.Nifti1Image(ct_array, affine), str(stem.parent / names[0]))
+    nib.save(nib.Nifti1Image(cam_array, affine), str(stem.parent / names[1]))
+    return names
+
+
+def _write_attention_plot(destination: Path, metadata: Mapping[str, Any], title: str) -> Path | None:
+    """Bar chart of the slice-MIL attention over z for one study (2D / 2.5D models)."""
+    attention = metadata.get("slice_attention")
+    indices = metadata.get("slice_indices")
+    if attention is None or not indices:
+        return None
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    weights = attention[0].float().cpu().numpy() if isinstance(attention, Tensor) else list(attention[0])
+    top = sorted(range(len(weights)), key=lambda k: -float(weights[k]))[:5]
+    figure, axis = plt.subplots(figsize=(10, 3.2), dpi=120)
+    colors = ["#eb6834" if k in top else "#2a78d6" for k in range(len(weights))]
+    axis.bar([int(value) for value in indices], weights, width=max(1.0, 0.8 * (indices[1] - indices[0]) if len(indices) > 1 else 1.0), color=colors)
+    for side in ("top", "right"):
+        axis.spines[side].set_visible(False)
+    axis.set_xlabel("chỉ số lát z trên volume input (RAS, dưới → trên)")
+    axis.set_ylabel("trọng số MIL")
+    axis.set_title(title + " · top-5: " + ", ".join(f"z={int(indices[k])}" for k in top), fontsize=9)
+    axis.grid(axis="y", alpha=0.3)
+    figure.tight_layout()
+    figure.savefig(destination)
+    plt.close(figure)
+    return destination
 
 
 def write_backbone_previews(
@@ -638,8 +765,13 @@ def write_backbone_previews(
     checkpoint: Path | str | None = None,
     checkpoint_sha256: str | None = None,
     cam_method: str = "hirescam",
+    selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Grad-CAM preview of the first validation studies: which input regions drive the target.
+    """Grad-CAM preview of validation studies: which input regions drive the target.
+
+    ``selection={"correct": 3, "wrong": 3}`` (``preview`` in the run config) explains the most
+    confident correct and wrong validation cases instead of the first studies; slice-MIL
+    models also get ``<case>_mil_attention.png`` (MIL weight per slice).
 
     For each study (the first ``maximum_patients`` of ``dataset``, not chosen by outcome)
     this writes ``NN_<patient>_<study>[_TP|TN|FP|FN].html``, an offline viewer with every
@@ -678,13 +810,13 @@ def write_backbone_previews(
     dataset = _grid_view(dataset)
     destination.mkdir(parents=True, exist_ok=True)
     # Only this contract's files belong in preview/; remove images and notes of earlier ones.
-    for pattern in ("*.png", "*.html"):
+    for pattern in ("*.png", "*.html", "*.nii.gz"):
         for stale in destination.glob(pattern):
             stale.unlink()
     for name in LEGACY_PREVIEW_FILES:
         (destination / name).unlink(missing_ok=True)
     stage = str((config.get("experiment") or {}).get("stage") or "")
-    if stage in {"ablation", "roi_student"}:
+    if stage == "ablation":
         stage = str((config.get("task") or {}).get("base_stage") or stage)
     if stage not in {"diagnosis", "prognosis"}:
         return {"status": "skipped", "reason": f"stage_{stage or 'unknown'}", "patients": 0, "errors": []}
@@ -728,6 +860,8 @@ def write_backbone_previews(
         if feature_map is None:
             raise RuntimeError("backbone output did not expose a 5D feature_map")
         hook_state["feature_map"] = feature_map
+        if isinstance(output, Mapping) and isinstance(output.get("metadata"), Mapping):
+            hook_state["metadata"] = output["metadata"]  # type: ignore[assignment]
         if isinstance(feature_map, Tensor) and feature_map.requires_grad:
             feature_map.retain_grad()
 
@@ -737,11 +871,16 @@ def write_backbone_previews(
     hook_module = getattr(encoder, "model", None)
     if not isinstance(hook_module, nn.Module):
         hook_module = encoder
+    target_for_selection = str((config.get("task") or {}).get("primary_target") or "pe_present")
+    indices, selection_text = _preview_indices(
+        dataset, maximum_patients, selection or (config.get("preview") or None),
+        threshold, reference_probabilities, target_for_selection,
+    )
     handle = hook_module.register_forward_hook(capture)
     was_training = underlying.training
     try:
         underlying.eval()
-        for index in range(min(int(maximum_patients), len(dataset))):
+        for index in indices:
             item = dataset[index]
             patient = str(item.get("patient_id", f"patient_{index:03d}"))
             study = str(item.get("study_id", f"study_{index:03d}"))
@@ -830,12 +969,28 @@ def write_backbone_previews(
                     orientation_text = f"N/A — {orientation_text}; hiển thị theo trục mảng 0, không xoay"
                 size = tuple(int(value) for value in display.shape[-3:])
                 arrays = [ct]
+                nifti_payload = None
                 if status == "ok":
                     positive = torch.from_numpy(np.clip(raw_np, 0.0, None)).float()
-                    cam_up = F.interpolate(
-                        positive[None, None], size=size, mode="trilinear", align_corners=False
-                    )[0, 0].numpy()
+                    slice_mil = isinstance(hook_state.get("metadata"), Mapping) and (
+                        hook_state["metadata"].get("slice_attention") is not None
+                    )
+                    if slice_mil and positive.shape[-1] < size[2]:
+                        # Slice-MIL maps are independent 2-D slices stacked along z: upsample
+                        # in-plane only, then hold each slice's CAM over its own z block instead
+                        # of interpolating between slices the model never related.
+                        in_plane = F.interpolate(
+                            positive[None, None], size=(size[0], size[1], int(positive.shape[-1])),
+                            mode="trilinear", align_corners=False,
+                        )
+                        cam_up = F.interpolate(in_plane, size=size, mode="nearest")[0, 0].numpy()
+                    else:
+                        cam_up = F.interpolate(
+                            positive[None, None], size=size, mode="trilinear", align_corners=False
+                        )[0, 0].numpy()
                     arrays += [cam_up, positive.numpy()]
+                    # CT + CAM on the model's input grid (before display reorientation).
+                    nifti_payload = (ct, cam_up, metadata, hu_known)
                     padding = padding_fraction(cam_up, metadata)
                     if padding is not None and padding > 0:
                         notes.append(
@@ -846,7 +1001,24 @@ def write_backbone_previews(
                         )
                 else:
                     padding = None
+                # Slice-MIL models: track where each input z lands in the displayed stack so
+                # the montage can show the slices with the highest MIL attention.
+                mil_metadata = hook_state.get("metadata")
+                track_z = (
+                    isinstance(mil_metadata, Mapping)
+                    and mil_metadata.get("slice_attention") is not None
+                    and int(model_input.shape[1]) == 1
+                )
+                if track_z:
+                    arrays.append(np.broadcast_to(
+                        np.arange(size[2], dtype=np.float32)[None, None, :], size
+                    ).copy())
                 oriented, display_spacing = _to_spl(arrays, orientation, spacing)
+                display_z = None
+                if track_z:
+                    zmap = oriented.pop()
+                    if np.allclose(zmap.std(axis=(1, 2)), 0.0):   # input z is the display axis
+                        display_z = zmap.mean(axis=(1, 2))
                 ct_display = oriented[0]
                 cam_up_display = oriented[1] if status == "ok" else None
                 cam_grid_display = oriented[2] if status == "ok" else None
@@ -899,7 +1071,6 @@ def write_backbone_previews(
                     size = tuple(int(value) for value in ct_display.shape)
                 else:
                     mapping = full_mapping
-                depth = int(ct_display.shape[0])
                 scores = ranks = None
                 top: list[int] = []
                 outside = None
@@ -907,6 +1078,17 @@ def write_backbone_previews(
                     scores = slice_scores(cam_up_display)
                     ranks, _ = rank_slices(scores)
                     top = top_slices(scores, MONTAGE_SLICES)
+                    if display_z is not None:
+                        weights = mil_metadata["slice_attention"][0].float().cpu().numpy()
+                        chosen = [int(mil_metadata["slice_indices"][k]) for k in np.argsort(-weights)[:MONTAGE_SLICES]]
+                        attention_top = list(dict.fromkeys(int(np.argmin(np.abs(display_z - z))) for z in chosen))
+                        if attention_top:
+                            top = attention_top
+                            notes.append(
+                                f"Montage slice-MIL: {len(top)} lát có trọng số attention MIL cao nhất "
+                                f"(z input = {', '.join(str(z) for z in chosen)}), không chọn theo điểm CAM; "
+                                "xem thêm _mil_attention.png."
+                            )
                     if hu_known:
                         outside = outside_body_fraction(ct_display, cam_up_display)
 
@@ -983,10 +1165,21 @@ def write_backbone_previews(
                     oriented=orientation is not None,
                     reference=reference,
                     preview_probability=preview_probability,
+                    selection_text=selection_text,
                 )
                 prefix = f"{written + 1:02d}_{_safe_name(patient)}_{_safe_name(study)}"
                 if outcome:
                     prefix += f"_{outcome}"
+                metadata_hook = hook_state.get("metadata")
+                if isinstance(metadata_hook, Mapping):
+                    attention_file = _write_attention_plot(
+                        destination / f"{prefix}_mil_attention.png", metadata_hook,
+                        f"MIL attention · {patient} / {study} · {outcome or 'N/A'} · p={probability:.3f}",
+                    )
+                    if attention_file is not None:
+                        files.append(attention_file.name)
+                if nifti_payload is not None and bool((config.get("preview") or {}).get("nifti", False)):
+                    files += _write_cam_nifti(destination / prefix, *nifti_payload)
                 write_cam_preview(
                     destination / prefix,
                     {

@@ -22,8 +22,6 @@ COLUMNS = (
     "backbone",
     "initialization",
     "source_experiment",
-    "dapt",
-    "alignment",
     "silver_method",
     "modalities",
     "architecture",
@@ -41,27 +39,25 @@ COLUMNS = (
     "auprc_ci_low",
     "auprc_ci_high",
     "brier",
-    "dice",
-    "nsd",
-    "hd95",
     "peak_vram_gb",
     "training_time_min",
     "latency_ms",
     "result_path",
 )
+# One paper table per family. The 01_foundation configs run as stage diagnosis/prognosis, so
+# they land in diagnosis.csv / prognosis.csv; no stage produces a separate foundation family.
 FAMILIES = (
-    "foundation",
-    "dapt",
-    "alignment",
     "silver",
-    "silver_encoder_adaptation",
     "diagnosis",
     "prognosis",
-    "contour",
     "architecture",
+    "ehr_ablation",
+    "counterfactual",
     "roi",
     "transfer",
 )
+# experiment.family of an ablation config -> its table (configs/runs/0[45]_*/..._ablation/).
+ABLATION_FAMILIES = {"architecture_ablation": "architecture", "ehr_ablation": "ehr_ablation"}
 
 
 def _metric(evaluation: dict[str, Any], name: str, part: str = "value") -> Any:
@@ -81,12 +77,11 @@ def flatten(path: Path, root: Path) -> dict[str, Any]:
     return {
         "experiment_id": experiment.get("id"),
         "stage": experiment.get("stage"),
+        "family": experiment.get("family"),
         "task": experiment.get("stage"),
         "backbone": lineage.get("backbone"),
         "initialization": lineage.get("initialization"),
         "source_experiment": lineage.get("source_experiment"),
-        "dapt": lineage.get("dapt"),
-        "alignment": lineage.get("alignment"),
         "silver_method": lineage.get("silver_method"),
         "modalities": model.get("modalities"),
         "architecture": model.get("architecture"),
@@ -104,9 +99,6 @@ def flatten(path: Path, root: Path) -> dict[str, Any]:
         "auprc_ci_low": _metric(evaluation, "auprc", "ci_low"),
         "auprc_ci_high": _metric(evaluation, "auprc", "ci_high"),
         "brier": _metric(evaluation, "brier"),
-        "dice": _metric(evaluation, "dice"),
-        "nsd": _metric(evaluation, "nsd"),
-        "hd95": _metric(evaluation, "hd95"),
         "peak_vram_gb": compute.get("peak_vram_gb"),
         "training_time_min": compute.get("training_time_min"),
         "latency_ms": compute.get("latency_ms_per_volume"),
@@ -133,9 +125,17 @@ def family(row: Mapping[str, Any]) -> str:
     stage = str(row.get("stage") or "")
     identifier = str(row.get("experiment_id") or "")
     if stage != "ablation":
+        # counterfactual (CF_*) runs have their own stage and so their own table.
         return stage
-    if identifier.startswith("A"):
+    declared = ABLATION_FAMILIES.get(str(row.get("family") or ""))
+    if declared:
+        return declared
+    # Ablation ids are AB_arch_* (architecture) and AB_ehr_* (EHR variables); the remaining
+    # prefixes are pre-refactor ids kept so older result.json files still sort correctly.
+    if identifier.startswith("AB_arch_"):
         return "architecture"
+    if identifier.startswith("AB_ehr_"):
+        return "ehr_ablation"
     if identifier.startswith(("RM", "RS")):
         return "roi"
     if identifier.startswith("TR"):

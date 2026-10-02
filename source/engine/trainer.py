@@ -87,12 +87,6 @@ class Trainer:
             tensor /= self.context.world_size
         return float(tensor.cpu())
 
-    def _reduce_sum(self, value: float) -> float:
-        tensor = torch.tensor(value, device=self.context.device, dtype=torch.float64)
-        if self.context.distributed:
-            torch.distributed.all_reduce(tensor)
-        return float(tensor.cpu())
-
     @staticmethod
     def _unpack_loss(
         output: Tensor | tuple[Tensor, Mapping[str, float | Tensor]],
@@ -108,13 +102,36 @@ class Trainer:
     def _reduce_epoch_metrics(
         self, totals: Mapping[str, float], occurrences: Mapping[str, int]
     ) -> dict[str, float]:
+        # A rank can lack a key another rank logged (losses.py skips a target's loss when
+        # its batch has no valid label), so every rank reduces the same sorted union of
+        # names in one collective; a per-key all_reduce in each rank's own order would
+        # pair different metrics across ranks or hang.
+        names = set(totals)
+        if self.context.distributed:
+            gathered: list[Any] = [None] * self.context.world_size
+            torch.distributed.all_gather_object(gathered, sorted(names))
+            names = set().union(*(set(item or ()) for item in gathered))
+        ordered = sorted(names)
+        if not ordered:
+            return {}
+        stacked = torch.tensor(
+            [
+                [float(totals.get(name, 0.0)) for name in ordered],
+                [float(occurrences.get(name, 0)) for name in ordered],
+            ],
+            device=self.context.device,
+            dtype=torch.float64,
+        )
+        if self.context.distributed:
+            torch.distributed.all_reduce(stacked)
+        sums, counts = stacked.cpu().tolist()
         result: dict[str, float] = {}
-        for name, total in totals.items():
+        for name, total, count in zip(ordered, sums, counts):
             if name.endswith("valid_count"):
-                result[name] = self._reduce_sum(total)
+                result[name] = total
             else:
-                local_mean = total / max(occurrences.get(name, 0), 1)
-                result[name] = self._reduce_mean(local_mean)
+                # Mean over every step that logged the metric, on any rank.
+                result[name] = total / count if count > 0 else float("nan")
         return result
 
     def train_epoch(self, loader: Any, epoch: int) -> tuple[float, dict[str, float]]:
@@ -133,15 +150,19 @@ class Trainer:
         )
         for index, batch in enumerate(progress):
             batch = move_to_device(batch, self.context.device)
+            # The last group can be shorter than accumulation_steps; divide by its real size
+            # so that update averages over the batches it actually holds.
+            group_start = (index // self.accumulation_steps) * self.accumulation_steps
+            group_size = min(self.accumulation_steps, len(loader) - group_start)
             with torch.autocast(self.context.device.type, dtype=self.autocast_dtype, enabled=self.amp_enabled):
                 raw_loss, step_metrics = self._unpack_loss(self.loss_step(self.model, batch))
-                loss = raw_loss / self.accumulation_steps
+                loss = raw_loss / group_size
             self.scaler.scale(loss).backward()
             if (index + 1) % self.accumulation_steps == 0 or index + 1 == len(loader):
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
-            total += float(loss.detach().cpu()) * self.accumulation_steps
+            total += float(raw_loss.detach().cpu())
             batches += 1
             for name, value in step_metrics.items():
                 metric_totals[name] = metric_totals.get(name, 0.0) + value
@@ -177,7 +198,9 @@ class Trainer:
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         destination.parent.mkdir(parents=True, exist_ok=True)
         with temporary.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            # Union in first-seen order: a later epoch can log a metric the first one lacked.
+            fieldnames = list(dict.fromkeys(name for row in rows for name in row))
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
             handle.flush()

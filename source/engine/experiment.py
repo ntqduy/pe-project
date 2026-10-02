@@ -24,26 +24,14 @@ FAMILY_PATHS = {
     "segmentation": "segmentation",
     "roi": "roi",
     "silver": "silver_label",
-    "foundation": "pretraining/foundation",
-    "dapt": "pretraining/dapt",
-    "alignment": "pretraining/alignment",
-    "shared_encoder": "shared_encoder",
-    "silver_encoder_adaptation": "pretraining/silver",
     "diagnosis": "diagnosis",
     "prognosis": "prognosis",
-    "contour": "contour",
     "silver_ablation": "ablation/silver",
     "architecture_ablation": "ablation/architecture",
     "ehr_ablation": "ablation/ehr",
     "remove_roi": "ablation/remove_roi",
-    "roi_students": "ablation/roi_students",
     "transfer": "ablation/transfer",
     "counterfactual": "counterfactual",
-    "roi_student": "roi_students",
-    # Prognosis ROI-only students keep their own subtree: same stage, different base_stage,
-    # different reference arm, so their results are never read against the diagnosis ones.
-    "prognosis_roi_student": "roi_students/prognosis",
-    "concept_bottleneck": "concept_bottleneck",
     "summary": "summary",
     "segmentation_validation": "segmentation_validation",
 }
@@ -84,7 +72,7 @@ def verify_writable_directory(directory: Path) -> None:
 
 
 # Stages trained by tools/tasks/train_task.py and scored by tools/tasks/evaluate.py.
-TASK_TRAINING_STAGES = frozenset({"diagnosis", "prognosis", "contour", "roi_student"})
+TASK_TRAINING_STAGES = frozenset({"diagnosis", "prognosis"})
 
 
 def task_epoch_bundle(config: Mapping[str, Any]) -> str | None:
@@ -136,7 +124,7 @@ class OutputManager:
 
         Most historical runs use a single identifier such as ``DX_global_single``.
         Matrix experiments need a readable hierarchy (for example
-        ``all_patient/EHR_0_h/1_month_mortality/weight_dapt/image_only``).  Treating
+        ``all_patient/EHR_0_h/1_month_mortality/weight_pretrained/image_only``).  Treating
         that hierarchy as a filesystem path is safe only when every component is an
         ordinary directory name: no empty pieces, traversal, absolute paths, or Windows
         separators are accepted.
@@ -345,15 +333,11 @@ def compact_result(
         "fusion_type",
         "random_seed",
         "code_commit",
-        "dapt",
-        "alignment",
         "silver_method",
     )
     lineage_source = dict(config.get("lineage") or {})
     lineage_source.setdefault("backbone", (config.get("model") or {}).get("backbone"))
     lineage_source.setdefault("initialization", (config.get("lineage") or {}).get("initialization"))
-    lineage_source.setdefault("dapt", (config.get("dapt") or {}).get("method"))
-    lineage_source.setdefault("alignment", bool(config.get("alignment")) if config.get("alignment") else None)
     lineage_source.setdefault("silver_method", (config.get("silver") or {}).get("method"))
     lineage_source.setdefault("silver_source", lineage_source.get("silver_method"))
     lineage_source.setdefault("dataset", (config.get("data") or {}).get("dataset"))

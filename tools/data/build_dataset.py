@@ -2,7 +2,7 @@
 """Build one dataset profile from the read-only INSPECT release.
 
 This tool contains no scientific logic. It resolves the run config, loads the dataset
-profile it names, and hands both to ``source/data_preprocessing.pipeline.build_dataset``,
+profile it names, and hands both to ``source/data/build.pipeline.build_dataset``,
 which is the single implementation every profile shares.
 
     python run.py run data.dataset.test_500_sample --max-cases 10     smoke
@@ -24,8 +24,8 @@ if __package__ in {None, ""}:
 
 from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
-from source.data_preprocessing.pipeline import build_dataset
-from source.dataset import require_active_profile
+from source.data.build.pipeline import build_dataset
+from source.data.profiles import require_active_profile
 from source.utils.config import load_config, validate_config
 
 
@@ -60,6 +60,8 @@ def main() -> int:
     name = str(config["data"]["profile"])
     profile = require_active_profile(name)
     paths = ProjectPaths.resolve(config)
+    # The preflight dataset_destination check reads config["overwrite"] to allow a rebuild.
+    config["overwrite"] = bool(args.overwrite)
     # Data stages bypass tools/launch.py, so enforce the same dependency/source/output
     # gate here before creating a destination or extracting the large EHR archive.
     require_preflight(config, paths)

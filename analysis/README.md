@@ -4,10 +4,10 @@ Mô tả dữ liệu **đã build**, để hiểu cohort trước khi train. Ch�
 sửa manifest, không tạo ra thứ gì training tiêu thụ — chạy lại lúc nào cũng được.
 
 ```bash
-bash scripts/tool/eda.sh                                  # PROFILE=test_500_sample
-PROFILE=full_inspect bash scripts/tool/eda.sh
-PROFILE=smoke_30 RULE_SAMPLE=0 bash scripts/tool/eda.sh   # 0 = quét mọi report
-NO_FIGURES=1 bash scripts/tool/eda.sh                     # chỉ số, không vẽ PNG
+bash scripts/data/eda.sh                                  # PROFILE=test_500_sample
+PROFILE=full_inspect bash scripts/data/eda.sh
+PROFILE=smoke_30 RULE_SAMPLE=0 bash scripts/data/eda.sh   # 0 = quét mọi report
+NO_FIGURES=1 bash scripts/data/eda.sh                     # chỉ số, không vẽ PNG
 ```
 
 Hoặc gọi thẳng:
@@ -54,8 +54,8 @@ official INSPECT hold-out split. Đây là quy tắc proposal đặt ra, không 
 
 **3. Rule coverage là sàn của silver label.** `rule_coverage.csv` chạy đúng `apply_rule` thật
 của `source/silver/rules.py` trên report thật. Target nào regex không giải quyết được thì hoặc
-phải trả bằng LLM, hoặc thành abstention. Biết trước con số này thì biết arm `data.silver.rule`
-sẽ đạt coverage bao nhiêu mà không cần chạy GPU.
+phải trả bằng MedGemma, hoặc thành abstention. Biết trước con số này thì biết regex backup
+(`rule_rescue` trong `data.silver.medgemma`) lấp được tối đa bao nhiêu mà không cần chạy GPU.
 
 ## Khi thiếu thứ gì
 

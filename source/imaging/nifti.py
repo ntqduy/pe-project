@@ -31,6 +31,14 @@ def load_image(path: str | Path) -> Any:
     return nib.load(str(path))
 
 
+def superior_axis(affine: Any) -> int:
+    """Array axis that runs along the patient's inferior-superior direction."""
+    import nibabel as nib
+
+    codes = tuple(nib.aff2axcodes(affine))
+    return next((index for index, code in enumerate(codes) if code in {"S", "I"}), 2)
+
+
 def superior_extent(binary: np.ndarray, affine: Any) -> tuple[int, int] | None:
     """First/last occupied slice on the inferior-superior axis, counted from the inferior end.
 
@@ -41,7 +49,7 @@ def superior_extent(binary: np.ndarray, affine: Any) -> tuple[int, int] | None:
 
     mask = np.asarray(binary, dtype=bool)
     codes = tuple(nib.aff2axcodes(affine))
-    axis = next((index for index, code in enumerate(codes) if code in {"S", "I"}), 2)
+    axis = superior_axis(affine)
     occupied = np.flatnonzero(mask.any(axis=tuple(index for index in range(3) if index != axis)))
     if not occupied.size:
         return None

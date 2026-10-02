@@ -67,7 +67,7 @@ def main() -> int:
     output = (args.output or epoch_dir / "preview").resolve()
     config = load_config(run_dir / "resolved_config.yaml", [])
     stage = str(config["experiment"]["stage"])
-    if stage in {"ablation", "roi_student"}:
+    if stage == "ablation":
         stage = str((config.get("task") or {}).get("base_stage") or stage)
     if stage not in {"diagnosis", "prognosis"}:
         raise SystemExit(f"preview needs a diagnosis/prognosis run, got stage={stage}")

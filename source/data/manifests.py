@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import json
 import math
-import random
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -19,6 +18,10 @@ class ManifestError(ValueError):
 REQUIRED_COLUMNS = ("patient_id", "study_id", "split")
 ALLOWED_SPLITS = ("train", "validation", "test", "external")
 SILVER_STATUSES = ("accepted", "abstained", "no_result")
+# Legacy target names -> canonical outcome columns written by data.build.manifest_writer.
+TARGET_ALIASES = {"mortality_30d": "1_month_mortality"}
+# Target values that mean "outcome not observed", never an event or a non-event.
+UNOBSERVED_TARGETS = {"", "censored", "missing", "na", "nan", "none"}
 
 
 def _normal(value: Any) -> str:
@@ -344,37 +347,6 @@ def patient_ids_for_splits(
     }
 
 
-def create_patient_split(
-    rows: Iterable[Mapping[str, Any]],
-    seed: int,
-    ratios: tuple[float, float, float] = (0.7, 0.15, 0.15),
-) -> list[dict[str, Any]]:
-    if len(ratios) != 3 or any(value <= 0 for value in ratios) or abs(sum(ratios) - 1.0) > 1e-8:
-        raise ManifestError("train/validation/test ratios must be positive and sum to one")
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        patient = _normal(row.get("patient_id"))
-        if not patient:
-            raise ManifestError("cannot split a row without patient_id")
-        if _normal(row.get("split")):
-            raise ManifestError("refusing to replace an existing split assignment")
-        grouped[patient].append(dict(row))
-    patients = sorted(grouped)
-    random.Random(int(seed)).shuffle(patients)
-    train_end = round(len(patients) * ratios[0])
-    validation_end = train_end + round(len(patients) * ratios[1])
-    assignments = {
-        patient: ("train" if index < train_end else "validation" if index < validation_end else "test")
-        for index, patient in enumerate(patients)
-    }
-    output: list[dict[str, Any]] = []
-    for patient in sorted(grouped):
-        for row in grouped[patient]:
-            row["split"] = assignments[patient]
-            output.append(row)
-    return output
-
-
 def audit_temporal_holdout(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -384,14 +356,30 @@ def audit_temporal_holdout(
     patient_column: str = "patient_id",
     split_column: str = "split",
 ) -> dict[str, Any]:
-    """Validate chronological patient splits and event support without creating a split."""
+    """Validate chronological patient splits and event support without creating a split.
+
+    An empty target (censored or missing outcome, see ``mortality_outcome``) is not an
+    error: the row still contributes its date, and is counted under ``unobserved_targets``.
+    A legacy alias target (``mortality_30d``) falls back to its canonical column when the
+    manifest only carries that one. A target column the manifest does not carry at all is
+    reported as missing (``events``/``unobserved_targets`` are ``None``) rather than counted
+    as all-unobserved with zero events.
+    """
 
     if minimum_events_per_split < 1:
         raise ManifestError("minimum_events_per_split must be positive")
+    if rows and target_column not in rows[0]:
+        canonical = TARGET_ALIASES.get(target_column)
+        if canonical and canonical in rows[0]:
+            target_column = canonical
+    target_missing = bool(rows) and not any(target_column in row for row in rows)
     dates: dict[str, list[datetime]] = defaultdict(list)
     events: dict[str, set[str]] = defaultdict(set)
     patients: dict[str, set[str]] = defaultdict(set)
+    unobserved: dict[str, int] = defaultdict(int)
     errors: list[str] = []
+    if target_missing:
+        errors.append(f"column {target_column} missing from manifest")
     for index, row in enumerate(rows, start=2):
         split = _normal(row.get(split_column)).lower()
         patient = _normal(row.get(patient_column))
@@ -405,8 +393,14 @@ def audit_temporal_holdout(
             continue
         dates[split].append(parsed)
         patients[split].add(patient)
+        if target_missing:
+            continue
+        raw_target = _normal(row.get(target_column))
+        if raw_target.lower() in UNOBSERVED_TARGETS:
+            unobserved[split] += 1
+            continue
         try:
-            event = float(row.get(target_column))
+            event = float(raw_target)
         except (TypeError, ValueError):
             errors.append(f"row {index} has invalid {target_column}")
         else:
@@ -415,7 +409,7 @@ def audit_temporal_holdout(
     for split in ("train", "validation", "test"):
         if not dates[split]:
             errors.append(f"temporal holdout has no dated rows for {split}")
-        if len(events[split]) < minimum_events_per_split:
+        if not target_missing and len(events[split]) < minimum_events_per_split:
             errors.append(
                 f"temporal holdout {split} has {len(events[split])} events; "
                 f"minimum={minimum_events_per_split}"
@@ -431,7 +425,14 @@ def audit_temporal_holdout(
         "target_column": target_column,
         "minimum_events_per_split": minimum_events_per_split,
         "patients": {name: len(patients[name]) for name in ("train", "validation", "test")},
-        "events": {name: len(events[name]) for name in ("train", "validation", "test")},
+        "events": {
+            name: None if target_missing else len(events[name])
+            for name in ("train", "validation", "test")
+        },
+        "unobserved_targets": {
+            name: None if target_missing else unobserved[name]
+            for name in ("train", "validation", "test")
+        },
         "date_ranges": {
             name: {
                 "minimum": min(dates[name]).isoformat() if dates[name] else None,

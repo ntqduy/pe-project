@@ -21,7 +21,6 @@ class AuditRecord:
     final_value: bool | str | float | None
     final_source: str
     rule_output: dict[str, Any] | None
-    falcon_output: dict[str, Any] | None
     medgemma_output: dict[str, Any] | None
     evidence_text: str | None
     evidence_start: int | None
@@ -42,11 +41,13 @@ def utc_timestamp() -> str:
 
 
 def evidence_from_outputs(
-    falcon_output: Mapping[str, Any] | None,
     medgemma_output: Mapping[str, Any] | None,
 ) -> tuple[str | None, int | None, int | None]:
-    """First non-empty evidence span across the provider outputs that produced a value."""
-    for payload in (medgemma_output, falcon_output):
-        if payload and payload.get("evidence_text"):
-            return payload.get("evidence_text"), payload.get("evidence_start"), payload.get("evidence_end")
+    """Evidence span quoted by the provider output, when it gave one."""
+    if medgemma_output and medgemma_output.get("evidence_text"):
+        return (
+            medgemma_output.get("evidence_text"),
+            medgemma_output.get("evidence_start"),
+            medgemma_output.get("evidence_end"),
+        )
     return None, None, None

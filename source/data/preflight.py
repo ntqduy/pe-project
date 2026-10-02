@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import shutil
@@ -59,52 +58,6 @@ def _exists(checks: list[Check], group: str, name: str, path: Path | None, requi
         checks.append(Check(group, name, "SKIP", str(path) if path else "not configured"))
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _is_placeholder(value: Any) -> bool:
-    return str(value or "").strip().lower() in {
-        "",
-        "none",
-        "null",
-        "unspecified",
-        "todo",
-        "tbd",
-        "replace_me",
-        "placeholder",
-    }
-
-
-def _checksum_check(
-    checks: list[Check],
-    *,
-    group: str,
-    name: str,
-    path: Path | None,
-    expected: Any,
-    allow_auto: bool = False,
-) -> str | None:
-    if path is None or not path.is_file():
-        checks.append(Check(group, name, "FAIL", "artifact unavailable for checksum validation"))
-        return None
-    actual = _sha256(path)
-    configured = str(expected or "").strip()
-    if allow_auto and configured.lower() == "auto":
-        checks.append(Check(group, name, "PASS", actual))
-    elif len(configured) != 64:
-        checks.append(Check(group, name, "FAIL", "explicit SHA-256 is not configured"))
-    elif configured.lower() != actual.lower():
-        checks.append(Check(group, name, "FAIL", f"expected={configured} actual={actual}"))
-    else:
-        checks.append(Check(group, name, "PASS", actual))
-    return actual
-
-
 def _artifact_path(
     paths: ProjectPaths, value: Any, *, output: bool = False, profile: str | None = None
 ) -> Path | None:
@@ -128,7 +81,7 @@ def _is_inspect_dataset(name: str) -> bool:
     if normalized in {"inspect", "stanford_inspect"}:
         return True
     try:
-        from source.dataset import ACTIVE_PROFILES
+        from source.data.profiles import ACTIVE_PROFILES
     except Exception:  # noqa: BLE001 - preflight must not fail on an import
         return "inspect" in normalized
     return normalized in {value.lower() for value in ACTIVE_PROFILES} or "inspect" in normalized
@@ -159,7 +112,7 @@ def checkpoint_lineage_errors(
         )
 
     effective_stage = str(experiment.get("stage") or "")
-    if effective_stage in {"ablation", "counterfactual", "roi_student"}:
+    if effective_stage in {"ablation", "counterfactual"}:
         effective_stage = str(task.get("base_stage") or "")
     source_dataset = str(source_lineage.get("dataset") or "").lower()
     source_stage = str(source_lineage.get("stage") or "").lower()
@@ -168,7 +121,7 @@ def checkpoint_lineage_errors(
     inspect_supervised_diagnosis = (
         _is_inspect_dataset(source_dataset)
         and (source_stage == "diagnosis" or "diagnos" in source_task)
-        and source_supervision not in {"none", "public", "self_supervised", "image_report_alignment"}
+        and source_supervision not in {"none", "public", "self_supervised"}
     )
     if effective_stage == "prognosis" and inspect_supervised_diagnosis:
         patient_column = str(data.get("patient_id_column") or "patient_id")
@@ -257,12 +210,8 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
     task = dict(config.get("task") or {})
     effective_stage = (
         str(task.get("base_stage") or "")
-        if stage in {"ablation", "counterfactual", "roi_student"}
+        if stage in {"ablation", "counterfactual"}
         else stage
-    )
-    report_only_contract = (
-        effective_stage == "diagnosis"
-        and str(task.get("architecture", "soft_moe")) == "report_only"
     )
     manifest_path = data_config.get("manifest")
     manifest_payload: dict[str, Any] | None = None
@@ -293,7 +242,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         # contract with the other active profile, and that the read-only release is there.
         profile_name = str(data_config.get("profile") or "")
         try:
-            from source.dataset import assert_shared_preprocessing, require_active_profile
+            from source.data.profiles import assert_shared_preprocessing, require_active_profile
 
             profile = require_active_profile(profile_name)
             checks.append(
@@ -368,13 +317,13 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
             audit = audit_manifest(
                 manifest,
                 label_columns=tuple(data_config.get("label_columns") or ()),
-                file_column=(None if report_only_contract else data_config.get("file_column", "image_path")),
+                file_column=data_config.get("file_column", "image_path"),
                 data_root=paths.dataset_root_for(config),
                 split_aliases=data_config.get("split_aliases"),
                 required_columns=tuple(
                     dict.fromkeys(
                         (
-                            *(() if report_only_contract else (data_config.get("file_column", "image_path"),)),
+                            data_config.get("file_column", "image_path"),
                             *tuple(data_config.get("label_columns") or ()),
                             *tuple(data_config.get("ehr_columns") or ()),
                             *tuple(data_config.get("spesi_columns") or ()),
@@ -387,11 +336,6 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                                 if value
                             ),
                             *tuple((data_config.get("mask_columns") or {}).values()),
-                            *tuple(
-                                (config.get("alignment") or {}).get("report_embedding_columns") or ()
-                                if report_only_contract
-                                else ()
-                            ),
                         )
                     )
                 ),
@@ -464,95 +408,49 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
         except (ManifestError, PathConfigurationError) as exc:
             checks.append(Check("DATA", "split_manifest", "FAIL", str(exc)))
     model = dict(config.get("model") or {})
-    rspect = dict(config.get("rspect") or {})
-    if rspect:
-        mapping = dict(rspect.get("label_mapping") or {})
-        configured_labels = tuple(data_config.get("label_columns") or ())
-        mapped_columns = tuple(str(value) for value in mapping.values())
-        targets = dict(task.get("targets") or {})
-        errors: list[str] = []
-        if not mapping:
-            errors.append("rspect.label_mapping is required")
-        if mapped_columns and tuple(dict.fromkeys(mapped_columns)) != configured_labels:
-            errors.append(
-                "data.label_columns must equal rspect.label_mapping values in the same order"
-            )
-        if len(configured_labels) == 1 and configured_labels != ("pe_present",):
-            errors.append("RSPECT single-task must use the normalized pe_present binary column")
-        if targets and any(name not in configured_labels for name in targets):
-            errors.append("every RSPECT task target must have a matching manifest label column")
-        checks.append(
-            Check(
-                "DATA",
-                "rspect_label_mapping",
-                "PASS" if not errors else "FAIL",
-                "; ".join(errors)
-                or f"normalized labels={len(configured_labels)} mapping_entries={len(mapping)}",
-            )
-        )
-        # The normalized manifest is the actual training contract.  When it is absent,
-        # inspect the optional Kaggle partial marker to distinguish "not extracted" from
-        # an incomplete multi-hundred-GB download without opening the archive itself.
-        external_root = paths.dataset_root_for(config)
-        external_manifest = Path(str(data_config.get("manifest") or ""))
-        if not external_manifest.is_absolute():
-            external_manifest = external_root / external_manifest
-        archive_name = str(rspect.get("archive") or "").strip()
-        marker_name = str(rspect.get("partial_marker") or "").strip()
-        if external_manifest.is_file():
-            checks.append(
-                Check("DATA", "rspect_archive_readiness", "SKIP", "normalized manifest is present")
-            )
-        elif marker_name:
-            marker = external_root / marker_name
-            archive = external_root / archive_name if archive_name else None
-            try:
-                marker_payload = json.loads(marker.read_text(encoding="utf-8"))
-                expected_bytes = int(marker_payload.get("size"))
-                actual_bytes = archive.stat().st_size if archive is not None else -1
-                complete = actual_bytes == expected_bytes
-                checks.append(
-                    Check(
-                        "DATA",
-                        "rspect_archive_readiness",
-                        "PASS" if complete else "FAIL",
-                        (
-                            f"archive_bytes={actual_bytes} expected_bytes={expected_bytes}; "
-                            "extract and normalize to the configured patient-split manifest"
-                        ),
-                    )
-                )
-            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                checks.append(
-                    Check(
-                        "DATA",
-                        "rspect_archive_readiness",
-                        "FAIL",
-                        f"cannot verify RSPECT archive readiness: {exc}",
-                    )
-                )
     backbone = str(model.get("backbone") or "")
-    report_only_diagnosis = report_only_contract
-    if report_only_diagnosis:
-        count = len((config.get("alignment") or {}).get("report_embedding_columns") or ())
-        checks.append(
-            Check(
-                "DATA",
-                "report_embedding_contract",
-                "PASS" if count > 0 else "FAIL",
-                f"columns={count}",
-            )
-        )
-    elif stage in {
-        "foundation", "dapt", "alignment", "silver_encoder_adaptation",
-        "diagnosis", "prognosis", "contour", "ablation", "counterfactual", "roi_student",
-    }:
+    if stage in {"diagnosis", "prognosis", "ablation", "counterfactual"}:
         uses_image_model = not (
             effective_stage == "prognosis"
             and "image" not in set(task.get("modalities") or ())
         )
         if not uses_image_model:
             checks.append(Check("MODEL", "image_backbone", "SKIP", "image modality disabled"))
+        elif backbone and str(model.get("integration") or "external") == "baseline":
+            # 2D / 2.5D / 3D baseline zoo (source/model). Weights resolve at build time and the
+            # training log states whether they loaded; only a pinned local file is checked here.
+            from source.components.encoders.image.registry import registered_backbones
+
+            registered = backbone.strip().lower().replace("-", "_") in registered_backbones()
+            checks.append(
+                Check(
+                    "MODEL",
+                    f"{backbone}_baseline_contract",
+                    "PASS" if registered and int(model.get("feature_dim") or 0) > 0 else "FAIL",
+                    "registered baseline encoder (source/model/registry.py) with feature_dim",
+                )
+            )
+            pretrained = dict(model.get("pretrained") or {})
+            wants_weights = bool(model.get("load_pretrained", True)) and bool(pretrained.get("enabled", True))
+            if wants_weights and pretrained.get("path"):
+                present = paths.code_asset(pretrained["path"]).is_file()
+                downloadable = bool(pretrained.get("url")) and bool(pretrained.get("allow_download", True))
+                checks.append(
+                    Check(
+                        "MODEL",
+                        f"{backbone}_pretrained_file",
+                        # SKIP is the non-blocking status: preflight only fails on FAIL.
+                        "PASS" if present else ("SKIP" if downloadable or not pretrained.get("required") else "FAIL"),
+                        str(paths.code_asset(pretrained["path"]))
+                        + ("" if present else " missing (downloaded at build time)" if downloadable
+                           else " missing -> training from scratch" if not pretrained.get("required") else " missing"),
+                    )
+                )
+            head_type = str((config.get("head") or {}).get("type") or "")
+            checks.append(
+                Check("MODEL", "classification_head", "PASS" if head_type in {"mlp", "kan"} else "FAIL",
+                      f"head.type={head_type or 'missing'}")
+            )
         elif backbone and str(model.get("integration") or "external") == "local":
             from source.components.encoders.image.registry import registered_backbones
 
@@ -593,50 +491,6 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
             )
         else:
             checks.append(Check("MODEL", "backbone", "FAIL", "missing"))
-    elif stage == "segmentation_validation":
-        specific = dict(config.get("segmentation_finetuning") or {})
-        available = bool(specific.get("available", False))
-        checks.append(
-            Check(
-                "SUPERVISION",
-                "ctpa_expert_annotations",
-                "PASS" if available else "FAIL",
-                (
-                    "configured"
-                    if available
-                    else "UNAVAILABLE: expert-reviewed CTPA segmentation annotations are not configured"
-                ),
-            )
-        )
-        annotation = specific.get("annotation_manifest")
-        initialization = specific.get("public_initialization_checkpoint")
-        _exists(
-            checks, "SUPERVISION", "annotation_manifest",
-            _artifact_path(paths, annotation, profile=(config.get("data") or {}).get("profile")),
-            available,
-        )
-        _exists(
-            checks, "MODEL", "public_initialization_checkpoint",
-            paths.code_asset(initialization), available,
-        )
-        for key in ("model_factory", "trainer_factory", "output_adapter"):
-            value = specific.get(key)
-            checks.append(
-                Check(
-                    "MODEL",
-                    key,
-                    "PASS" if available and not _is_placeholder(value) else "FAIL",
-                    str(value or "not configured"),
-                )
-            )
-        checks.append(
-            Check(
-                "DATA",
-                "test_labels_not_used_for_tuning",
-                "PASS" if specific.get("tuning_splits") == ["train", "validation"] else "FAIL",
-                f"tuning_splits={specific.get('tuning_splits')}",
-            )
-        )
     elif stage == "segmentation":
         import shutil as _shutil
 
@@ -719,7 +573,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 )
             )
         required_roles = tuple(
-            name for name in (stages or ()) if name in {"falcon", "medgemma"}
+            name for name in (stages or ()) if name in {"medgemma"}
         )
         for role in required_roles:
             configured = dict(silver.get(role) or {})
@@ -777,11 +631,6 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
     for key, in_output in supervision_roots.items():
         requested = bool(supervision.get(f"require_{key}", False))
         configured = supervision.get(key)
-        if stage == "silver_encoder_adaptation" and key == "silver_labels":
-            silver_training = dict(config.get("silver_training") or {})
-            source = str(silver_training.get("silver_source") or "").strip().lower()
-            configured = dict(silver_training.get("sources") or {}).get(source)
-            requested = True
         try:
             configured = _artifact_path(
                 paths, configured, output=in_output, profile=data_config.get("profile")
@@ -794,11 +643,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
             try:
                 from source.silver.schema import TARGETS, canonical_target
 
-                configured_targets = (
-                    tuple((config.get("silver_training") or {}).get("targets") or ())
-                    if stage == "silver_encoder_adaptation"
-                    else tuple(task.get("silver_targets") or ())
-                )
+                configured_targets = tuple(task.get("silver_targets") or ())
                 requested_targets = {
                     canonical_target(str(name)) for name in configured_targets
                 }
@@ -965,7 +810,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 audit = audit_temporal_holdout(
                     manifest_rows,
                     date_column=date_column,
-                    target_column=str(task.get("primary_target", "mortality_30d")),
+                    target_column=str(task.get("primary_target") or "1_month_mortality"),
                     minimum_events_per_split=int(temporal.get("minimum_events_per_split", 1)),
                     patient_column=str(data_config.get("patient_id_column", "patient_id")),
                     split_column=str(data_config.get("split_column", "split")),
@@ -1090,101 +935,6 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                 "original masks reused; missing=" + str(missing_masks),
             )
         )
-    if stage == "roi_student":
-        specification = str(task.get("input_counterfactual") or "")
-        valid = specification in {
-            "keep_only_heart", "keep_only_pa", "keep_only_lung", "keep_only_random"
-        }
-        c0 = str(lineage.get("initialization") or "") == "C0"
-        checks.append(
-            Check(
-                "EXPERIMENT",
-                "roi_student_contract",
-                "PASS" if valid and c0 else "FAIL",
-                f"input={specification} initialization={lineage.get('initialization')}",
-            )
-        )
-        distillation = dict(config.get("distillation") or {})
-        if distillation.get("enabled"):
-            teacher_checkpoint = Path(str(distillation.get("teacher_checkpoint") or ""))
-            _exists(checks, "MODEL", "frozen_teacher_checkpoint", teacher_checkpoint, True)
-            values_ok = (
-                float(distillation.get("temperature", 0)) > 0
-                and float(distillation.get("alpha_distill", -1)) >= 0
-                and float(distillation.get("alpha_supervised", -1)) >= 0
-            )
-            checks.append(
-                Check(
-                    "EXPERIMENT", "distillation_contract", "PASS" if values_ok else "FAIL",
-                    f"temperature={distillation.get('temperature')} "
-                    f"lambda_KD={distillation.get('alpha_distill')}",
-                )
-            )
-    if stage == "alignment":
-        count = len((config.get("alignment") or {}).get("report_embedding_columns") or ())
-        checks.append(
-            Check(
-                "DATA",
-                "report_embedding_contract",
-                "PASS" if count > 0 else "FAIL",
-                f"columns={count}",
-            )
-        )
-    zero_shot = dict(config.get("zero_shot") or {})
-    if zero_shot.get("requested"):
-        # A zero-shot request must never fall through to a different stage entrypoint:
-        # foundation materialization loads and profiles an encoder, it does not classify.
-        checks.append(
-            Check(
-                "EXPERIMENT",
-                "zero_shot_contract",
-                "PASS" if zero_shot.get("available") else "FAIL",
-                str(
-                    zero_shot.get("reason")
-                    or "UNAVAILABLE: zero-shot inference is not implemented for this backbone"
-                ),
-            )
-        )
-    concept_bottleneck = dict(config.get("concept_bottleneck") or {})
-    if bool(concept_bottleneck.get("enabled")):
-        try:
-            from source.concepts.schema import enabled_concept_specs
-
-            concepts = enabled_concept_specs(concept_bottleneck)
-            missing_from_labels = sorted(
-                concept.target
-                for concept in concepts.values()
-                if concept.target not in tuple(data_config.get("label_columns") or ())
-            )
-            checks.append(
-                Check(
-                    "SUPERVISION",
-                    "concept_bottleneck_targets",
-                    "PASS" if not missing_from_labels else "FAIL",
-                    f"concepts={sorted(concepts)} missing_from_label_columns={missing_from_labels}",
-                )
-            )
-        except ValueError as exc:
-            checks.append(Check("SUPERVISION", "concept_bottleneck_targets", "FAIL", str(exc)))
-    if stage == "silver_encoder_adaptation":
-        silver_training = dict(config.get("silver_training") or {})
-        targets = silver_training.get("targets") or {}
-        source = str(silver_training.get("silver_source") or "").strip().lower()
-        required = bool(supervision.get("require_silver_labels", False))
-        valid_targets = isinstance(targets, Mapping) and bool(targets) and all(
-            int(classes) > 0 for classes in targets.values()
-        )
-        checks.append(
-            Check(
-                "SUPERVISION",
-                "silver_encoder_adaptation_contract",
-                "PASS" if valid_targets and required and source in SILVER_METHODS else "FAIL",
-                f"source={source} require_silver_labels={required} targets={len(targets)}",
-            )
-        )
-        initialization = dict(config.get("init") or {})
-        checkpoint = paths.output_asset(initialization.get("checkpoint"))
-        _exists(checks, "MODEL", "upstream_encoder_checkpoint", checkpoint, True)
     compute = dict(config.get("compute") or {})
     strategy = str(compute.get("strategy", "single"))
     accelerator = str(compute.get("accelerator", "cuda" if strategy != "cpu" else "cpu"))

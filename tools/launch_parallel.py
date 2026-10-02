@@ -39,39 +39,60 @@ def _read_parallel_config(path: Path) -> dict[str, Any]:
     return parallel
 
 
+# The scope flags tools/launch.py requires (exactly one of them) for each generation stage;
+# every other stage trains on its configured split and must not receive any of them.
+SELECTION_OPTIONS = {
+    "silver": ("--patient-id", "--max-reports", "--allow-full"),
+    "counterfactual": ("--patient-id", "--max-cases", "--allow-full"),
+}
+ALL_SELECTION_OPTIONS = {option for options in SELECTION_OPTIONS.values() for option in options}
+
+
 def _validate_job_arguments(raw: Any) -> tuple[str, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list) or not all(isinstance(value, str) for value in raw):
         raise SystemExit("parallel job args must be a list of strings")
     arguments = tuple(raw)
-    value_options = {"--patient-id", "--max-reports"}
+    value_options = {"--patient-id", "--max-reports", "--max-cases"}
     flag_options = {"--allow-full", "--resume"}
-    selection_modes: set[str] = set()
     index = 0
     while index < len(arguments):
         option = arguments[index]
         if option in flag_options:
-            if option == "--allow-full":
-                selection_modes.add(option)
             index += 1
             continue
         has_value = index + 1 < len(arguments) and not arguments[index + 1].startswith("--")
         if option in value_options and has_value:
-            selection_modes.add(option)
-            if option == "--max-reports":
+            if option in {"--max-reports", "--max-cases"}:
                 try:
                     maximum = int(arguments[index + 1])
                 except ValueError as exc:
-                    raise SystemExit("--max-reports requires a positive integer") from exc
+                    raise SystemExit(f"{option} requires a positive integer") from exc
                 if maximum < 1:
-                    raise SystemExit("--max-reports requires a positive integer")
+                    raise SystemExit(f"{option} requires a positive integer")
             index += 2
             continue
         raise SystemExit(f"unsupported or incomplete parallel job argument: {option}")
-    if len(selection_modes) > 1:
-        raise SystemExit("parallel silver job must use exactly one selection mode")
     return arguments
+
+
+def _check_selection(stage: str, experiment: str, arguments: tuple[str, ...]) -> None:
+    """Apply tools/launch.py's scope rules up front, before any job of any wave starts."""
+    modes = {argument for argument in arguments if argument in ALL_SELECTION_OPTIONS}
+    allowed = SELECTION_OPTIONS.get(stage)
+    if allowed is None:
+        if modes:
+            raise SystemExit(
+                f"selection arguments {sorted(modes)} are only valid for silver or "
+                f"counterfactual jobs, not {stage} job {experiment}"
+            )
+        return
+    wrong = sorted(modes - set(allowed))
+    if wrong:
+        raise SystemExit(f"{stage} job {experiment} does not accept {wrong}; use one of {list(allowed)}")
+    if len(modes) != 1:
+        raise SystemExit(f"{stage} job {experiment} requires exactly one of {list(allowed)}")
 
 
 def _job_requests(raw_jobs: Any, config_path: Path) -> list[tuple[Path, tuple[str, ...]]]:
@@ -115,16 +136,12 @@ def _build_jobs(config_path: Path, parallel: dict[str, Any], passthrough: list[s
         config = load_config(experiment_config, overrides)
         experiment = str(config["experiment"]["id"])
         stage = str(config["experiment"]["stage"])
-        selection_options = {"--patient-id", "--max-reports", "--allow-full"}
-        has_selection = any(argument in selection_options for argument in job_arguments)
-        if stage == "silver" and not has_selection:
-            raise SystemExit(f"silver job {experiment} requires a patient/report selection argument")
-        if stage != "silver" and has_selection:
-            raise SystemExit(f"report selection arguments are invalid for non-silver job {experiment}")
+        if stage == "ablation":
+            # Same resolution as tools/launch.py: an ablation runs as its base stage.
+            stage = str((config.get("task") or {}).get("base_stage") or "")
+        _check_selection(stage, experiment, job_arguments)
         if "--resume" in job_arguments and "--overwrite" in passthrough:
             raise SystemExit(f"job {experiment} cannot combine --resume with global --overwrite")
-        if stage == "foundation" and len(group) > 1:
-            raise SystemExit(f"foundation job {experiment} supports at most one GPU")
         family = str(config["experiment"].get("family") or config["experiment"]["stage"])
         if family == "remove_roi":
             raise SystemExit(
@@ -158,7 +175,14 @@ def _preflight(jobs: list[Job], *, overwrite: bool) -> None:
         ]
         config = load_config(job.config_path, overrides)
         stage = str(config["experiment"]["stage"])
-        config["resume"] = "--resume" in job.arguments or stage == "silver"
+        if stage == "ablation":
+            stage = str((config.get("task") or {}).get("base_stage") or "")
+        # Mirrors tools/launch.py: silver and partial counterfactual runs continue in place.
+        config["resume"] = (
+            "--resume" in job.arguments
+            or stage == "silver"
+            or (stage == "counterfactual" and "--allow-full" not in job.arguments)
+        )
         config["overwrite"] = overwrite
         require_preflight(config, ProjectPaths.resolve(config))
 

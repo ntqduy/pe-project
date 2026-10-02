@@ -31,6 +31,12 @@ training = [
   "safetensors>=0.4",
   "einops>=0.7",
   "sentencepiece>=0.2",
+  # Baseline zoo (source/model): timm backbones, fvcore for third_party/repos/VMamba,
+  # sympy for the pykan KAN head; opencv for the zero-shot PENet cv2.INTER_AREA resize.
+  "timm>=1.0",
+  "fvcore>=0.1.5",
+  "sympy>=1.12",
+  "opencv-python-headless>=4.9",
 ]
 segmentation = [
   "pydicom>=2.4",

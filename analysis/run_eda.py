@@ -158,7 +158,11 @@ def main() -> int:
         return 3
 
     try:
-        bundle = load_dataset(dataset_root, args.profile)
+        # Clinical tables live in the profile's cache, exactly where the pipeline writes them.
+        clinical_root = (
+            paths.dataset_cache_root(args.profile) / "clinical" if paths.derived_root is not None else None
+        )
+        bundle = load_dataset(dataset_root, args.profile, clinical_root)
         logger.log(f"tables_present={sorted(bundle.tables)}")
         if bundle.missing:
             logger.log(f"tables_missing={sorted(bundle.missing)}")

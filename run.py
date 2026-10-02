@@ -35,17 +35,22 @@ GROUP_ORDER = (
     "REPRESENTATION",
     "PROBE",
     "DIAGNOSIS",
+    "BASELINES",
     "PROGNOSIS",
     "ANATOMY ANALYSIS",
     "DEFERRED",
 )
-# The two data-generation stages are not model training, so tools/launch.py deliberately
+# The data-generation stages are not model training, so tools/launch.py deliberately
 # does not know them: each has its own CLI with its own worker model (GPU study sharding for
-# segmentation, CPU workers for ROI construction).
+# segmentation, CPU workers for ROI construction). selection_flags lists exactly the scope
+# flags each CLI's argparse defines; anything else is refused before delegating.
 DATA_STAGE_TOOLS = {
-    "dataset": {"tool": "tools/data/build_dataset.py", "gpus": False, "set": True},
-    "segmentation": {"tool": "tools/create_masks/generate_masks.py", "gpus": True, "set": True},
-    "roi": {"tool": "tools/build_rois/build_rois.py", "gpus": False, "set": True},
+    "dataset": {"tool": "tools/data/build_dataset.py", "gpus": False, "set": True,
+                "selection_flags": ("max-cases", "allow-full")},
+    "segmentation": {"tool": "tools/create_masks/generate_masks.py", "gpus": True, "set": True,
+                     "selection_flags": ("patient-id", "max-cases", "allow-full")},
+    "roi": {"tool": "tools/build_rois/build_rois.py", "gpus": False, "set": True,
+            "selection_flags": ("patient-id", "max-cases", "allow-full")},
 }
 # Artifact paths are stored relative to different roots depending on the key.
 # How a relative `path_key` from the registry is resolved. These three sets must agree with
@@ -53,12 +58,10 @@ DATA_STAGE_TOOLS = {
 # an artifact lives.
 OUTPUT_RELATIVE_KEYS = (
     "roi.segmentation_run",
-    "init.checkpoint",
     "supervision.masks",
     "supervision.rois",
     "supervision.silver_labels",
     "data.roi_manifest",
-    "distillation.teacher_checkpoint",
     "lineage.source_checkpoint",
 )
 CODE_RELATIVE_KEYS = ("model.checkpoint", "model.repo", "segmentation.weights_directory")
@@ -98,25 +101,38 @@ def resolve_entry(registry: dict[str, Any], name: str) -> tuple[str, dict[str, A
     return name, dict(experiments[name])
 
 
-def config_path(entry: dict[str, Any]) -> Path:
+def config_problem(entry: dict[str, Any]) -> str | None:
+    """Why an entry's config cannot be used, or None when the file exists."""
     raw = str(entry.get("config") or "")
     if not raw:
-        fail("registry entry has no config path")
-    path = ROOT / raw
-    if not path.is_file():
-        fail(f"config file listed in the registry does not exist: {raw}")
-    return path
+        return "registry entry has no config path"
+    if not (ROOT / raw).is_file():
+        return f"config file listed in the registry does not exist: {raw}"
+    return None
+
+
+def config_path(entry: dict[str, Any]) -> Path:
+    problem = config_problem(entry)
+    if problem:
+        fail(problem)
+    return ROOT / str(entry["config"])
 
 
 def load_resolved_config(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Resolve a config through the project's own loader; None if it cannot be resolved."""
+    problem = config_problem(entry)
+    if problem:
+        # Checked before resolving: config_path() exits, which `except Exception` below
+        # would not catch, and the overview commands must report a broken entry, not abort.
+        print(f"note: {problem}")
+        return None
     try:
         from source.utils.config import load_config
     except ModuleNotFoundError as exc:
         print(f"note: cannot import the project config loader ({exc})")
         return None
     try:
-        return load_config(config_path(entry))
+        return load_config(ROOT / str(entry["config"]))
     except Exception as exc:  # noqa: BLE001 - report, never crash the overview commands
         print(f"note: config did not resolve ({type(exc).__name__}: {exc})")
         return None
@@ -193,11 +209,15 @@ def command_list(registry: dict[str, Any], _args: argparse.Namespace) -> int:
         for name, entry in members.items():
             status = str(entry.get("status") or "?")
             alias = " (alias)" if entry.get("alias_of") else ""
-            print(f"  {name:<{width}}  [{status}]{alias}  {entry.get('description', '')}")
+            broken = " (BROKEN: config missing)" if config_problem(entry) else ""
+            print(f"  {name:<{width}}  [{status}]{alias}{broken}  {entry.get('description', '')}")
         print()
     ungrouped = [name for name, entry in experiments.items() if entry.get("group") not in GROUP_ORDER]
     if ungrouped:
         print("UNGROUPED (fix the registry):", ", ".join(sorted(ungrouped)))
+    broken = [name for name, entry in experiments.items() if config_problem(entry)]
+    if broken:
+        print("BROKEN (config file missing, fix the registry):", ", ".join(sorted(broken)))
     print("Next: python run.py show <experiment>   |   python run.py plan <experiment>")
     return 0
 
@@ -250,6 +270,8 @@ def command_show(registry: dict[str, Any], args: argparse.Namespace) -> int:
             print(f"  ! {blocker}")
     else:
         print("  none recorded for this experiment")
+    for note in entry.get("notes") or []:
+        print(f"  note: {note}")
     if config is not None and (config.get("model") or {}).get("backbone"):
         for blocker in registry["project_blockers"]:
             print(f"  ! [project:{blocker.get('id')}] {str(blocker.get('what', '')).strip()}")
@@ -276,6 +298,11 @@ def command_plan(registry: dict[str, Any], args: argparse.Namespace) -> int:
         config = load_resolved_config(entry) if entry.get("config") else None
         status = str(entry.get("status") or "?")
         print(f"{indent}{current}  [{status}]")
+        problem = config_problem(entry)
+        if problem:
+            # A broken registry entry cannot run at all; report it in the chain, never abort.
+            worst.append("BLOCKED")
+            print(f"{indent}  <- [BLOCKED] {problem}")
         for requirement in entry.get("requires") or []:
             requirement = dict(requirement)
             state, detail = requirement_state(requirement, config, registry)
@@ -358,13 +385,14 @@ def delegate(entry: dict[str, Any], name: str, args: argparse.Namespace, *, mode
             return 3
         if not selected:
             print(f"stage '{stage}' needs an explicit scope so a full run is never accidental:")
-            print(f"  python run.py run {name} --patient-id PATIENT_001")
+            if "patient-id" in data_stage["selection_flags"]:
+                print(f"  python run.py run {name} --patient-id PATIENT_001")
             print(f"  python run.py run {name} --max-cases 5")
             print(f"  python run.py run {name} --allow-full")
             return 3
         tool = ROOT / data_stage["tool"]
         accepts = {"gpus": data_stage["gpus"], "set": data_stage["set"], "state": False,
-                   "selection": True}
+                   "selection": True, "selection_flags": data_stage["selection_flags"]}
     else:
         tool = ROOT / "tools" / "launch.py"
         accepts = {"gpus": True, "set": True, "state": True, "selection": True}
@@ -390,22 +418,27 @@ def delegate(entry: dict[str, Any], name: str, args: argparse.Namespace, *, mode
     if selected and not accepts["selection"]:
         print("note: preflight validates the whole configured input; ignoring scope flags.")
     elif accepts["selection"]:
-        # A runner accepts only the scope flags its own CLI defines; forwarding the rest
-        # would fail in argparse with no hint about which flag the stage cannot take.
+        # A runner or data-stage CLI accepts only the scope flags its own argparse defines;
+        # forwarding the rest would fail in argparse with no hint about which flag the stage
+        # cannot take, so an unsupported flag is refused here with the flags that do work.
         allowed = accepts.get("selection_flags")
-        def forwarded(flag: str) -> bool:
-            return allowed is None or flag in allowed
+
+        def require(flag: str) -> None:
+            if allowed is not None and flag not in allowed:
+                options = ", ".join(f"--{option}" for option in allowed)
+                fail(f"'{name}' does not accept --{flag}; its scope flags are: {options}")
+
         for patient in args.patient_id or []:
-            if not forwarded("patient-id"):
-                fail(f"'{name}' scores whole splits; --patient-id is not accepted (use --max-cases N)")
+            require("patient-id")
             command += ["--patient-id", patient]
-        if args.max_cases is not None and forwarded("max-cases"):
+        if args.max_cases is not None:
+            require("max-cases")
             command += ["--max-cases", str(args.max_cases)]
         if args.max_reports is not None:
-            if not forwarded("max-reports"):
-                fail(f"'{name}' scores whole splits; --max-reports is not accepted")
+            require("max-reports")
             command += ["--max-reports", str(args.max_reports)]
-        if args.allow_full and forwarded("allow-full"):
+        if args.allow_full:
+            require("allow-full")
             command.append("--allow-full")
     if mode == "dry":
         command.append("--dry-run")

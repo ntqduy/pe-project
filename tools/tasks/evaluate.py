@@ -35,8 +35,8 @@ from source.engine.task_artifacts import (
     preview_log_lines,
     write_backbone_previews,
 )
+from source.engine.task_steps import diagnosis_evaluation_targets
 from source.engine.trainer import move_to_device
-from source.metrics.bootstrap import patient_bootstrap
 from source.metrics.calibration import DEFAULT_CALIBRATION_MIN_EVENTS
 from source.metrics.result_table import (
     DEFAULT_MIN_CLASS_COUNT,
@@ -53,7 +53,6 @@ from source.metrics.result_table import (
     write_predictions_csv,
     write_result_csv,
 )
-from source.metrics.segmentation import segmentation_case_metrics
 from source.utils.console import BAR, final_evaluation_block
 from source.utils.environment import environment_report
 from source.utils.logger import RunLogger
@@ -64,7 +63,6 @@ from tools._common import (
     base_parser,
     build_dataset,
     resolve_cli_config,
-    write_csv_atomic,
     write_parquet_atomic,
 )
 
@@ -74,24 +72,69 @@ def _read_prediction_rows(path: Path) -> list[dict[str, Any]]:
     return read_prediction_file(path, split="test")
 
 
+def _checkpoint_bundle(checkpoint: Path) -> Path:
+    """Folder holding a checkpoint's result.json.
+
+    A trained task keeps ``<id>/epoch_<E>/checkpoint/best.ckpt`` beside
+    ``<id>/epoch_<E>/result.json``; an exported or legacy root checkpoint sits beside it.
+    """
+    checkpoint = Path(checkpoint)
+    return checkpoint.parent.parent if checkpoint.parent.name == "checkpoint" else checkpoint.parent
+
+
+def _recorded_checkpoint_sha256(payload: dict[str, Any]) -> str | None:
+    return (payload.get("evaluation_checkpoint") or {}).get("sha256")
+
+
 def _locked_external_threshold(config, paths, checkpoint: Path) -> tuple[float, Path]:
     """Read a threshold selected on the internal validation cohort.
 
     An external test set must never supply a validation subset for threshold tuning.
-    The artifact is normally the ``result.json`` beside the source checkpoint after
-    internal evaluation, but can be named explicitly for exported checkpoints.
+    The artifact is normally the ``result.json`` of the source checkpoint's epoch bundle after
+    internal evaluation, but can be named explicitly for exported checkpoints: a result.json,
+    an ``epoch_<E>`` bundle, or the run folder above it (the bundle whose recorded
+    evaluation checkpoint is the one being evaluated is used). The artifact must record the
+    SHA-256 of the checkpoint it was computed with, and it must equal ``checkpoint``'s.
     """
     external = dict(config.get("external_evaluation") or {})
     raw = external.get("threshold_artifact")
-    artifact = Path(str(raw)) if raw else checkpoint.parent / "result.json"
-    if raw and not artifact.is_absolute():
-        artifact = paths.output_asset(artifact)
-    if not artifact.is_file():
+    location = Path(str(raw)) if raw else _checkpoint_bundle(checkpoint)
+    if raw and not location.is_absolute():
+        location = paths.output_asset(location)
+    if location.is_file():
+        candidates = [location]
+    elif (location / "result.json").is_file():
+        candidates = [location / "result.json"]
+    else:
+        candidates = sorted(location.glob("epoch_*/result.json")) if location.is_dir() else []
+    if not candidates:
         raise FileNotFoundError(
             "external test requires the internal-validation result containing the locked "
-            f"threshold: {artifact}"
+            f"threshold: {location}"
         )
-    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    digest = checkpoint_sha256(checkpoint)
+    payloads = {path: json.loads(path.read_text(encoding="utf-8")) for path in candidates}
+    matching = [path for path, payload in payloads.items() if _recorded_checkpoint_sha256(payload) == digest]
+    if len(matching) > 1:
+        # Byte-identical checkpoints (e.g. two budgets that selected the same epoch) are
+        # indistinguishable by hash, and their thresholds need not agree.
+        raise ValueError(
+            "external threshold artifact is ambiguous: "
+            f"{len(matching)} results record the checkpoint being evaluated "
+            f"({Path(checkpoint).resolve()} sha256={digest}): "
+            f"{json.dumps([str(path) for path in matching])}. "
+            "Name the intended epoch_<E>/result.json explicitly."
+        )
+    if not matching:
+        recorded = {str(path): _recorded_checkpoint_sha256(payload) for path, payload in payloads.items()}
+        raise ValueError(
+            "external threshold artifact was not computed with the checkpoint being evaluated "
+            f"({Path(checkpoint).resolve()} sha256={digest}); recorded evaluation_checkpoint.sha256: "
+            f"{json.dumps(recorded)}. Name the matching epoch_<E>/result.json explicitly or re-run "
+            "the internal evaluation of this checkpoint."
+        )
+    artifact = matching[0]
+    payload = payloads[artifact]
     evaluation = dict(payload.get("evaluation") or {})
     if evaluation.get("threshold") is None:
         raise ValueError(f"threshold is absent from internal evaluation artifact: {artifact}")
@@ -101,6 +144,39 @@ def _locked_external_threshold(config, paths, checkpoint: Path) -> tuple[float, 
             f"{artifact}"
         )
     return float(evaluation["threshold"]), artifact.resolve()
+
+
+def _reference_threshold(path: Path, rows: list[dict[str, Any]], target: str) -> tuple[float | None, str]:
+    """Operating point the reference predictions were scored with: ``(threshold, source)``.
+
+    Read from the reference's own result.json (written beside its predictions.csv), source
+    ``"result.json"``. Without one, the reference's own y_pred column is used as-is, source
+    ``"y_pred"`` and threshold None: a cutoff recovered from the stored y_prob would be a guess
+    (y_prob is rounded on disk, y_pred is not) and must not be reported as the real one. The
+    comparison model's threshold must never be applied to the reference rows.
+    """
+    result_path = Path(path).parent / "result.json"
+    if result_path.is_file():
+        evaluation = dict(json.loads(result_path.read_text(encoding="utf-8")).get("evaluation") or {})
+        target_result = dict((evaluation.get("targets") or {}).get(target) or {})
+        if target_result.get("threshold") is not None:
+            return float(target_result["threshold"]), "result.json"
+        if evaluation.get("threshold") is not None and str(evaluation.get("primary_target") or target) == target:
+            return float(evaluation["threshold"]), "result.json"
+    if rows and all(_binary_prediction(row.get("y_pred")) is not None for row in rows):
+        return None, "y_pred"
+    raise ValueError(
+        f"cannot determine the reference operating point for target={target!r}: no threshold in a "
+        f"result.json beside {path}, and its y_pred column is missing or not 0/1"
+    )
+
+
+def _binary_prediction(value: Any) -> int | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number in (0.0, 1.0) else None
 
 
 def _read_restriction(path: Path) -> set[tuple[str, str]]:
@@ -199,51 +275,6 @@ def _loader(
 
 
 @torch.no_grad()
-def _classification_rows(model, loader, stage, primary, label_index, context, task, seed):
-    model.eval()
-    local = []
-    for batch in loader:
-        identifiers = list(zip(batch["patient_id"], batch["study_id"]))
-        moved = move_to_device(batch, context.device)
-        if "volume" in moved:
-            moved = dict(moved)
-            moved["volume"] = apply_counterfactual(
-                moved["volume"],
-                moved["masks"],
-                str(task.get("input_counterfactual") or ""),
-                matched_region=str(task.get("matched_region", "pa")),
-                masking_policy=task.get("masking_policy", "local_mean"),
-                seed=seed,
-                patient_ids=batch.get("patient_id"),
-                study_ids=batch.get("study_id"),
-            )
-        if stage == "diagnosis" and str(task.get("architecture")) == "report_only":
-            logits = model(moved["report_embedding"])["logits"][primary].squeeze(-1)
-        elif stage == "diagnosis":
-            logits = model(moved["volume"], moved["masks"])["logits"][primary].squeeze(-1)
-        else:
-            output = model(moved)
-            logits = output.get("target_logits", {}).get(primary, output["logits"])
-        probability = torch.sigmoid(logits).detach().cpu().tolist()
-        raw_truth = batch["labels"][:, label_index].tolist()
-        valid = batch["label_valid"][:, label_index].bool().tolist()
-        truth = [int(value) if is_valid else 0 for value, is_valid in zip(raw_truth, valid)]
-        local.extend(
-            {
-                "patient_id": str(patient),
-                "study_id": str(study),
-                "y_true": int(label),
-                "y_prob": float(score),
-            }
-            for (patient, study), label, score, is_valid in zip(
-                identifiers, truth, probability, valid
-            )
-            if is_valid
-        )
-    return local
-
-
-@torch.no_grad()
 def _classification_rows_all_targets(model, loader, stage, targets, context, task, seed, log=None, label="inference"):
     """Run one inference pass and emit one prediction row per observable target."""
     model.eval()
@@ -264,9 +295,7 @@ def _classification_rows_all_targets(model, loader, stage, targets, context, tas
                 patient_ids=batch.get("patient_id"),
                 study_ids=batch.get("study_id"),
             )
-        if stage == "diagnosis" and str(task.get("architecture")) == "report_only":
-            output = model(moved["report_embedding"])
-        elif stage == "diagnosis":
+        if stage == "diagnosis":
             output = model(moved["volume"], moved["masks"])
         else:
             output = model(moved)
@@ -327,34 +356,6 @@ def _run_checkpoint(run_dir: Path) -> Path:
     if not candidates:
         raise FileNotFoundError(f"no best checkpoint found under {run_dir}")
     return candidates[-1]
-
-
-@torch.no_grad()
-def _contour_rows(model, loader, context, tolerance):
-    model.eval()
-    local = []
-    for batch in loader:
-        identifiers = list(zip(batch["patient_id"], batch["study_id"]))
-        moved = move_to_device(batch, context.device)
-        prediction = (torch.sigmoid(model(moved["volume"])) >= 0.5).cpu().numpy()
-        target = batch["masks"]["target"].numpy()
-        for (patient, study), predicted_case, target_case in zip(identifiers, prediction, target):
-            per_region = [
-                segmentation_case_metrics(predicted_case[index], target_case[index], (1, 1, 1), tolerance)
-                for index in range(predicted_case.shape[0])
-            ]
-            row = {
-                "patient_id": str(patient),
-                "study_id": str(study),
-                "dice": float(np.mean([item["dice"] for item in per_region])),
-                "nsd": float(np.mean([item["nsd"] for item in per_region])),
-                "hd95": float(np.mean([item["hd95"] for item in per_region])),
-            }
-            for index, metrics in enumerate(per_region):
-                for name, value in metrics.items():
-                    row[f"{name}_region_{index}"] = value
-            local.append(row)
-    return local
 
 
 def main() -> int:
@@ -478,11 +479,13 @@ def main() -> int:
         log(f"data loader {worker_note}")
         stage = str(config["experiment"]["stage"])
         task_config = dict(config.get("task") or {})
-        if stage in {"ablation", "roi_student"}:
+        if stage == "ablation":
             stage = str(task_config.get("base_stage") or "")
         evaluation_config = dict(config.get("evaluation") or {})
         table_rows: list[dict[str, Any]] = []
         prediction_table: list[dict[str, Any]] = []
+        # Outputs written at the run root that cleanup_task_run must not take for legacy copies.
+        kept_outputs: list[Path] = []
         samples = int(evaluation_config.get("bootstrap_samples", 2000))
         confidence = float(evaluation_config.get("confidence", 0.95))
         seed = int(config.get("seed", 42))
@@ -494,7 +497,8 @@ def main() -> int:
                 raise ValueError(f"primary target {primary!r} is absent from data.label_columns")
             configured_targets = list((task_config.get("targets") or {}).keys())
             if stage == "diagnosis":
-                target_names = [primary]
+                # Primary first; multitask native heads are scored as additional targets.
+                target_names = diagnosis_evaluation_targets(task_config, labels, primary)
             elif configured_targets:
                 target_names = [target for target in configured_targets if target in labels]
             else:
@@ -712,91 +716,66 @@ def main() -> int:
                         reference_rows = [
                             item for item in reference_rows if str(item.get("target")) == primary
                         ]
-                    paired_threshold = float(primary_result["threshold"])
+                    # Each arm is scored at its own validation-selected operating point; a
+                    # reference without a result.json keeps the y_pred it was written with.
+                    reference_threshold, reference_threshold_source = _reference_threshold(
+                        args.reference_predictions, reference_rows, primary
+                    )
 
-                    def _paired_metric(items: list[dict[str, Any]]) -> dict[str, float]:
-                        computed = binary_classification_metrics(
-                            [int(item["y_true"]) for item in items],
-                            [float(item["y_prob"]) for item in items],
-                            paired_threshold,
-                        )
-                        computed.pop("threshold")
-                        return computed
+                    def _paired_metric_at(threshold: float | None):
+                        def metric(items: list[dict[str, Any]]) -> dict[str, float]:
+                            computed = binary_classification_metrics(
+                                [int(item["y_true"]) for item in items],
+                                [float(item["y_prob"]) for item in items],
+                                threshold,
+                                y_pred=(
+                                    None
+                                    if threshold is not None
+                                    else [_binary_prediction(item["y_pred"]) for item in items]
+                                ),
+                            )
+                            computed.pop("threshold")
+                            return computed
+
+                        return metric
 
                     paired = paired_patient_bootstrap(
                         reference_rows,
                         primary_rows,
-                        _paired_metric,
+                        _paired_metric_at(float(primary_result["threshold"])),
                         n_bootstrap=samples,
                         confidence=confidence,
                         seed=seed,
+                        reference_metric_fn=_paired_metric_at(reference_threshold),
                     )
+                    for name, values in paired.items():
+                        if values.get("ci_note"):
+                            log(f"WARNING paired_vs_reference metric={name}: {values['ci_note']}")
+                    paired_path = evaluation_dir / "bootstrap_metrics.parquet"
                     write_parquet_atomic(
                         [{"metric": name, **values} for name, values in paired.items()],
-                        evaluation_dir / "bootstrap_metrics.parquet",
+                        paired_path,
                     )
+                    kept_outputs.append(paired_path)
                     result_evaluation["paired_vs_reference"] = {
                         "reference_predictions": str(args.reference_predictions),
+                        "reference_threshold": reference_threshold,
+                        "reference_threshold_source": reference_threshold_source,
+                        "comparison_threshold": float(primary_result["threshold"]),
                         "metrics": paired,
                     }
-        elif stage == "contour":
-            test_loader, test_expected = _loader(
-                config, paths, "test", context,
-                patient_ids=args.patient_ids, maximum=args.max_cases, restrict=restriction,
-            )
-            tolerance = float(evaluation_config.get("nsd_tolerance_mm", 1.0))
-            local = _contour_rows(model, test_loader, context, tolerance)
-            rows = gather_prediction_rows(local, context, expected_ids=test_expected)
-            if context.is_main:
-                metrics = patient_bootstrap(
-                    rows,
-                    lambda items: {
-                        name: float(np.mean([row[name] for row in items]))
-                        for name in ("dice", "nsd", "hd95")
-                    },
-                    n_bootstrap=samples,
-                    confidence=confidence,
-                    seed=seed,
-                )
-                region_indices = sorted(
-                    int(key.rsplit("_", 1)[1])
-                    for key in rows[0]
-                    if key.startswith("dice_region_")
-                )
-                per_region = {
-                    str(index): patient_bootstrap(
-                        rows,
-                        lambda items, index=index: {
-                            name: float(np.mean([row[f"{name}_region_{index}"] for row in items]))
-                            for name in ("dice", "nsd", "hd95")
-                        },
-                        n_bootstrap=samples,
-                        confidence=confidence,
-                        seed=seed,
-                    )
-                    for index in region_indices
-                }
-                result_evaluation = {
-                    "bootstrap": {"unit": "patient", "samples": samples, "confidence": confidence},
-                    "nsd_tolerance_mm": tolerance,
-                    "metrics": metrics,
-                    "per_region": per_region,
-                }
         else:
             raise ValueError(f"evaluation does not support stage={stage}")
         if context.is_main:
-            if stage in {"diagnosis", "prognosis"}:
-                write_result_csv(output_dir / "result.csv", table_rows, stage=stage)
-                write_predictions_csv(output_dir / "predictions.csv", prediction_table)
-            else:
-                write_csv_atomic(rows, output_dir / "predictions.csv")
+            write_result_csv(output_dir / "result.csv", table_rows, stage=stage)
+            write_predictions_csv(output_dir / "predictions.csv", prediction_table)
             result_path = evaluation_dir / "result.json"
             if result_path.is_file():
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             else:
                 source_result_path = run_dir / "result.json"
                 if not source_result_path.is_file():
-                    source_result_path = checkpoint.parent / "result.json"
+                    source_result_path = _checkpoint_bundle(Path(checkpoint)) / "result.json"
                 source_result = (
                     json.loads(source_result_path.read_text(encoding="utf-8"))
                     if source_result_path.is_file()
@@ -870,8 +849,17 @@ def main() -> int:
                     if stage == "diagnosis"
                     else tripod_ai_checklist(config, result_evaluation)
                 )
-                atomic_write_json(evaluation_dir / "reporting_checklist.json", checklist)
-            cleanup_task_run(run_dir)
+                checklist_path = evaluation_dir / "reporting_checklist.json"
+                atomic_write_json(checklist_path, checklist)
+                kept_outputs.append(checklist_path)
+            if args.reference_predictions is None:
+                # result.json no longer carries paired_vs_reference, so a paired table left by
+                # an earlier evaluation of this same scope would contradict it.
+                (evaluation_dir / "bootstrap_metrics.parquet").unlink(missing_ok=True)
+            if not smoke_scope:
+                # A smoke-scope run writes only under smoke/<digest>/ and leaves the run
+                # root, including the full-test outputs, untouched.
+                cleanup_task_run(run_dir, keep=kept_outputs)
             log(
                 f"written: {output_dir / 'result.csv'} | {output_dir / 'predictions.csv'} | {result_path}"
                 if stage in {"diagnosis", "prognosis"}

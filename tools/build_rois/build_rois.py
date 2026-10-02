@@ -14,6 +14,8 @@ from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
 from source.engine.experiment import OutputManager, compact_result, prepare_resumable_run
 from source.roi import build_roi_dataset
+from source.roi.builder import resume_settings
+from source.segmentation.resume import verify_resume_settings
 from source.utils.config import load_config, validate_config
 from source.utils.environment import environment_report
 from source.utils.logger import RunLogger
@@ -75,6 +77,18 @@ def main() -> int:
         "resolved_segmentation_run": str(segmentation_run),
         "resolved_segmentation_manifest": str(manifest_path),
     }
+    if not args.overwrite:
+        # Before prepare_resumable_run rewrites the config snapshot: a different
+        # --segmentation-run or ROI/control setting must not reuse the cached studies.
+        verify_resume_settings(
+            manager.run_dir("roi", experiment_id),
+            resume_settings(
+                roi_config,
+                seed=int(config.get("seed", 42)),
+                source_segmentation_manifest=manifest_path,
+            ),
+            stage="roi",
+        )
     run_dir, resumed = prepare_resumable_run(
         manager,
         "roi",
