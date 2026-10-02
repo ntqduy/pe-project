@@ -35,6 +35,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.baselines.experiments import (  # noqa: E402
+    DEFAULT_VARIANT,
     EXPERIMENTS,
     MODEL_GROUPS,
     PROGNOSIS_LABELS,
@@ -89,9 +90,13 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
         model, head, fraction = tag["model"], tag["head"], int(tag["fraction"])
         if model not in spec["models"] or head not in spec["heads"] or fraction not in spec["fractions"]:
             continue
-        # A model with overrides in this experiment is represented by its own variant runs only.
-        wanted_variant = exp if spec["overrides"].get(model) else None
-        if (tag["variant"] or None) != wanted_variant:
+        # A model with overrides in this experiment is represented by its own variant runs only;
+        # an experiment with named variants (exp04) takes those plus the shared default run.
+        variant = tag["variant"] or None
+        if spec["overrides"].get(model):
+            if variant != exp:
+                continue
+        elif (variant or DEFAULT_VARIANT) not in spec["variants"]:
             continue
         settings = tag["settings"] or ""
         if settings_filter is not None and settings != settings_filter:
@@ -123,7 +128,8 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
             continue
         rows.append({
             "model": model, "dim": model_dimension(model), "group": MODEL_GROUPS.get(model, ""), "head": head,
-            "fraction": fraction, "settings": settings, "fold": run["fold"], "seed": int(run["seed"]),
+            "fraction": fraction, "variant": variant or DEFAULT_VARIANT, "settings": settings,
+            "fold": run["fold"], "seed": int(run["seed"]),
             "epochs": epoch_dir.name,
             # official split and k-fold CV use different validation sets: never pooled together
             "scheme": "official" if run["fold"] == "official" else "cv",
@@ -136,14 +142,19 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
     return rows
 
 
+def group_key(row: dict) -> tuple:
+    """Runs pooled into one summary row: same model, head, fraction, variant, settings and scheme."""
+    return row["model"], row["head"], row["fraction"], row["variant"], row["settings"], row["scheme"]
+
+
 def aggregate(rows: list[dict]) -> list[dict]:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for row in rows:
-        groups[(row["model"], row["head"], row["fraction"], row["settings"], row["scheme"])].append(row)
+        groups[group_key(row)].append(row)
     summary = []
-    for (model, head, fraction, settings, scheme), items in groups.items():
+    for (model, head, fraction, variant, settings, scheme), items in groups.items():
         entry = {"model": model, "dim": model_dimension(model), "group": MODEL_GROUPS.get(model, ""), "head": head,
-                 "fraction": fraction, "settings": settings, "scheme": scheme, "n_runs": len(items),
+                 "fraction": fraction, "variant": variant, "settings": settings, "scheme": scheme, "n_runs": len(items),
                  "n_seeds": len({item["seed"] for item in items}),
                  "seeds": " ".join(str(seed) for seed in sorted({item["seed"] for item in items})),
                  "weights": ",".join(sorted({item["weights"] for item in items}))}
@@ -156,7 +167,8 @@ def aggregate(rows: list[dict]) -> list[dict]:
         summary.append(entry)
     order = {model: index for index, model in enumerate(sum((EXPERIMENTS[e]["models"] for e in EXPERIMENTS), []))}
     return sorted(summary, key=lambda item: (item["scheme"] != "official", order.get(item["model"], 99), item["head"],
-                                             item["fraction"], item["settings"]))
+                                             item["fraction"], item["variant"] != DEFAULT_VARIANT, item["variant"],
+                                             item["settings"]))
 
 
 def _merged_predictions(items: list[dict]) -> dict[str, list[dict]]:
@@ -271,10 +283,10 @@ def pretty_rows(summary: list[dict], ensembles: dict[tuple, dict]) -> list[dict]
     """
     rows = []
     for entry in summary:
-        key = (entry["model"], entry["head"], entry["fraction"], entry["settings"], entry["scheme"])
-        ensemble = ensembles.get(key) or {}
+        ensemble = ensembles.get(group_key(entry)) or {}
         row = {"model": entry["model"], "dim": entry["dim"], "group": entry["group"], "head": entry["head"],
-               "train_%": entry["fraction"], "settings": entry["settings"] or "default", "split": entry["scheme"],
+               "train_%": entry["fraction"], "variant": entry["variant"], "settings": entry["settings"] or "default",
+               "split": entry["scheme"],
                "n_seeds": entry["n_seeds"], "seeds": entry["seeds"]}
         for metric in ("auroc", "auprc"):
             row[f"{metric}_[CI]_seed_avg"] = _interval(ensemble.get(metric), ensemble.get(f"{metric}_ci_low"),
@@ -303,17 +315,19 @@ def write_tables(out: Path, exp: str, spec: dict, rows: list[dict], summary: lis
         _write_csv(out / "summary.csv", summary)
     if ensembles:
         _write_csv(out / "summary_ensemble.csv", [
-            {"model": key[0], "head": key[1], "fraction": key[2], "settings": key[3] or "default", "split": key[4],
-             **value} for key, value in ensembles.items()])
+            {"model": key[0], "head": key[1], "fraction": key[2], "variant": key[3], "settings": key[4] or "default",
+             "split": key[5], **value} for key, value in ensembles.items()])
     pretty = pretty_rows(summary, ensembles)
     if pretty:
         _write_csv(out / "summary_pretty.csv", pretty)
-    done = {(entry["model"], entry["head"], entry["fraction"]) for entry in summary if not entry["settings"]}
-    missing = [f"{m} / {h} / {f}%" for m in spec["models"] for h in spec["heads"] for f in spec["fractions"] if (m, h, f) not in done]
-    columns = ["model", "dim", "head", "train_%", "settings", "n_seeds", "auroc_[CI]_seed_avg", "auroc_mean±std",
+    done = {(entry["model"], entry["head"], entry["fraction"], entry["variant"]) for entry in summary if not entry["settings"]}
+    missing = [f"{m} / {h} / {f}%" + (f" / {v}" if v != DEFAULT_VARIANT else "")
+               for m in spec["models"] for h in spec["heads"] for f in spec["fractions"] for v in spec["variants"]
+               if (m, h, f, v) not in done]
+    columns = ["model", "dim", "head", "train_%", "variant", "settings", "n_seeds", "auroc_[CI]_seed_avg", "auroc_mean±std",
                "auprc_[CI]_seed_avg", "auprc_mean±std", "sensitivity_mean±std", "specificity_mean±std",
                "f1_mean±std", "balanced_accuracy_mean±std", "brier_mean±std", "weights"]
-    titles = ["model", "dim", "head", "train %", "settings", "n seeds", "AUROC [95% CI]", "AUROC mean ± std",
+    titles = ["model", "dim", "head", "train %", "variant", "settings", "n seeds", "AUROC [95% CI]", "AUROC mean ± std",
               "AUPRC [95% CI]", "AUPRC mean ± std", "Sens", "Spec", "F1", "Bal.Acc", "Brier", "weights"]
     lines = [f"# {exp}: {spec['title']}", "",
              "Test split (official INSPECT test), threshold chosen on validation. "
@@ -341,6 +355,7 @@ def link_runs(out: Path, exp: str, rows: list[dict]) -> int:
     made = 0
     for row in rows:
         name = (f"{row['model']}_{row['head']}" + (f"_frac{int(row['fraction']):03d}" if int(row["fraction"]) != 100 else "")
+                + (f"_v{row['variant']}" if row["variant"] != DEFAULT_VARIANT else "")
                 + (f"_x{row['settings']}" if row["settings"] else ""))
         target = Path(row["run_dir"]).parent             # <fold>_seed<S> (all epoch bundles)
         link = out / "runs" / name / target.name
@@ -427,6 +442,28 @@ def plot(out: Path, exp: str, summary: list[dict]) -> list[Path]:
         axis.legend(frameon=False, fontsize=7, ncol=4, loc="lower right")
         figure.tight_layout()
         written.append(out / "auroc_vs_fraction.png")
+    elif exp == "exp04_slice_ablation":
+        plt, figure, axis = _axes("Test AUROC: slice selection / MIL pooling (mean ± std)")
+        models = list(dict.fromkeys(_series(entry) for entry in summary))
+        variants = list(dict.fromkeys(entry["variant"] for entry in summary))
+        width = 0.8 / max(1, len(variants))
+        for offset, variant in enumerate(variants):
+            values, errors = [], []
+            for model in models:
+                entry = next((e for e in summary if _series(e) == model and e["variant"] == variant), None)
+                values.append(entry["auroc_mean"] if entry else float("nan"))
+                errors.append(entry["auroc_std"] if entry and math.isfinite(entry["auroc_std"]) else 0)
+            positions = [index + (offset - (len(variants) - 1) / 2) * width for index in range(len(models))]
+            label = "attention MIL (default)" if variant == DEFAULT_VARIANT else variant
+            axis.bar(positions, values, width=width * 0.95, yerr=errors, color=SERIES[offset % len(SERIES)], label=label,
+                     edgecolor=SURFACE, linewidth=2, error_kw={"ecolor": INK_2, "elinewidth": 1, "capsize": 2})
+        axis.set_xticks(range(len(models)), models)
+        axis.set_ylim(0.4, 1.0)
+        axis.axhline(0.5, color=INK_2, linewidth=0.8, linestyle="--")
+        axis.set_ylabel("test AUROC", color=INK_2, fontsize=9)
+        axis.legend(frameon=False, fontsize=8, loc="upper left")
+        figure.tight_layout()
+        written.append(out / "slice_ablation.png")
     elif exp == "exp03_head_ablation":
         plt, figure, axis = _axes("Test AUROC: MLP vs KAN head (mean ± std)")
         models = list(dict.fromkeys(_series(entry) for entry in summary))
@@ -472,9 +509,9 @@ def main(argv=None) -> int:
     summary = aggregate(rows)
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for row in rows:
-        groups[(row["model"], row["head"], row["fraction"], row["settings"], row["scheme"])].append(row)
+        groups[group_key(row)].append(row)
     # k-fold runs hold different studies per fold, so only official-split runs are averaged.
-    ensembles = {key: seed_ensemble(items, args.task) for key, items in groups.items() if key[4] == "official"}
+    ensembles = {key: seed_ensemble(items, args.task) for key, items in groups.items() if key[5] == "official"}
     out = base / args.exp
     write_tables(out, args.exp, spec, rows, summary, ensembles)
     link_runs(out, args.exp, rows)

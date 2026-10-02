@@ -1,9 +1,13 @@
 # Baseline experiments (2D / 2.5D / 3D)
 
-Three experiments, one folder each, one shared driver. `experiment.yaml` in each folder is
-the case grid (models, heads, training fractions, optional per-model `overrides`); each
-model's own contract is `configs/runs/02_diagnosis/baselines/<2D|2_5D|3D>/<model>.yaml`. A model given overrides in
-one experiment gets separate runs tagged `__v<experiment>`.
+Four experiments, one folder each, one shared driver; every one runs for diagnosis and, with
+`--task prognosis --label <outcome>` (or `scripts/prognosis/baselines/<exp>.sh`), for prognosis.
+`experiment.yaml` in each folder is the case grid (models, heads, training fractions, optional
+per-model `overrides`, optional `variants`, optional `split_seed: per_seed`); each model's own
+contract is `configs/runs/02_diagnosis/baselines/<2D|2_5D|3D>/<model>.yaml`. A model given
+overrides in one experiment gets separate runs tagged `__v<experiment>`; a named variant gets
+runs tagged `__v<variant>` (exp04: `center`, `mean`, `max`; `default` is the shared exp01 run).
+Quick reference of the flags: [scripts/README.md](../../README.md#baseline-experiments-quick-reference).
 
 ```text
 scripts/
@@ -11,6 +15,7 @@ scripts/
 │   ├── exp01_baselines/       20 arms x MLP head x 100% train      experiment.yaml + run_all.sh + {2D,2_5D,3D}/<model>.sh
 │   ├── exp02_data_fraction/    8 arms x MLP head x 25/50/75/100%   experiment.yaml + run_all.sh + 3D/<model>.sh
 │   ├── exp03_head_ablation/    6 arms x {MLP, KAN} x 100%          experiment.yaml + run_all.sh + 3D/<model>.sh
+│   ├── exp04_slice_ablation/   ResNet-18 2D/2.5D x {attention, mean, max, center}   + {2D,2_5D}/<model>.sh
 │   ├── prepare_weights.sh     download every pretrained weight once + weight-status table
 │   ├── smoke.sh               one bf16 train step per arm at 128^3 on GPU (grads, CAM, peak VRAM)
 │   └── summarize.sh           rebuild tables / plots from finished runs
@@ -140,7 +145,22 @@ matched / missing / shape-mismatched tensor counts in `logs.txt` and `result.jso
 Run `prepare_weights.sh` and a per-arm preflight or smoke run in the target environment
 before calling a row pretrained; nnMamba has no published classification weights.
 
-## K-fold and training fractions
+## Training fractions (exp02) and k-fold
+
+exp02 has `split_seed: per_seed`: seed `s` draws its own nested subsets, and every fraction
+case exports them, with a check, to
+
+```text
+<outputs>/<family>/BASE/<profile>/<task>/splits/data_fraction/seed_<s>/
+    frac_025.csv  frac_050.csv  frac_075.csv  frac_100.csv     patient_id, study_id, label
+    check.json    25 c 50 c 75 c 100 (patients and studies), only official-train IDs, whole
+                  patients, positive rate within 0.05 of the full train split -> PASS / FAIL
+```
+
+A FAIL stops the case before training. `python tools/baselines/fractions.py --dir <seed dir>`
+re-checks a folder. The 100% case is the official split itself (shared with exp01 / exp03).
+K-fold stays available (`FOLDS="0 1 2 3 4"`) but the protocol uses the official split + seeds.
+
 
 `source/data/experiment_splits.py` (called automatically by each case) writes one
 patient-level assignment per task and derives manifests under

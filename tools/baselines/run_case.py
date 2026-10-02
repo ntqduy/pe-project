@@ -78,6 +78,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--variant", default="", help="tag suffix for cases with experiment-specific overrides")
+    parser.add_argument("--variant-set", dest="variant_sets", action="append", default=[], metavar="KEY=VALUE",
+                        help="override that defines the --variant (e.g. model.mil.slice_selection=center); "
+                             "named by the __v<variant> tag, so it adds no __x settings stamp")
     parser.add_argument("--set", dest="extra", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--smoke", action="store_true", help="end-to-end pipeline check on synthetic data (see above)")
     parser.add_argument("--smoke-root", type=Path, default=None, help="default: $PE_SMOKE_ROOT or output/_smoke")
@@ -179,7 +182,7 @@ def case_settings(args: argparse.Namespace) -> tuple[dict, str]:
     grid (e.g. SCRATCH=1) running at the same time never share a log file.
     """
     # User --set values (e.g. paths.*) must already hold when the manifest is located.
-    config = resolve(args, base_overrides(args) + list(args.extra))
+    config = resolve(args, base_overrides(args) + list(args.variant_sets) + list(args.extra))
     # The variant's own overrides (scripts/diagnosis/baselines/<exp>/experiment.yaml) are what the
     # __v<variant> tag already names; only the --set values beyond them are a deviation.
     variant_sets = (EXPERIMENTS.get(args.variant) or {}).get("overrides", {}).get(args.model, []) if args.variant else []
@@ -197,7 +200,12 @@ def case_settings(args: argparse.Namespace) -> tuple[dict, str]:
 
 
 def case_manifest(args: argparse.Namespace, config: dict, fraction: int) -> tuple[str, dict | None]:
-    """The manifest this case trains on; writes the fold / fraction copy when needed."""
+    """The manifest this case trains on; writes the fold / fraction copy when needed.
+
+    A training fraction of the official split also exports every fraction of the same split
+    seed (frac_025.csv ... frac_100.csv, patient_id + study_id) with their nesting / class
+    balance check (tools/baselines/fractions.py) into <task dir>/splits/data_fraction/seed_<s>/.
+    """
     from source.data.experiment_splits import ExperimentSplits
     from source.data.paths import ProjectPaths
 
@@ -214,6 +222,19 @@ def case_manifest(args: argparse.Namespace, config: dict, fraction: int) -> tupl
     root = ProjectPaths.resolve(config).dataset_root_for(config)
     splits = ExperimentSplits(root, task=task_name, label=label, base_manifest=base, folds=args.folds, seed=args.split_seed)
     report = splits.materialize(configured, args.fold, fraction / 100.0)
+    if str(args.fold) == "official":
+        from tools.baselines.fractions import export_subsets
+
+        family = "prognosis" if args.task == "prognosis" else "diagnosis"
+        destination = (ProjectPaths.resolve(config).output_root / family / "BASE" / args.profile
+                       / task_directory(args.task, args.cohort, args.label) / "splits" / "data_fraction"
+                       / f"seed_{args.split_seed}")
+        check = export_subsets(splits, configured, label, destination)
+        report["subsets"] = str(destination)
+        report["subset_check"] = check["status"]
+        if check["status"] != "PASS":
+            raise SystemExit(f"training-fraction subsets failed their check ({destination / 'check.json'}): "
+                             + "; ".join(check["problems"]))
     return splits.relative_manifest(configured, args.fold, fraction / 100.0), report
 
 
@@ -250,11 +271,14 @@ def main(argv=None) -> int:
         f"seed={args.seed}",
         f"compute.num_workers={args.num_workers}",
     ]
-    if fraction != 100 or fold != "official":
+    derived_split = fraction != 100 or fold != "official"
+    if derived_split:
         overrides += [f"data.split_variant={json.dumps({'fold': fold, 'fraction': fraction, 'folds': args.folds, 'split_seed': args.split_seed})}"]
     # Checkpoint / result.json lineage read lineage.fold; record the case's split there too.
+    # The official 100% split uses no split seed, so every experiment shares that run.
     overrides += [f"lineage.fold={fold}", f"lineage.train_fraction={fraction}",
-                  f"lineage.cv_folds={args.folds if fold != 'official' else 0}", f"lineage.split_seed={args.split_seed}"]
+                  f"lineage.cv_folds={args.folds if fold != 'official' else 0}",
+                  f"lineage.split_seed={args.split_seed if derived_split else 'none'}"]
     for key, value in (("training.epochs", args.epochs), ("training.early_stopping_patience", args.patience),
                        ("training.batch_size", args.batch_size), ("training.gradient_accumulation", args.accumulation),
                        ("training.learning_rate", args.lr)):
@@ -266,6 +290,7 @@ def main(argv=None) -> int:
         overrides.append("model.pretrained.enabled=false")
     if args.smoke:
         overrides += smoke_overrides(args)
+    overrides += list(args.variant_sets)
     overrides += list(args.extra)
     print(("==> SMOKE case (synthetic data) " if args.smoke else "==> case ") + f"task={args.task}"
           + (f" label={args.label}" if args.label else "")

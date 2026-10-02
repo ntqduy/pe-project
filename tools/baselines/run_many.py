@@ -35,7 +35,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.baselines.experiments import (  # noqa: E402
-    EXPERIMENTS, PROGNOSIS_LABELS, base_directory, check_label, dimension_folder, run_tag, task_directory,
+    DEFAULT_VARIANT, EXPERIMENTS, PROGNOSIS_LABELS, base_directory, check_label, dimension_folder, run_tag,
+    task_directory,
 )
 
 
@@ -46,9 +47,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--dims", nargs="+", choices=["2D", "2_5D", "3D"], help="only the experiment's models of these dimensions")
     parser.add_argument("--heads", nargs="+", help="override the experiment's heads")
     parser.add_argument("--fractions", nargs="+", type=int, help="override the experiment's fractions")
+    parser.add_argument("--variants", nargs="+", help="subset of the experiment's variants (exp04: default center mean max)")
+    parser.add_argument("--split-seed", type=int, default=42,
+                        help="seed of fold / fraction assignments (experiments with split_seed: per_seed use each case's seed)")
     parser.add_argument("--folds-to-run", nargs="+", default=["official"], help="official and/or 0..K-1")
     parser.add_argument("--folds", type=int, default=5)
-    parser.add_argument("--seeds", nargs="+", type=int, default=[42])
+    parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     parser.add_argument("--gpus", default=os.environ.get("GPUS", "0"), help="GPU pool, e.g. 0,1,2,3; '' = CPU")
     parser.add_argument("--gpus-per-job", type=int, default=1)
     parser.add_argument("--jobs-per-gpu", type=int, default=1)
@@ -88,12 +92,17 @@ def slots(pool: str, per_job: int, per_gpu: int) -> list[str]:
 
 def case_command(args: argparse.Namespace, spec: dict, case: dict, extra: list[str], gpu: str = "") -> list[str]:
     """run_case.py arguments of one case (without the interpreter and script)."""
+    split_seed = case["seed"] if spec.get("split_seed") == "per_seed" else args.split_seed
     command = ["--model", case["model"], "--head", case["head"], "--fraction", str(case["fraction"]),
                "--fold", str(case["fold"]), "--folds", str(args.folds), "--seed", str(case["seed"]),
-               "--profile", args.profile, *task_arguments(args), "--gpus", gpu, *extra]
+               "--split-seed", str(split_seed), "--profile", args.profile, *task_arguments(args), "--gpus", gpu, *extra]
     overrides = spec["overrides"].get(case["model"]) or []
     if overrides:
         command += ["--variant", args.exp] + [part for value in overrides for part in ("--set", str(value))]
+    variant = case.get("variant") or DEFAULT_VARIANT
+    if variant != DEFAULT_VARIANT:
+        command += ["--variant", variant] + [part for value in spec["variants"][variant]
+                                             for part in ("--variant-set", str(value))]
     return command
 
 
@@ -133,10 +142,15 @@ def main(argv=None) -> int:
         print(f"note: {unknown} are not part of {args.exp}; running them anyway", flush=True)
     heads = args.heads or spec["heads"]
     fractions = args.fractions or spec["fractions"]
+    variants = args.variants or list(spec["variants"])
+    unknown_variants = sorted(set(variants) - set(spec["variants"]))
+    if unknown_variants:
+        raise SystemExit(f"{args.exp} has no variants {unknown_variants}; it has {sorted(spec['variants'])}")
     extra = [part for part in args.case_args if part != "--"]
     cases = [
-        {"model": model, "head": head, "fraction": fraction, "fold": fold, "seed": seed}
-        for model, head, fraction, fold, seed in itertools.product(models, heads, fractions, args.folds_to_run, args.seeds)
+        {"model": model, "head": head, "fraction": fraction, "fold": fold, "seed": seed, "variant": variant}
+        for model, head, fraction, variant, fold, seed in itertools.product(
+            models, heads, fractions, variants, args.folds_to_run, args.seeds)
     ]
     task_dir = task_directory(args.task, args.cohort, args.label)
     task_args = task_arguments(args)
@@ -147,7 +161,12 @@ def main(argv=None) -> int:
     for case, name in zip(cases, names):
         overrides = spec["overrides"].get(case["model"])
         print(f"    {name}" + (f"  overrides={overrides}" if overrides else ""))
+        if args.dry_list:
+            print("      " + " ".join(["python", "tools/baselines/run_case.py",
+                                       *case_command(args, spec, case, extra, pool[0])]), flush=True)
     if args.dry_list:
+        print(f"==> dry run: {len(cases)} case(s) listed, nothing started; output roots under "
+              f"{base_directory(args.profile, task_dir)}")
         return 0
     log_dir.mkdir(parents=True, exist_ok=True)
     queue: Queue = Queue()

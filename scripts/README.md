@@ -19,13 +19,15 @@ scripts/
 │   ├── foundation/
 │   │   └── ctfm_frozen.sh      CT-FM frozen + trainable MLP for PE diagnosis
 │   └── baselines/              the 2D / 2.5D / 3D baseline zoo (see baselines/README.md)
-│       ├── exp01_baselines/{2D,2_5D,3D}/   one wrapper per model + run_all.sh per dimension
-│       ├── exp02_data_fraction/3D/         training-set size 25/50/75/100%
+│       ├── exp01_baselines/{2D,2_5D,3D}/   20 models, MLP head; one wrapper per model + run_all.sh
+│       ├── exp02_data_fraction/3D/         training-set size 25/50/75/100% (subsets per seed)
 │       ├── exp03_head_ablation/3D/         MLP vs KAN head
+│       ├── exp04_slice_ablation/{2D,2_5D}/ attention-MIL vs mean / max pooling vs middle slice
 │       ├── prepare_weights.sh  fetch the pretrained weights of every arm once
 │       ├── smoke.sh            one bf16 train step per arm on GPU
 │       └── summarize.sh        rebuild the tables / plots from finished runs
 ├── prognosis/
+│   ├── baselines/              exp01..exp04 for prognosis (--label required), same grids
 │   └── foundation/
 │       ├── ctfm_frozen_all.sh  CT-FM frozen + MLP prognosis on all eligible patients
 │       └── ctfm_frozen_pe.sh   CT-FM frozen + MLP prognosis on PE-positive patients
@@ -35,6 +37,50 @@ scripts/
     ├── run_ctfm_frozen.sh      CT-FM prepare/train/evaluate behind the foundation wrappers
     └── run_baseline_grid.sh    env vars -> tools/baselines/run_many.py, behind every baselines wrapper
 ```
+
+## Baseline experiments (quick reference)
+
+Every experiment has one folder with its grid (`experiment.yaml`) and a `run_all.sh`; per-model
+wrappers run one model of it. All take the same flags (or the environment variables listed in
+`tool/run_baseline_grid.sh`); cases run in parallel over `--gpus`, finished cases are skipped.
+
+```bash
+E=scripts/diagnosis/baselines
+bash $E/exp01_baselines/run_all.sh --gpus 0,1 --seeds "0 1 2"            # 20 models, MLP
+bash $E/exp02_data_fraction/run_all.sh --gpus 0 --runs-per-gpu 2          # 25/50/75/100%
+bash $E/exp03_head_ablation/run_all.sh --gpus 0                           # MLP vs KAN
+bash $E/exp04_slice_ablation/run_all.sh --gpus 0 --variants "center mean" # 2D/2.5D slice ablation
+bash $E/exp01_baselines/3D/vit_3d.sh --gpus 1                             # one model
+bash scripts/prognosis/baselines/exp01_baselines.sh --label 12_month_PH --gpus 0   # prognosis
+bash $E/exp01_baselines/run_all.sh --dry-run                              # list cases + commands only
+bash $E/summarize.sh exp01_baselines                                      # rebuild the tables
+python tools/baselines/smoke_pipeline.py                                  # pipeline check, synthetic data
+```
+
+| flag | meaning |
+|---|---|
+| `--task diagnosis\|prognosis`, `--label <outcome>`, `--cohort all\|pe` | prognosis needs one of the 7 outcomes; diagnosis rejects `--label` |
+| `--seeds "0 1 2"` | official split, repeated per seed (default `0 1 2`) |
+| `--gpus 0,1`, `--runs-per-gpu N` | GPU pool and cases per GPU (`''` = CPU) |
+| `--variants`, `--heads`, `--fractions` | subset of the experiment's grid |
+| `--dry-run` | print every case and its `run_case.py` command, start nothing |
+| anything else | passed to every `tools/baselines/run_case.py` (e.g. `--overwrite`, `--set key=value`) |
+
+**Add a seed:** run again with the extra seed (`--seeds "3"`); runs already finished are kept,
+and `summarize.sh` pools every seed it finds (`n_seeds` column, seed-ensemble CI).
+
+**Add a model:** (1) put the encoder in `source/model/2D_model/` or `source/model/3D_model/`
+and register its builder in `source/model/registry.py`; (2) add its contract (feature_dim,
+pretrained weights, intensity) to `configs/components/backbones.yaml#registry`; (3) copy a run
+config into `configs/runs/02_diagnosis/baselines/<2D|2_5D|3D>/<model>.yaml` (micro-batch so the
+effective batch stays 4); (4) add it to `MODEL_GROUPS` in `tools/baselines/experiments.py` and
+to the `models:` list of each `experiment.yaml` that should include it, plus a one-line wrapper
+like its neighbours; (5) check it with `python tools/baselines/smoke.py --models <model>` and
+`python tools/baselines/smoke_pipeline.py --models <model> --cases-only --seeds 0`.
+
+**Add an experiment:** a new `scripts/diagnosis/baselines/expNN_<name>/experiment.yaml`
+(`title`, `models`, `heads`, `fractions`, optional `variants` / `overrides` / `split_seed`),
+its name in `EXPERIMENT_NAMES` (`tools/baselines/experiments.py`), and a `run_all.sh`.
 
 What goes where: a wrapper that builds or describes a data artifact lives in `data/`; a
 wrapper for one diagnosis or prognosis arm lives under `diagnosis/` or `prognosis/`, in a

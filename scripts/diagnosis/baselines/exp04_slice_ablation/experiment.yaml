@@ -1,0 +1,20 @@
+# exp04_slice_ablation - the case grid of this experiment (read by tools/baselines/experiments.py).
+# How much does looking at the whole volume matter for the 2D / 2.5D baselines? Same backbone,
+# head, budget and seeds; only the slice-MIL input / pooling changes. Each named variant is a
+# set of overrides on the model's run config (tagged __v<variant> in the run folder);
+# `default` (32 uniform slices, gated-attention MIL) is the exp01 run itself, shared.
+title: "Slice ablation 2D / 2.5D: attention-MIL vs mean / max pooling vs middle slice (MLP head, 100% train)"
+models:
+  - resnet18_2d
+  - resnet18_25d
+heads: [mlp]
+fractions: [100]
+variants:
+  default: []
+  # one instance: 2D = the middle axial slice, 2.5D = the 3 middle slices as RGB
+  center:
+    - model.mil.slice_selection=center
+  mean:
+    - model.mil.pooling=mean
+  max:
+    - model.mil.pooling=max

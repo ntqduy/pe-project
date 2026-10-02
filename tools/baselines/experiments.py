@@ -1,8 +1,11 @@
-"""The three baseline experiments: which models x heads x training fractions each one needs.
+"""The four baseline experiments: which models x heads x training fractions x variants each needs.
 
 The grids themselves are data: scripts/diagnosis/baselines/<experiment>/experiment.yaml (models, heads,
-fractions, optional per-model `overrides`). A model with overrides in an experiment gets its
-own runs, tagged ``__v<experiment>``, so it never collides with the shared runs below.
+fractions, optional per-model `overrides`, optional `variants`, optional `split_seed`). A model
+with overrides in an experiment gets its own runs, tagged ``__v<experiment>``; a named variant
+(e.g. exp04's ``center``) gets runs tagged ``__v<variant>``; the ``default`` variant (no
+overrides) is the shared run. ``split_seed: per_seed`` (exp02) draws each seed's training
+subsets with that seed instead of the fixed --split-seed.
 
 A run is identified only by its scientific settings (model, head, fraction, fold, seed), not
 by the experiment that asked for it, so ResNet-18 3D + MLP on 100% of the data is trained
@@ -27,7 +30,8 @@ MODEL_GROUPS = {
     "penet_3d": "PE-specific", "ctfm_lora_3d": "PE-specific / FM", "ctfm_frozen_3d": "PE-specific / FM",
 }
 
-EXPERIMENT_NAMES = ("exp01_baselines", "exp02_data_fraction", "exp03_head_ablation")
+EXPERIMENT_NAMES = ("exp01_baselines", "exp02_data_fraction", "exp03_head_ablation", "exp04_slice_ablation")
+DEFAULT_VARIANT = "default"
 
 
 def _load_experiments() -> dict[str, dict]:
@@ -48,6 +52,17 @@ def _load_experiments() -> dict[str, dict]:
         unknown = sorted(set(spec["overrides"]) - set(spec["models"]))
         if unknown:
             raise ValueError(f"scripts/diagnosis/baselines/{name}/experiment.yaml overrides unknown models {unknown}")
+        variants = {str(key): [str(item) for item in (value or [])] for key, value in (spec.get("variants") or {}).items()}
+        bad = [key for key in variants if not key.replace("_", "").isalnum()]
+        if bad:
+            raise ValueError(f"scripts/diagnosis/baselines/{name}/experiment.yaml: variant names must be [A-Za-z0-9_], got {bad}")
+        if variants and spec["overrides"]:
+            raise ValueError(f"scripts/diagnosis/baselines/{name}/experiment.yaml: use either overrides or variants")
+        spec["variants"] = variants or {DEFAULT_VARIANT: []}
+        split_seed = spec.get("split_seed", "fixed")
+        if split_seed not in ("fixed", "per_seed"):
+            raise ValueError(f"scripts/diagnosis/baselines/{name}/experiment.yaml: split_seed must be fixed or per_seed")
+        spec["split_seed"] = split_seed
         experiments[name] = spec
     return experiments
 

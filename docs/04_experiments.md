@@ -107,15 +107,16 @@ python run.py run diag.matrix.single_task --gpus 0 \
 | 2.5D (bộ 3 lát kề làm RGB) | `resnet18_25d`, `convnext_25d`, `vit_25d`, `swin_25d` |
 | 3D | `resnet18_3d`, `resnet50_3d`, `densenet121_3d`, `convnext_3d`, `vit_3d`, `swin_3d`, `nnmamba_3d`, `mamba_mae_3d`, `vmamba_3d`, `penet_3d`, `ctfm_lora_3d`, `ctfm_frozen_3d` |
 
-Ngân sách (`baselines.yaml`, chung cho mọi arm): tối đa 100 epoch, early stopping patience 15 theo val AUROC, `best.ckpt` = val AUROC cao nhất, batch hiệu dụng 4 (micro-batch × accumulation, micro-batch theo VRAM của từng arm), `compute.precision: auto`; `train_end_to_end` (full, cosine, lr 1e-4), `train_lora` (lr 3e-4), `train_frozen_features` (`ctfm_frozen_3d`, lr 1e-3). Ba lưới (`tools/baselines/experiments.py`; một case = model × head × fraction × fold × seed):
+Ngân sách (`baselines.yaml`, chung cho mọi arm): tối đa 100 epoch, early stopping patience 15 theo val AUROC, `best.ckpt` = val AUROC cao nhất, batch hiệu dụng 4 (micro-batch × accumulation, micro-batch theo VRAM của từng arm), `compute.precision: auto`; `train_end_to_end` (full, cosine, lr 1e-4), `train_lora` (lr 3e-4), `train_frozen_features` (`ctfm_frozen_3d`, lr 1e-3). Bốn lưới (`tools/baselines/experiments.py`; một case = model × head × fraction × variant × seed, split chính thức):
 
 | Lưới | File | Model | Head | Fraction train |
 |---|---|---|---|---|
 | exp01 | `scripts/diagnosis/baselines/exp01_baselines/experiment.yaml` | cả 20 | `mlp` | 100 |
 | exp02 | `.../exp02_data_fraction/experiment.yaml` | 8 model 3D (`resnet18_3d`, `convnext_3d`, `vit_3d`, `swin_3d`, `nnmamba_3d`, `vmamba_3d`, `ctfm_lora_3d`, `ctfm_frozen_3d`) | `mlp` | 25, 50, 75, 100 |
 | exp03 | `.../exp03_head_ablation/experiment.yaml` | 6 model 3D | `mlp`, `kan` | 100 |
+| exp04 | `.../exp04_slice_ablation/experiment.yaml` | `resnet18_2d`, `resnet18_25d` × variant `default` (attention-MIL), `center` (lát giữa), `mean`, `max` | `mlp` | 100 |
 
-Fraction chỉ subsample bệnh nhân **train** (phân tầng theo nhãn, lồng nhau); validation và official test không đổi. Fold/seed lấy từ `FOLDS=`, `SEEDS=`. Chi tiết: `scripts/diagnosis/baselines/README.md`.
+Fraction chỉ subsample bệnh nhân **train** (phân tầng theo nhãn, lồng nhau, mỗi seed một bộ subset: `split_seed: per_seed`, xuất kèm kiểm tra ra `<task>/splits/data_fraction/seed_<s>/`); validation và official test không đổi. Seed lấy từ `--seeds` (mặc định `0 1 2`); mọi lưới chạy cho diagnosis và prognosis (`--task prognosis --label <outcome>`, `scripts/prognosis/baselines/`). Chi tiết: `scripts/diagnosis/baselines/README.md`, `scripts/README.md`.
 
 ```bash
 python tools/baselines/run_case.py --model resnet18_3d --gpus 0                 # 1 case: prepare -> train -> evaluate

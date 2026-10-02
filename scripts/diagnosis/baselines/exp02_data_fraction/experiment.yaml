@@ -13,4 +13,7 @@ models:
   - ctfm_frozen_3d
 heads: [mlp]
 fractions: [25, 50, 75, 100]
+# Each training seed draws its own nested subsets (25 c 50 c 75 c 100, by patient, stratified),
+# exported with their check to <task dir>/splits/data_fraction/seed_<s>/ (tools/baselines/fractions.py).
+split_seed: per_seed
 overrides: {}
