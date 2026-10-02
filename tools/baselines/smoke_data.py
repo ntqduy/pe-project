@@ -6,13 +6,15 @@
 
 Layout (the ``smoke_30`` profile of a project whose ``paths.*`` all point under ``<root>``):
 
-    <root>/raw/                                      empty stand-in for the raw INSPECT mount
+    <root>/raw/<study>.nii.gz                        synthetic CT in HU (body, lungs, PE-positive blob)
     <root>/derived/datasets/smoke_30/dataset.json
         manifests/diagnosis.csv                      image_path, pe_present (0/1)
         manifests/prognosis_{all_patient,pe_positive}.csv   + the 7 outcomes (1 / 0 / empty)
         manifests/ct_fm/<same three names>           pooled_path instead of image_path
-        volumes/<study>.npy                          float32 [1, S, S, S] in [0, 1]
-        ct_fm/pooled/<study>.npy (+ .metadata.json)  float32 [513, 1, 1, 1], channel 512 = 1
+        volumes/<study>.npy (+ .metadata.json)       the project's own cache preprocessing of raw/
+                                                     (source/data/build/volumes.py, profile spec at S^3)
+        ct_fm/pooled/<study>.npy (+ .metadata.json)  float32 [513, 1, 1, 1], channel 512 = 1, with the
+                                                     tools/data/build_ctfm_cache.py sidecar fields
     <root>/dummy_ct_fm.safetensors                   stand-in checkpoint path for ct_fm_features
     <root>/pe-project/outputs/                       where smoke runs write
 
@@ -110,12 +112,46 @@ def _write_csv(path: Path, rows: list[dict], columns: list[str]) -> None:
         writer.writerows(rows)
 
 
-def write_dataset(root: Path, *, size: int = 64, seed: int = 0, force: bool = False) -> Path:
+def _cache_spec(size: int, orientation: str):
+    """The profile's preprocessing contract (source/data/profiles/_common.yaml) at size^3."""
+    import yaml
+
+    from source.data.build.volumes import PreprocessingSpec
+
+    profile = yaml.safe_load((ROOT / "source" / "data" / "profiles" / "_common.yaml").read_text(encoding="utf-8"))
+    payload = {**dict(profile["preprocessing"]), "target_shape": [size] * 3, "orientation": orientation,
+               "emit_patch_grid": False}
+    return PreprocessingSpec.from_mapping(payload)
+
+
+def _raw_ct(generator, positive: bool):
+    """A synthetic chest CT in HU: air, body, two lungs and, for PE-positive studies, a bright blob."""
+    import nibabel as nib
     import numpy as np
+
+    shape = (80, 80, 48)
+    x, y, z = np.meshgrid(*(np.linspace(-1, 1, n) for n in shape), indexing="ij")
+    volume = np.full(shape, -1000.0, dtype=np.float32)
+    volume[(x / 0.85) ** 2 + (y / 0.65) ** 2 <= 1] = 40.0
+    for side in (-0.4, 0.4):
+        volume[((x - side) / 0.3) ** 2 + (y / 0.45) ** 2 <= 1] = -820.0
+    volume += generator.normal(0.0, 25.0, shape).astype(np.float32)
+    if positive:
+        centre = generator.uniform(-0.3, 0.3, 3)
+        volume[((x - centre[0]) ** 2 + (y - centre[1]) ** 2 + (z - centre[2]) ** 2) <= 0.12 ** 2] = 250.0
+    return nib.Nifti1Image(volume, np.diag([-0.9, -0.9, 2.0, 1.0]))
+
+
+def write_dataset(root: Path, *, size: int = 64, seed: int = 0, force: bool = False) -> Path:
+    import nibabel as nib
+    import numpy as np
+
+    from source.data.build.volumes import preprocess_study, preprocess_volume_with_metadata
+    from tools.data.build_ctfm_cache import _feature_grid_affine
 
     data = dataset_root(root)
     marker = data / MARKER
-    spec = {"size": size, "seed": seed, "patients": sum(SPLIT_PATIENTS.values()), "version": 1}
+    spec = {"size": size, "seed": seed, "patients": sum(SPLIT_PATIENTS.values()), "version": 2}
     if marker.is_file() and not force and json.loads(marker.read_text(encoding="utf-8")) == spec:
         return data
     if data.exists():
@@ -125,25 +161,32 @@ def write_dataset(root: Path, *, size: int = 64, seed: int = 0, force: bool = Fa
     (root / "dummy_ct_fm.safetensors").write_bytes(b"synthetic smoke stand-in, never loaded\n")
     rows = _studies()
     generator = np.random.default_rng(seed)
-    grid = np.stack(np.meshgrid(*(np.arange(size),) * 3, indexing="ij"))
+    dense_spec, ctfm_spec = _cache_spec(size, "RAS"), _cache_spec(size, "SPL")
     for row in rows:
-        volume = np.clip(generator.normal(0.3, 0.08, (size, size, size)), 0.0, 1.0)
-        if row["pe_present"]:
-            centre = generator.integers(size // 4, 3 * size // 4, 3)
-            blob = ((grid - centre[:, None, None, None]) ** 2).sum(0) <= (size // 8) ** 2
-            volume[blob] = np.clip(volume[blob] + 0.5, 0.0, 1.0)
-        relative = f"volumes/{row['study_id']}.npy"
-        (data / relative).parent.mkdir(parents=True, exist_ok=True)
-        np.save(data / relative, volume[None].astype(np.float32))
-        row["image_path"] = relative
+        study = row["study_id"]
+        raw_path = root / "raw" / f"{study}.nii.gz"
+        nib.save(_raw_ct(generator, bool(row["pe_present"])), str(raw_path))
+        # Dense model input: exactly the project's cache preprocessing, sidecar included.
+        written = preprocess_study(study, raw_path, data / "volumes", dense_spec, overwrite=True)
+        row["image_path"] = Path(written["preprocessed_path"]).relative_to(data).as_posix()
+        # Frozen CT-FM input: pooled features (synthetic values) with the sidecar fields of
+        # tools/data/build_ctfm_cache.py, so the Grad-CAM preview can rebuild its CT canvas.
+        _, metadata = preprocess_volume_with_metadata(raw_path, ctfm_spec)
         pooled = generator.normal(0.0, 1.0, 513).astype(np.float32)
         pooled[:8] += 1.5 * row["pe_present"]
         pooled[512] = 1.0
-        pooled_relative = f"ct_fm/pooled/{row['study_id']}.npy"
+        pooled_relative = f"ct_fm/pooled/{study}.npy"
         (data / pooled_relative).parent.mkdir(parents=True, exist_ok=True)
         np.save(data / pooled_relative, pooled.reshape(513, 1, 1, 1))
-        (data / f"{pooled_relative}.metadata.json").write_text(json.dumps(
-            {"representation": "ct_fm_features_v1", "weight_sha256": CT_FM_WEIGHT_SHA256}), encoding="utf-8")
+        cell = (size, size, size)
+        (data / f"{pooled_relative}.metadata.json").write_text(json.dumps({
+            **metadata, "status": "completed", "representation": "ct_fm_features_v1",
+            "weight_sha256": CT_FM_WEIGHT_SHA256, "study_id": study, "raw_image_path": str(raw_path),
+            "spec": ctfm_spec.as_dict(), "preprocessing_fingerprint": ctfm_spec.fingerprint(),
+            "tensor_shape": [513, 1, 1, 1], "feature_channels": 512, "synthetic": True,
+            "feature_grid": {"shape": [1, 1, 1], "cell_voxels": list(cell),
+                             "affine": _feature_grid_affine(np.asarray(metadata["output_affine"]), cell).tolist()},
+        }, default=str), encoding="utf-8")
         row["pooled_path"] = pooled_relative
     positive = [row for row in rows if row["pe_present"] == 1]
     _check_classes(rows, "diagnosis", ("pe_present",))
@@ -157,7 +200,7 @@ def write_dataset(root: Path, *, size: int = 64, seed: int = 0, force: bool = Fa
     (data / "dataset.json").write_text(json.dumps({
         "profile": PROFILE, "synthetic": True,
         "cohort": {"patients": spec["patients"], "studies": len(rows)},
-        "preprocessing": {"fingerprint": f"synthetic-smoke-{size}-{seed}", "shape": [size] * 3},
+        "preprocessing": {**dense_spec.as_dict(), "fingerprint": dense_spec.fingerprint()},
     }, indent=2), encoding="utf-8")
     marker.write_text(json.dumps(spec), encoding="utf-8")
     return data

@@ -112,10 +112,17 @@ def smoke_overrides(args: argparse.Namespace) -> list[str]:
                  "evaluation.bootstrap_samples=200", "profiling.iterations=1"]
     if model_dimension(args.model) in {"2D", "2.5D"}:
         overrides += ["model.mil.num_slices=4", "model.mil.slice_size=64", "model.mil.chunk_size=8"]
-    if args.model.startswith("ctfm"):
-        # CT-FM cannot run from random init; the synthetic cache stands in for its features
-        # and this file for its checkpoint path (only checked for existence when frozen).
+    if args.model in {"vit_3d", "mamba_mae_3d"}:
+        overrides.append("model.input_size=64")      # their token grid is built for the input cube
+    if args.model == "ctfm_frozen_3d":
+        # Frozen CT-FM reads the synthetic feature cache; its checkpoint path is only checked
+        # for existence, so a stand-in file serves.
         overrides.append(f"model.checkpoint={(args.smoke_root / 'dummy_ct_fm.safetensors').resolve().as_posix()}")
+    elif args.model.startswith("ctfm"):
+        # CT-FM LoRA cannot start from random init: it needs the real weights, from
+        # $PE_CTFM_CHECKPOINT or else the registry path (third_party/weights/ct_fm_feature_extractor).
+        if os.environ.get("PE_CTFM_CHECKPOINT"):
+            overrides.append(f"model.checkpoint={Path(os.environ['PE_CTFM_CHECKPOINT']).resolve().as_posix()}")
     else:
         overrides.append("model.pretrained.enabled=false")
     return overrides

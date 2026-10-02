@@ -57,6 +57,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--jobs", type=int, default=2, help="cases run at the same time")
     parser.add_argument("--smoke-root", type=Path, default=default_root())
     parser.add_argument("--skip-cases", action="store_true", help="reuse finished cases, only run the checks")
+    parser.add_argument("--cases-only", action="store_true",
+                        help="only the per-case checks (e.g. one seed of every arm); skip label / repeat / aggregate")
+    parser.add_argument("--report-name", default="smoke_report.md")
+    parser.add_argument("--keep-checkpoints", action="store_true",
+                        help="keep best/last.ckpt of smoke runs (default: deleted once a case is checked; "
+                             "they are 0.1-1 GB each and mean nothing)")
     return parser.parse_args(argv)
 
 
@@ -103,6 +109,8 @@ def run_cases(args: argparse.Namespace, cases: list[dict], log_dir: Path) -> dic
             with (log_dir / f"{name}.log").open("w", encoding="utf-8") as handle:
                 code = subprocess.call(case_command(args, case, "--overwrite"), cwd=ROOT, stdout=handle,
                                        stderr=subprocess.STDOUT)
+            if not args.keep_checkpoints:
+                prune_checkpoints(case_dir(args.smoke_root, case))
             with lock:
                 outcome[name] = (code, time.time() - started)
                 print(f"[{'done' if code == 0 else 'FAIL'}] {name} {(time.time() - started) / 60:.1f} min", flush=True)
@@ -118,6 +126,12 @@ def run_cases(args: argparse.Namespace, cases: list[dict], log_dir: Path) -> dic
 def read_rows(path: Path) -> list[dict]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def prune_checkpoints(run: Path) -> None:
+    """Smoke weights are worthless and large; drop them once a case has been checked."""
+    for path in (*run.glob("checkpoint/*.ckpt"), *run.glob("*.ckpt")):
+        path.unlink(missing_ok=True)
 
 
 def check_case(report: Report, case: dict, run: Path, code: int | None) -> dict:
@@ -150,7 +164,7 @@ def check_case(report: Report, case: dict, run: Path, code: int | None) -> dict:
     row["visualize"] = f"{correct} correct / {incorrect} incorrect"
     if correct + incorrect == 0:
         problems.append("visualize/ holds no Grad-CAM")
-    if case["model"] != "resnet18_3d" and not list((run / "visualize").rglob("*_mil_attention.png")):
+    if case["model"].endswith(("_2d", "_25d")) and not list((run / "visualize").rglob("*_mil_attention.png")):
         problems.append("slice-MIL run without _mil_attention.png")
     if not (run / "training_curves.png").is_file():
         problems.append("no training_curves.png")
@@ -189,6 +203,8 @@ def check_reproducible(report: Report, args: argparse.Namespace, case: dict, run
     delta = max((abs(before[key] - after[key]) for key in before if key in after), default=float("inf"))
     report.check("reproducible: same seed twice", same_keys and delta <= 1e-6,
                  f"{case['name']}: max |dp| = {delta:.2e} over {len(before)} predictions")
+    if not args.keep_checkpoints:
+        prune_checkpoints(run)
 
 
 def check_early_stopping(report: Report) -> None:
@@ -287,7 +303,7 @@ def write_report(args: argparse.Namespace, report: Report, rows: list[dict]) -> 
         columns = list(dict.fromkeys(key for row in rows for key in row))
         lines += ["", "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
         lines += ["| " + " | ".join(str(row.get(column, "")) for column in columns) + " |" for row in rows]
-    path = args.smoke_root / "smoke_report.md"
+    path = args.smoke_root / args.report_name
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -307,12 +323,16 @@ def main(argv=None) -> int:
     outcome = {} if args.skip_cases else run_cases(args, cases, log_dir)
     rows = [check_case(report, case, case_dir(args.smoke_root, case), outcome.get(case["name"], (None, 0))[0])
             for case in cases]
-    for title, check in (
+    if not args.keep_checkpoints:
+        for case in cases:
+            prune_checkpoints(case_dir(args.smoke_root, case))
+    checks = () if args.cases_only else (
         ("label rule", lambda: check_labels(report, args)),
         ("reproducible", lambda: check_reproducible(report, args, cases[0], case_dir(args.smoke_root, cases[0]))),
         ("early stopping", lambda: check_early_stopping(report)),
         ("aggregate", lambda: check_aggregate(report, args, cases)),
-    ):
+    )
+    for title, check in checks:
         try:
             check()
         except Exception as error:  # noqa: BLE001 - a broken check is a FAIL in the report, not a crash
