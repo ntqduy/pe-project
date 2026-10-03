@@ -216,10 +216,10 @@ python tools/launch.py --config configs/runs/02_diagnosis/anatomy/single_concat.
 ## Other utilities
 
 ```bash
-# k-fold / training-fraction manifests inside the official split (the test split never moves)
+# training-fraction manifests (exp02) of the official split: train subsampled, validation/test unchanged
 python tools/data/build_split_manifests.py --profile full_inspect \
-    --base-manifest manifests/diagnosis.csv --label pe_present --folds 5 --seed 42 \
-    --apply manifests/diagnosis.csv --fold official 0 1 2 3 4 --fraction 25 50 75 100
+    --base-manifest manifests/diagnosis.csv --label pe_present --seed 0 \
+    --apply manifests/diagnosis.csv --fraction 25 50 75 100
 #   --fraction: a percent when it ends in % or is > 1 (25, 12.5, 1%), a fraction when < 1
 #   (0.25); a bare 1 is rejected. Tags are lossless (12.5% -> frac012p5).
 #   tools/baselines/run_case.py --fraction is always a whole percent (1 = 1%).

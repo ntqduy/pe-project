@@ -7,11 +7,11 @@ with overrides in an experiment gets its own runs, tagged ``__v<experiment>``; a
 overrides) is the shared run. ``split_seed: per_seed`` (exp02) draws each seed's training
 subsets with that seed instead of the fixed --split-seed.
 
-A run is identified only by its scientific settings (model, head, fraction, fold, seed), not
+A run is identified only by its scientific settings (model, head, fraction, variant, seed), not
 by the experiment that asked for it, so ResNet-18 3D + MLP on 100% of the data is trained
 once and shared by exp01 (baselines), exp02 (its 100% point) and exp03 (its MLP arm):
 
-    <outputs>/diagnosis/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>/<fold>_seed<S>/epoch_<E>/
+    <outputs>/diagnosis/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>/official_seed<S>/epoch_<E>/
     <outputs>/diagnosis/BASE/<profile>/<task>/<experiment>/   summary tables, plots, runs.csv
 
 A case run with training settings that differ from its config (--scratch, --lr, --batch-size,

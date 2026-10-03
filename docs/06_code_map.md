@@ -149,7 +149,7 @@ Cách chạy: [05_running_outputs.md](05_running_outputs.md).
 | `tools/build_summary.py` | Gom `result.json` thành bảng tóm tắt |
 | `tools/data/build_dataset.py` | Build dataset profile ([01_data_pipeline.md](01_data_pipeline.md)) |
 | `tools/data/build_ctfm_cache.py` | Chạy CT-FM frozen theo patch, lưu feature grid + pooled, viết `manifests/ct_fm/*.csv` |
-| `tools/data/build_split_manifests.py` | Manifest k-fold / tỷ lệ train cho baseline |
+| `tools/data/build_split_manifests.py` | Manifest theo tỷ lệ train (exp02) cho baseline |
 | `tools/create_masks/generate_masks.py`, `tools/build_rois/build_rois.py`, `tools/silver_labels/generate_silver_labels.py` | CLI segmentation / ROI / silver: preflight, resume an toàn, ghi QC |
 | `tools/create_masks/refresh_previews.py` | Vẽ lại contact sheet segmentation từ mask đã có |
 
@@ -166,7 +166,7 @@ Train/evaluate: [03_training_evaluation.md](03_training_evaluation.md); các arm
 | `tools/tasks/gradcam_preview.py` | Dựng lại preview Grad-CAM của run đã đánh giá |
 | `tools/tasks/zeroshot_penet.py`, `zeroshot_radar.py` | Zero-shot PENet / RADAR (RADAR gọi `zeroshot_radar_worker.py` trong env riêng) |
 | `tools/baselines/experiments.py` | Lưới model × head × fraction của exp01–03 (đọc `scripts/diagnosis/baselines/<exp>/experiment.yaml`) |
-| `tools/baselines/run_case.py`, `run_many.py` | Một case (manifest fold/fraction → preflight/train/evaluate) / cả lưới song song theo slot GPU |
+| `tools/baselines/run_case.py`, `run_many.py` | Một case (manifest fraction → preflight/train/evaluate) / cả lưới song song theo slot GPU |
 | `tools/baselines/summarize.py`, `prepare_weights.py`, `smoke.py` | Bảng + biểu đồ kết quả / tải trước pretrained weight / một bước train thật cho từng arm |
 
 ### 4.3 `source/utils/`, `source/data/`
@@ -179,7 +179,7 @@ Train/evaluate: [03_training_evaluation.md](03_training_evaluation.md); các arm
 | `data/manifests.py` | `read_rows`, audit manifest/report/silver/temporal holdout |
 | `data/dataset.py` | `CTPADataset` (đọc volume cache kèm kiểm sidecar, mask ROI, nhãn, EHR, sPESI, silver) |
 | `data/preflight.py` | `run_preflight`, `require_preflight`, `checkpoint_lineage_errors` |
-| `data/experiment_splits.py` | k-fold cấp patient và manifest theo tỷ lệ train cho baseline |
+| `data/experiment_splits.py` | Subset train cấp patient (stratify, lồng nhau, theo seed) cho exp02 |
 | `data/profiles/__init__.py` | Đọc dataset profile (YAML kế thừa), `require_active_profile`, `assert_shared_preprocessing` |
 
 ### 4.4 `source/data/build/` (stage 0)

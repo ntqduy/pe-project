@@ -148,7 +148,7 @@ Ba profile dùng chung một contract (`source/data/profiles/_common.yaml`), ch�
 
 ## 6. Quy tắc thiết kế
 
-- **Official split không đổi.** Build fail nếu một patient nằm ở hai split; k-fold / fraction của baseline zoo chỉ chia lại train+validation.
+- **Official split không đổi.** Build fail nếu một patient nằm ở hai split; training fraction của baseline zoo (exp02) chỉ cắt train; không có k-fold, lặp lại bằng seed.
 - **Threshold và checkpoint chỉ chọn trên validation**; external test dùng threshold đã khoá từ INSPECT validation.
 - **Fail loudly.** Contract chưa có thì entry `blocked`; pretrained weight khớp quá ít tensor thì báo lỗi; sPESI thiếu thành phần thì để trống.
 - **Không mock model**; kiểm tra bằng `preflight`, `dry`, `plan` và chạy một patient.

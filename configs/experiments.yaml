@@ -309,7 +309,7 @@ experiments:
   # ------------------------------------------------------ BASELINE ZOO
   # One entry per configs/runs/02_diagnosis/baselines/<dim>/<model>.yaml: the config's own
   # single run (official split, MLP head, 100% of the training patients). The experiment
-  # grids over heads / fractions / folds / seeds are scripts/diagnosis/baselines/exp0*_*/ through
+  # grids over heads / fractions / variants / seeds are scripts/diagnosis/baselines/exp0*_*/ through
   # tools/baselines/run_case.py (scripts/diagnosis/baselines/README.md).
   baseline.convnext_2d:
     config: configs/runs/02_diagnosis/baselines/2D/convnext_2d.yaml

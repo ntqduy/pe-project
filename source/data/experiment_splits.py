@@ -1,24 +1,22 @@
-"""Patient-level k-fold and training-fraction manifests for the baseline experiments.
+"""Patient-level training-fraction manifests of the official INSPECT split (exp02).
 
-The official INSPECT split stays the reference: ``official`` keeps it unchanged, and the
-test split is never touched by any fold or fraction. Everything else is derived from one
-persisted, patient-level assignment so every model sees exactly the same patients:
+The official split is the only split: validation and test are never touched, only the
+official TRAIN patients are subsampled. Every fraction is derived from one persisted,
+patient-level assignment per (task, label, seed), so every model sees exactly the same patients:
 
-    assignment.csv   patient_id, split (official), label, cv_fold, fraction_rank
-      cv_fold        stratified by label over the official train + validation pool
-                     (patients are shuffled per label with ``seed``, then dealt round-robin)
-      fraction_rank  a per-label uniform rank in [0, 1) over the same pool
+    assignment.csv   patient_id, split (official), label, fraction_rank
+      fraction_rank  a per-label uniform rank in [0, 1) over the official train patients
+                     (patients shuffled per label with ``seed``); empty for validation / test
 
-    fold  official : train / validation as released
-    fold  k        : validation = pool patients with cv_fold == k, train = rest of the pool
     frac  p        : keep train patients with fraction_rank < p (validation, test untouched)
 
 Because the rank is per label, every fraction is stratified; because it is a fixed rank,
-fractions are nested (25% c 50% c 75% c 100%). Output layout, under the dataset root:
+fractions are nested (25% c 50% c 75% c 100%); a patient keeps all of its studies. Output
+layout, under the dataset root:
 
-    manifests/experiments/<name>/assignment.csv, summary.json
-    manifests/experiments/<name>/<official|fold{k}>/frac{PPP}/<source manifest path>
-    manifests/experiments/<name>/<official|fold{k}>/frac{PPP}/<source manifest dir>/train_patients.csv
+    manifests/experiments/<task>_<label>_s<seed>/assignment.csv, summary.json
+    manifests/experiments/<task>_<label>_s<seed>/frac{PPP}/<source manifest path>
+    manifests/experiments/<task>_<label>_s<seed>/frac{PPP}/<source manifest dir>/train_patients.csv
 
 ``frac{PPP}`` is the whole training percent, zero-padded (frac025, frac100); a fractional
 percent keeps its decimals after a ``p`` (12.5% -> frac012p5), so distinct fractions never
@@ -43,19 +41,11 @@ from typing import Any
 
 from .manifests import ManifestError, read_rows
 
-POOL_SPLITS = ("train", "validation")
-ASSIGNMENT_FIELDS = ("patient_id", "split", "label", "cv_fold", "fraction_rank")
+ASSIGNMENT_FIELDS = ("patient_id", "split", "label", "fraction_rank")
 
 
-def split_name(task: str, label: str, folds: int, seed: int) -> str:
-    return f"{task}_{label}_k{int(folds)}_s{int(seed)}"
-
-
-def fold_tag(fold: str | int) -> str:
-    text = str(fold).strip().lower()
-    if text in {"official", "", "none"}:
-        return "official"
-    return f"fold{int(text.removeprefix('fold'))}"
+def split_name(task: str, label: str, seed: int) -> str:
+    return f"{task}_{label}_s{int(seed)}"
 
 
 def fraction_tag(fraction: float) -> str:
@@ -113,10 +103,8 @@ def _atomic_json(path: Path, payload: Any) -> None:
     os.replace(temporary, path)
 
 
-def build_assignment(rows: Iterable[Mapping[str, Any]], label: str, folds: int, seed: int) -> list[dict[str, Any]]:
+def build_assignment(rows: Iterable[Mapping[str, Any]], label: str, seed: int) -> list[dict[str, Any]]:
     """One row per patient; ``label`` = max observed study label (``-1`` when none)."""
-    if int(folds) < 2:
-        raise ValueError("k-fold needs at least 2 folds")
     split_of: dict[str, str] = {}
     label_of: dict[str, float] = {}
     for row in rows:
@@ -132,17 +120,11 @@ def build_assignment(rows: Iterable[Mapping[str, Any]], label: str, folds: int, 
     rng = random.Random(int(seed))
     by_label: dict[float, list[str]] = defaultdict(list)
     for patient in sorted(split_of):
-        if split_of[patient] in POOL_SPLITS:
+        if split_of[patient] == "train":
             by_label[label_of.get(patient, -1.0)].append(patient)
-    fold_of: dict[str, int] = {}
     rank_of: dict[str, float] = {}
     for group_label in sorted(by_label):
-        patients = by_label[group_label]
-        dealt = list(patients)
-        rng.shuffle(dealt)
-        for index, patient in enumerate(dealt):
-            fold_of[patient] = index % int(folds)
-        ranked = list(patients)
+        ranked = list(by_label[group_label])
         rng.shuffle(ranked)
         for index, patient in enumerate(ranked):
             rank_of[patient] = index / len(ranked)
@@ -151,35 +133,27 @@ def build_assignment(rows: Iterable[Mapping[str, Any]], label: str, folds: int, 
             "patient_id": patient,
             "split": split_of[patient],
             "label": label_of.get(patient, -1.0),
-            "cv_fold": fold_of.get(patient, ""),
             "fraction_rank": "" if patient not in rank_of else f"{rank_of[patient]:.8f}",
         }
         for patient in sorted(split_of)
     ]
 
 
-def _derived_split(entry: Mapping[str, Any], fold: str, fraction: float) -> str | None:
-    """New split of one patient for (fold, fraction); None drops the patient."""
-    official = str(entry["split"])
-    if official not in POOL_SPLITS:
-        return official
-    if fold == "official":
-        split = official
-    else:
-        split = "validation" if int(entry["cv_fold"]) == int(fold.removeprefix("fold")) else "train"
-    if split == "train" and float(entry["fraction_rank"]) >= float(fraction):
-        return None
-    return split
+def _keeps(entry: Mapping[str, Any], fraction: float) -> bool:
+    """Whether a patient stays in the fraction-``fraction`` manifest (validation / test always do)."""
+    if str(entry["split"]) != "train":
+        return True
+    return float(entry["fraction_rank"]) < float(fraction)
 
 
 class ExperimentSplits:
-    """Persisted assignment + on-demand (fold, fraction) manifests under one dataset root."""
+    """Persisted assignment + on-demand training-fraction manifests under one dataset root."""
 
-    def __init__(self, dataset_root: Path, *, task: str, label: str, base_manifest: str, folds: int = 5, seed: int = 42):
+    def __init__(self, dataset_root: Path, *, task: str, label: str, base_manifest: str, seed: int = 42):
         self.dataset_root = Path(dataset_root)
-        self.task, self.label, self.folds, self.seed = task, label, int(folds), int(seed)
+        self.task, self.label, self.seed = task, label, int(seed)
         self.base_manifest = base_manifest
-        self.name = split_name(task, label, folds, seed)
+        self.name = split_name(task, label, seed)
         self.root = self.dataset_root / "manifests" / "experiments" / self.name
 
     def _base_fingerprint(self) -> str:
@@ -196,35 +170,32 @@ class ExperimentSplits:
             if recorded and recorded != self._base_fingerprint():
                 raise ManifestError(
                     f"{self.base_manifest} changed since {path} was written (dataset rebuilt?); "
-                    f"delete {self.root} to re-derive folds and fractions for the new cohort"
+                    f"delete {self.root} to re-derive the training fractions for the new cohort"
                 )
         if not path.is_file():
             rows = read_rows(self.dataset_root / self.base_manifest)
-            table = build_assignment(rows, self.label, self.folds, self.seed)
+            table = build_assignment(rows, self.label, self.seed)
             _atomic_csv(path, table, ASSIGNMENT_FIELDS)
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            counts = Counter((row["split"], row["label"], row["cv_fold"]) for row in table)
+            counts = Counter((row["split"], row["label"]) for row in table)
             _atomic_json(self.root / "summary.json", {
                 "name": self.name, "base_manifest": self.base_manifest, "label": self.label,
                 "base_fingerprint": self._base_fingerprint(),
-                "folds": self.folds, "seed": self.seed, "patients": len(table), "assignment_sha256": digest,
-                "patients_by_split_label_fold": {"|".join(map(str, key)): value for key, value in sorted(counts.items())},
+                "seed": self.seed, "patients": len(table), "assignment_sha256": digest,
+                "patients_by_split_label": {"|".join(map(str, key)): value for key, value in sorted(counts.items())},
                 "rules": __doc__,
             })
         return {str(row["patient_id"]): row for row in read_rows(path)}
 
-    def manifest_path(self, source_manifest: str, fold: str | int, fraction: float) -> Path:
-        return self.root / fold_tag(fold) / fraction_tag(fraction) / source_manifest
+    def manifest_path(self, source_manifest: str, fraction: float) -> Path:
+        return self.root / fraction_tag(fraction) / source_manifest
 
-    def relative_manifest(self, source_manifest: str, fold: str | int, fraction: float) -> str:
-        return self.manifest_path(source_manifest, fold, fraction).relative_to(self.dataset_root).as_posix()
+    def relative_manifest(self, source_manifest: str, fraction: float) -> str:
+        return self.manifest_path(source_manifest, fraction).relative_to(self.dataset_root).as_posix()
 
-    def materialize(self, source_manifest: str, fold: str | int, fraction: float) -> dict[str, Any]:
-        fold_name = fold_tag(fold)
-        if fold_name != "official" and not 0 <= int(fold_name.removeprefix("fold")) < self.folds:
-            raise ValueError(f"fold {fold} out of range for k={self.folds}")
+    def materialize(self, source_manifest: str, fraction: float) -> dict[str, Any]:
         fraction = float(fraction)
-        destination = self.manifest_path(source_manifest, fold_name, fraction)
+        destination = self.manifest_path(source_manifest, fraction)
         assignment = self.assignment()
         source_path = self.dataset_root / source_manifest
         rows = read_rows(source_path)
@@ -241,19 +212,16 @@ class ExperimentSplits:
             entry = assignment[str(row["patient_id"])]
             if str(row.get("split")) != str(entry["split"]):
                 raise ManifestError(f"patient {row['patient_id']} has split {row.get('split')} but {entry['split']} in the assignment")
-            split = _derived_split(entry, fold_name, fraction)
-            if split is None:
-                continue
-            kept.append({**row, "split": split, "official_split": entry["split"]})
-        fields = list(rows[0].keys()) + (["official_split"] if "official_split" not in rows[0] else [])
-        _atomic_csv(destination, kept, fields)
+            if _keeps(entry, fraction):
+                kept.append(dict(row))
+        _atomic_csv(destination, kept, list(rows[0].keys()))
         patients = sorted({(row["patient_id"], row["split"]) for row in kept})
         _atomic_csv(destination.parent / "train_patients.csv",
                     [{"patient_id": patient, "split": split} for patient, split in patients if split == "train"],
                     ("patient_id", "split"))
         counts = Counter(row["split"] for row in kept)
-        return {"manifest": destination, "fold": fold_name, "fraction": fraction, "rows_by_split": dict(counts),
+        return {"manifest": destination, "fraction": fraction, "rows_by_split": dict(counts),
                 "train_patients": sum(1 for _, split in patients if split == "train")}
 
 
-__all__ = ["ExperimentSplits", "build_assignment", "fold_tag", "fraction_tag", "parse_fraction", "split_name"]
+__all__ = ["ExperimentSplits", "build_assignment", "fraction_tag", "parse_fraction", "split_name"]

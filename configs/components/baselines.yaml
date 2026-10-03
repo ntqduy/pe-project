@@ -13,9 +13,9 @@
 # config (the effective batch stays 4); run.log prints micro/effective batch and checkpointing.
 _presets_:
   diagnosis:
-    # PE present / absent from the image only, official INSPECT split.
-    # tools/baselines/run_case.py rewrites data.manifest to a k-fold / fraction copy
-    # (manifests/experiments/...) when a fold or training fraction is requested.
+    # PE present / absent from the image only, official INSPECT split (repeated with seeds).
+    # tools/baselines/run_case.py rewrites data.manifest to a training-fraction copy
+    # (manifests/experiments/...) when a fraction below 100% is requested (exp02).
     experiment:
       stage: diagnosis
       family: diagnosis

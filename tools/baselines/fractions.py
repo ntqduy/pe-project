@@ -45,7 +45,7 @@ def export_subsets(splits, source_manifest: str, label: str, destination: Path,
     """Write frac_<PPP>.csv for every fraction of one seed's assignment and check them."""
     destination.mkdir(parents=True, exist_ok=True)
     for percent in fractions:
-        report = splits.materialize(source_manifest, "official", percent / 100.0)
+        report = splits.materialize(source_manifest, percent / 100.0)
         rows = _train_rows(Path(report["manifest"]), label)
         with (destination / f"frac_{percent:03d}.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=["patient_id", "study_id", "label"])

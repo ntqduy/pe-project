@@ -3,12 +3,12 @@
 
     python tools/baselines/summarize.py --exp exp01_baselines [--profile full_inspect]
 
-Reads every ``runs/<model>__<head>__frac<PPP>[__v<variant>][__x<settings>]/<fold>_seed<S>/
+Reads every ``runs/<model>__<head>__frac<PPP>[__v<variant>][__x<settings>]/official_seed<S>/
 epoch_<E>/result.csv`` the experiment needs (tools/baselines/experiments.py) and writes, into
 ``<outputs>/<family>/BASE/<profile>/<task>/<exp>/``:
 
     runs.csv      one row per finished run (test metrics, validation AUROC, weights, path)
-    summary.csv   mean / std / n over folds and seeds per (model, head, fraction)
+    summary.csv   mean / std / n over seeds per (model, head, fraction, variant)
     summary.md    the same as a readable table (+ which runs are still missing)
     *.png         exp01: test AUROC per model | exp02: AUROC vs training fraction |
                   exp03: MLP vs KAN per model
@@ -55,7 +55,7 @@ TAG = re.compile(
     r"^(?P<model>.+?)__(?P<head>mlp|kan)__frac(?P<fraction>\d{3})"
     r"(?:__v(?P<variant>[A-Za-z0-9_]+?))?(?:__x(?P<settings>[A-Za-z0-9._+-]+))?$"
 )
-RUN = re.compile(r"^(?P<fold>official|fold\d+)_seed(?P<seed>\d+)$")
+RUN = re.compile(r"^official_seed(?P<seed>\d+)$")
 
 # Reference categorical palette (light surface), fixed order - see the dataviz skill.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
@@ -129,10 +129,8 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
         rows.append({
             "model": model, "dim": model_dimension(model), "group": MODEL_GROUPS.get(model, ""), "head": head,
             "fraction": fraction, "variant": variant or DEFAULT_VARIANT, "settings": settings,
-            "fold": run["fold"], "seed": int(run["seed"]),
+            "seed": int(run["seed"]),
             "epochs": epoch_dir.name,
-            # official split and k-fold CV use different validation sets: never pooled together
-            "scheme": "official" if run["fold"] == "official" else "cv",
             "n_test": test.get("n_studies"),
             **{column: (test.get(column) or "") if column in ("threshold_rule", "note") else _float(test.get(column))
                for column in RESULT_COLUMNS},
@@ -143,8 +141,8 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
 
 
 def group_key(row: dict) -> tuple:
-    """Runs pooled into one summary row: same model, head, fraction, variant, settings and scheme."""
-    return row["model"], row["head"], row["fraction"], row["variant"], row["settings"], row["scheme"]
+    """Runs pooled into one summary row: same model, head, fraction, variant and settings."""
+    return row["model"], row["head"], row["fraction"], row["variant"], row["settings"]
 
 
 def aggregate(rows: list[dict]) -> list[dict]:
@@ -152,9 +150,9 @@ def aggregate(rows: list[dict]) -> list[dict]:
     for row in rows:
         groups[group_key(row)].append(row)
     summary = []
-    for (model, head, fraction, variant, settings, scheme), items in groups.items():
+    for (model, head, fraction, variant, settings), items in groups.items():
         entry = {"model": model, "dim": model_dimension(model), "group": MODEL_GROUPS.get(model, ""), "head": head,
-                 "fraction": fraction, "variant": variant, "settings": settings, "scheme": scheme, "n_runs": len(items),
+                 "fraction": fraction, "variant": variant, "settings": settings, "n_runs": len(items),
                  "n_seeds": len({item["seed"] for item in items}),
                  "seeds": " ".join(str(seed) for seed in sorted({item["seed"] for item in items})),
                  "weights": ",".join(sorted({item["weights"] for item in items}))}
@@ -166,7 +164,7 @@ def aggregate(rows: list[dict]) -> list[dict]:
             entry["auroc_ci"] = f"[{items[0]['auroc_ci_low']:.3f}, {items[0]['auroc_ci_high']:.3f}]"
         summary.append(entry)
     order = {model: index for index, model in enumerate(sum((EXPERIMENTS[e]["models"] for e in EXPERIMENTS), []))}
-    return sorted(summary, key=lambda item: (item["scheme"] != "official", order.get(item["model"], 99), item["head"],
+    return sorted(summary, key=lambda item: (order.get(item["model"], 99), item["head"],
                                              item["fraction"], item["variant"] != DEFAULT_VARIANT, item["variant"],
                                              item["settings"]))
 
@@ -276,7 +274,7 @@ PRETTY_POINT_METRICS = ("sensitivity", "specificity", "ppv", "npv", "f1", "balan
 
 
 def pretty_rows(summary: list[dict], ensembles: dict[tuple, dict]) -> list[dict]:
-    """One readable row per (model, head, fraction, settings, scheme).
+    """One readable row per (model, head, fraction, variant, settings).
 
     AUROC / AUPRC: value [95% CI] of the seed-averaged prediction (seed_ensemble) next to
     mean ± std of the per-seed values; every other metric: mean ± std over the seeds.
@@ -286,7 +284,6 @@ def pretty_rows(summary: list[dict], ensembles: dict[tuple, dict]) -> list[dict]
         ensemble = ensembles.get(group_key(entry)) or {}
         row = {"model": entry["model"], "dim": entry["dim"], "group": entry["group"], "head": entry["head"],
                "train_%": entry["fraction"], "variant": entry["variant"], "settings": entry["settings"] or "default",
-               "split": entry["scheme"],
                "n_seeds": entry["n_seeds"], "seeds": entry["seeds"]}
         for metric in ("auroc", "auprc"):
             row[f"{metric}_[CI]_seed_avg"] = _interval(ensemble.get(metric), ensemble.get(f"{metric}_ci_low"),
@@ -316,7 +313,7 @@ def write_tables(out: Path, exp: str, spec: dict, rows: list[dict], summary: lis
     if ensembles:
         _write_csv(out / "summary_ensemble.csv", [
             {"model": key[0], "head": key[1], "fraction": key[2], "variant": key[3], "settings": key[4] or "default",
-             "split": key[5], **value} for key, value in ensembles.items()])
+             **value} for key, value in ensembles.items()])
     pretty = pretty_rows(summary, ensembles)
     if pretty:
         _write_csv(out / "summary_pretty.csv", pretty)
@@ -344,7 +341,7 @@ def write_tables(out: Path, exp: str, spec: dict, rows: list[dict], summary: lis
 
 
 def link_runs(out: Path, exp: str, rows: list[dict]) -> int:
-    """<exp>/runs/<model>_<head>[_frac<PPP>]/<fold>_seed<S> -> the shared run folder.
+    """<exp>/runs/<model>_<head>[_frac<PPP>]/official_seed<S> -> the shared run folder.
 
     Runs are stored once (shared by experiments); these links give every experiment the
     per-experiment layout of the proposal. Where symlinks are not allowed (Windows without
@@ -357,7 +354,7 @@ def link_runs(out: Path, exp: str, rows: list[dict]) -> int:
         name = (f"{row['model']}_{row['head']}" + (f"_frac{int(row['fraction']):03d}" if int(row["fraction"]) != 100 else "")
                 + (f"_v{row['variant']}" if row["variant"] != DEFAULT_VARIANT else "")
                 + (f"_x{row['settings']}" if row["settings"] else ""))
-        target = Path(row["run_dir"]).parent             # <fold>_seed<S> (all epoch bundles)
+        target = Path(row["run_dir"]).parent             # official_seed<S> (all epoch bundles)
         link = out / "runs" / name / target.name
         link.parent.mkdir(parents=True, exist_ok=True)
         if link.is_symlink() or link.exists():
@@ -399,11 +396,9 @@ def _series(entry: dict) -> str:
 def plot(out: Path, exp: str, summary: list[dict]) -> list[Path]:
     if not summary:
         return []
-    scheme = "cv" if any(entry["scheme"] == "cv" for entry in summary) else "official"
-    summary = [entry for entry in summary if entry["scheme"] == scheme]
     written = []
     if exp == "exp01_baselines":
-        plt, figure, axis = _axes("Test AUROC per baseline (mean ± std over folds/seeds)", 12, 5)
+        plt, figure, axis = _axes("Test AUROC per baseline (mean ± std over seeds)", 12, 5)
         names = [entry["model"] + (f" [{entry['settings']}]" if entry["settings"] else "") for entry in summary]
         values = [entry["auroc_mean"] for entry in summary]
         errors = [entry["auroc_std"] if math.isfinite(entry["auroc_std"]) else 0 for entry in summary]
@@ -510,8 +505,7 @@ def main(argv=None) -> int:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for row in rows:
         groups[group_key(row)].append(row)
-    # k-fold runs hold different studies per fold, so only official-split runs are averaged.
-    ensembles = {key: seed_ensemble(items, args.task) for key, items in groups.items() if key[5] == "official"}
+    ensembles = {key: seed_ensemble(items, args.task) for key, items in groups.items()}
     out = base / args.exp
     write_tables(out, args.exp, spec, rows, summary, ensembles)
     link_runs(out, args.exp, rows)

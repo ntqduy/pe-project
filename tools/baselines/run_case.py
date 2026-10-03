@@ -3,7 +3,7 @@
 
     python tools/baselines/run_case.py --model resnet18_3d                       # official split, MLP, 100%
     python tools/baselines/run_case.py --model vit_3d --head kan --gpus 1
-    python tools/baselines/run_case.py --model swin_3d --fraction 25 --fold 2 --folds 5
+    python tools/baselines/run_case.py --model swin_3d --fraction 25 --seed 1 --split-seed 1
     python tools/baselines/run_case.py --model convnext_2d --action preflight
     python tools/baselines/run_case.py --model resnet18_3d --task prognosis --label 1_month_mortality
     python tools/baselines/run_case.py --model resnet18_2d --head kan --smoke   # synthetic data, CPU ok
@@ -14,7 +14,8 @@ under $PE_SMOKE_ROOT (default output/_smoke) so real outputs are never touched: 
 patience 1, 64^3 inputs, 4 slices of 64^2 for slice-MIL, random init (CT-FM: synthetic cached
 features), CPU when no GPU is visible. Only for checking the pipeline, never for numbers.
 
-One case = (task, model, head, training fraction, fold, seed, settings). It maps to exactly
+One case = (task, model, head, training fraction, seed, settings) on the official INSPECT split
+(no k-fold: repeat with seeds). It maps to exactly
 one output folder (tools/baselines/experiments.py), so any number of cases can run in parallel
 on different GPUs without touching each other. Training flags that differ from the config
 (--scratch, --lr, --batch-size, --accumulation, --patience, --no-epoch-auc, extra --set) are
@@ -56,9 +57,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--model", required=True, help="config name in configs/runs/02_diagnosis/baselines/<dim>/")
     parser.add_argument("--head", default="mlp", choices=["mlp", "kan"])
     parser.add_argument("--fraction", default="100", help="percent of the training patients (25, 50, 75, 100)")
-    parser.add_argument("--fold", default="official", help="official or 0..K-1")
-    parser.add_argument("--folds", type=int, default=5, help="K of the k-fold assignment")
-    parser.add_argument("--split-seed", type=int, default=42, help="seed of the fold / fraction assignment")
+    parser.add_argument("--split-seed", type=int, default=42,
+                        help="seed of the training-fraction subsets (exp02 passes each case's own seed)")
     parser.add_argument("--seed", type=int, default=42, help="training seed")
     parser.add_argument("--profile", default=os.environ.get("PROFILE", "full_inspect"))
     parser.add_argument("--task", default="diagnosis", choices=["diagnosis", "prognosis"])
@@ -200,7 +200,7 @@ def case_settings(args: argparse.Namespace) -> tuple[dict, str]:
 
 
 def case_manifest(args: argparse.Namespace, config: dict, fraction: int) -> tuple[str, dict | None]:
-    """The manifest this case trains on; writes the fold / fraction copy when needed.
+    """The manifest this case trains on; writes the training-fraction copy when needed.
 
     A training fraction of the official split also exports every fraction of the same split
     seed (frac_025.csv ... frac_100.csv, patient_id + study_id) with their nesting / class
@@ -214,28 +214,27 @@ def case_manifest(args: argparse.Namespace, config: dict, fraction: int) -> tupl
     if args.task == "prognosis":
         name = PROGNOSIS_MANIFESTS[args.cohort]
         configured = f"manifests/ct_fm/{name}" if cached else f"manifests/{name}"
-    if str(args.fold) == "official" and fraction == 100:
+    if fraction == 100:
         return configured, None
     base = f"manifests/{PROGNOSIS_MANIFESTS[args.cohort]}" if args.task == "prognosis" else "manifests/diagnosis.csv"
     label = args.label if args.task == "prognosis" else str(config["task"]["primary_target"])
     task_name = f"{args.task}_{args.cohort}" if args.task == "prognosis" else args.task
     root = ProjectPaths.resolve(config).dataset_root_for(config)
-    splits = ExperimentSplits(root, task=task_name, label=label, base_manifest=base, folds=args.folds, seed=args.split_seed)
-    report = splits.materialize(configured, args.fold, fraction / 100.0)
-    if str(args.fold) == "official":
-        from tools.baselines.fractions import export_subsets
+    splits = ExperimentSplits(root, task=task_name, label=label, base_manifest=base, seed=args.split_seed)
+    report = splits.materialize(configured, fraction / 100.0)
+    from tools.baselines.fractions import export_subsets
 
-        family = "prognosis" if args.task == "prognosis" else "diagnosis"
-        destination = (ProjectPaths.resolve(config).output_root / family / "BASE" / args.profile
-                       / task_directory(args.task, args.cohort, args.label) / "splits" / "data_fraction"
-                       / f"seed_{args.split_seed}")
-        check = export_subsets(splits, configured, label, destination)
-        report["subsets"] = str(destination)
-        report["subset_check"] = check["status"]
-        if check["status"] != "PASS":
-            raise SystemExit(f"training-fraction subsets failed their check ({destination / 'check.json'}): "
-                             + "; ".join(check["problems"]))
-    return splits.relative_manifest(configured, args.fold, fraction / 100.0), report
+    family = "prognosis" if args.task == "prognosis" else "diagnosis"
+    destination = (ProjectPaths.resolve(config).output_root / family / "BASE" / args.profile
+                   / task_directory(args.task, args.cohort, args.label) / "splits" / "data_fraction"
+                   / f"seed_{args.split_seed}")
+    check = export_subsets(splits, configured, label, destination)
+    report["subsets"] = str(destination)
+    report["subset_check"] = check["status"]
+    if check["status"] != "PASS":
+        raise SystemExit(f"training-fraction subsets failed their check ({destination / 'check.json'}): "
+                         + "; ".join(check["problems"]))
+    return splits.relative_manifest(configured, fraction / 100.0), report
 
 
 def run(command: list[str]) -> int:
@@ -254,9 +253,8 @@ def main(argv=None) -> int:
             os.environ.pop(name, None)
     config_path = model_config_path(args.model)
     fraction = fraction_percent(args.fraction)
-    from source.data.experiment_splits import fold_tag
-
-    fold = fold_tag(args.fold)
+    # Every run uses the official INSPECT split; the name is kept in run folders and lineage.
+    fold = "official"
     overrides = base_overrides(args)
     config, settings = case_settings(args)
     manifest, split_report = case_manifest(args, config, fraction)
@@ -271,13 +269,12 @@ def main(argv=None) -> int:
         f"seed={args.seed}",
         f"compute.num_workers={args.num_workers}",
     ]
-    derived_split = fraction != 100 or fold != "official"
+    derived_split = fraction != 100
     if derived_split:
-        overrides += [f"data.split_variant={json.dumps({'fold': fold, 'fraction': fraction, 'folds': args.folds, 'split_seed': args.split_seed})}"]
+        overrides += [f"data.split_variant={json.dumps({'fraction': fraction, 'split_seed': args.split_seed})}"]
     # Checkpoint / result.json lineage read lineage.fold; record the case's split there too.
     # The official 100% split uses no split seed, so every experiment shares that run.
     overrides += [f"lineage.fold={fold}", f"lineage.train_fraction={fraction}",
-                  f"lineage.cv_folds={args.folds if fold != 'official' else 0}",
                   f"lineage.split_seed={args.split_seed if derived_split else 'none'}"]
     for key, value in (("training.epochs", args.epochs), ("training.early_stopping_patience", args.patience),
                        ("training.batch_size", args.batch_size), ("training.gradient_accumulation", args.accumulation),
@@ -294,7 +291,7 @@ def main(argv=None) -> int:
     overrides += list(args.extra)
     print(("==> SMOKE case (synthetic data) " if args.smoke else "==> case ") + f"task={args.task}"
           + (f" label={args.label}" if args.label else "")
-          + f" model={args.model} head={args.head} fraction={fraction}% fold={fold} "
+          + f" model={args.model} head={args.head} fraction={fraction}% "
           f"seed={args.seed} profile={args.profile} gpus={args.gpus or 'cpu'}"
           + (f" settings={settings}" if settings else ""), flush=True)
     if split_report:

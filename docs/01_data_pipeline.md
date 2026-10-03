@@ -145,7 +145,7 @@ Ghi vào `<dataset>/manifests/`. Cột định danh luôn có: `patient_id, stud
 - `data_quality.md` (`quality.py`): cohort funnel, phân bố nhãn theo task, readiness của
   index-time / EHR / sPESI, sampling và leakage guard. Mở file này và `exclusions.csv` trước khi train.
 
-### 1.6 Output stage 0, CT-FM cache, fold/fraction
+### 1.6 Output stage 0, CT-FM cache, training fraction
 
 **CT-FM feature cache (`tools/data/build_ctfm_cache.py`).** Chạy sau stage 0, không tạo split,
 kiểm tra lại split và nhãn. Preprocessing riêng theo contract CT-FM upstream: đọc **NIfTI gốc**,
@@ -155,13 +155,14 @@ kênh + 1 kênh "tỉ lệ ô nằm trong body") và `pooled/<study_id>.npy` `[5
 `manifests/ct_fm/*.csv` (`image_path` → feature file, thêm `pooled_path`; study lỗi vào
 `dropped_rows.csv`). Chi tiết dùng ở [02_models.md](02_models.md).
 
-**Fold và training-fraction (`experiment_splits.py`, `tools/data/build_split_manifests.py`).**
-Tạo một assignment cấp patient được lưu lại: pool = patient official `train` + `validation`; trong
-mỗi nhóm label, shuffle theo `seed` rồi chia vòng tròn vào `cv_fold`; `fraction_rank` đều trong
-[0,1) theo label nên fraction được stratify và lồng nhau (25% ⊂ 50% ⊂ 75% ⊂ 100%). Patient official
-`test` **luôn giữ nguyên**; fold k = validation là `cv_fold == k`, phần còn lại là train; fraction
-chỉ cắt **train**. `base_fingerprint` chặn dùng assignment cũ khi manifest gốc đã đổi. Tên:
-`<task>_<label>_k<folds>_s<seed>`, thư mục `<official|fold{k}>/frac{PPP}/`. `parse_fraction`: "25"
+**Training-fraction (exp02; `experiment_splits.py`, `tools/data/build_split_manifests.py`).**
+Không có k-fold: mọi run dùng split chính thức và lặp lại bằng seed. Với exp02, một assignment
+cấp patient được lưu cho mỗi (task, label, seed): trong mỗi nhóm label của patient official
+`train`, shuffle theo `seed` rồi gán `fraction_rank` đều trong [0,1), nên fraction được stratify và
+lồng nhau (25% ⊂ 50% ⊂ 75% ⊂ 100%), patient giữ mọi study. Chỉ cắt **train**; `validation` và
+`test` **luôn giữ nguyên**. `base_fingerprint` chặn dùng assignment cũ khi manifest gốc đã đổi.
+Tên: `<task>_<label>_s<seed>`, thư mục `frac{PPP}/`. Danh sách ID mỗi subset + kiểm tra được xuất
+ra `<task>/splits/data_fraction/seed_<s>/` (`tools/baselines/fractions.py`). `parse_fraction`: "25"
 hay "12.5%" là phần trăm, "0.25" là phân số, "1" bị từ chối vì mơ hồ.
 
 ### 1.7 Bảo đảm split cấp patient
@@ -171,7 +172,7 @@ hay "12.5%" là phần trăm, "0.25" là phân số, "1" bị từ chối vì m�
 3. Governance exclusion và sampling theo **patient**; patient được chọn giữ mọi study; sampling
    rút độc lập trong từng official split.
 4. `audit_split_integrity` chạy 2 lần, so với `official_splits()` đọc độc lập.
-5. Fold/fraction không chạm test; chỉ chia lại pool train+validation theo patient.
+5. Training fraction chỉ cắt patient train; validation và test không đổi; không có k-fold.
 6. Vocabulary EHR chỉ đếm trên train; EHR không nhìn event sau CTPA.
 7. `build_ctfm_cache.py` và preflight (`audit_manifest`, `patient_overlap`) kiểm tra lại overlap.
 

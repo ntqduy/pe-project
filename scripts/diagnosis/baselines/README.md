@@ -62,7 +62,6 @@ scripts/tool/run_ctfm_frozen.sh`), exactly like the existing CT-FM runs.
 | `GPUS` | `0` | GPU pool; `''` = CPU |
 | `JOBS_PER_GPU` | `1` | cases sharing one GPU (2-4 for `ctfm_frozen_3d`) |
 | `GPUS_PER_JOB` | `1` | `>1` = one DDP case over several GPUs |
-| `FOLDS` | `official` | `official` and/or fold numbers: `FOLDS="0 1 2 3 4"`; `K=5` |
 | `SEEDS` | `42` | `SEEDS="42 43 44"` for repeated runs |
 | `HEADS`, `FRACTIONS` | experiment's | e.g. `HEADS=kan`, `FRACTIONS="25 50"` |
 | `ACTION` | `all` | `all`, `prepare`, `train`, `evaluate`, `preflight`, `dry` |
@@ -80,7 +79,7 @@ One case directly: `python tools/baselines/run_case.py --model vit_3d --head kan
 
 | setting | value |
 |---|---|
-| split | official INSPECT train / validation / test; repeat with seeds (`SEEDS="0 1 2"`), not folds |
+| split | official INSPECT train / validation / test only (no k-fold); repeat with seeds (`SEEDS="0 1 2"`) |
 | effective batch | 4 = micro-batch x `gradient_accumulation`; an arm that does not fit lowers its micro-batch in its run config (`vmamba_3d`, `mamba_mae_3d`: 1 x 4; most 2D/3D arms: 2 x 2) |
 | epochs / early stopping | at most 100; stop after 15 epochs without a better validation AUROC |
 | checkpoint | `best.ckpt` = epoch with the highest validation AUROC (`training.selection_metric: val_auroc`) |
@@ -145,7 +144,7 @@ matched / missing / shape-mismatched tensor counts in `logs.txt` and `result.jso
 Run `prepare_weights.sh` and a per-arm preflight or smoke run in the target environment
 before calling a row pretrained; nnMamba has no published classification weights.
 
-## Training fractions (exp02) and k-fold
+## Training fractions (exp02)
 
 exp02 has `split_seed: per_seed`: seed `s` draws its own nested subsets, and every fraction
 case exports them, with a check, to
@@ -159,17 +158,15 @@ case exports them, with a check, to
 
 A FAIL stops the case before training. `python tools/baselines/fractions.py --dir <seed dir>`
 re-checks a folder. The 100% case is the official split itself (shared with exp01 / exp03).
-K-fold stays available (`FOLDS="0 1 2 3 4"`) but the protocol uses the official split + seeds.
-
+There is no k-fold: every run uses the official split and is repeated with seeds.
 
 `source/data/experiment_splits.py` (called automatically by each case) writes one
-patient-level assignment per task and derives manifests under
-`<dataset>/manifests/experiments/<task>_<label>_k<K>_s<seed>/<official|fold{k}>/frac<PPP>/`:
+patient-level assignment per (task, label, seed) and derives manifests under
+`<dataset>/manifests/experiments/<task>_<label>_s<seed>/frac<PPP>/`:
 
-- the official **test split never changes**;
-- fold k: validation = the pool (official train + validation) patients of fold k, stratified by label;
+- the official **validation and test splits never change**;
 - fraction p: the train patients whose per-label rank is < p, so fractions are **stratified
-  and nested** (25% c 50% c 75% c 100%); each folder also has `train_patients.csv`.
+  and nested** (25% c 50% c 75% c 100%), whole patients only; each folder also has `train_patients.csv`.
 
 `--fraction` (and `FRACTIONS`) here is always a **whole percent**: `run_case.py --fraction 1`
 means 1%, `50` means 50%. `frac<PPP>` is that percent zero-padded (`frac025`, `frac100`).
@@ -182,7 +179,7 @@ tag (12.5% -> `frac012p5`), so two fractions never share a folder.
 
 ```text
 <outputs>/diagnosis/BASE/<profile>/diagnosis/
-├── runs/<model>__<head>__frac<PPP>/<fold>_seed<S>/epoch_<E>/     one case (shared by experiments)
+├── runs/<model>__<head>__frac<PPP>[__v<variant>]/official_seed<S>/epoch_<E>/   one case (shared)
 │   ├── result.csv  predictions.csv  result.json  logs.txt  training_curves.png
 │   ├── checkpoint/{best,last}.ckpt  resolved_config.yaml
 │   └── visualize/{correct,incorrect}/  NN_<patient>_<study>_<TP|TN|FP|FN>.{html,png},
@@ -190,7 +187,7 @@ tag (12.5% -> `frac012p5`), so two fractions never share a folder.
 │                 (+ _mil_attention.png for 2D / 2.5D)
 ├── exp01_baselines/      summary.md  summary_pretty.csv  summary_ensemble.csv  summary.csv
 │                         summary_raw.csv  auroc_per_model.png  launcher_logs/
-│                         runs/<model>_<head>[_frac<PPP>]/<fold>_seed<S> -> symlink to the shared run
+│                         runs/<model>_<head>[_frac<PPP>][_v<variant>]/official_seed<S> -> symlink to the shared run
 ├── exp02_data_fraction/  ...                                  auroc_vs_fraction.png
 └── exp03_head_ablation/  ...                                  mlp_vs_kan.png
 ```
@@ -215,4 +212,3 @@ Summary tables (`tools/baselines/summarize.py`, also run after every grid):
 | `summary.csv` | numeric mean / std / n per metric |
 | `summary_raw.csv` | every run's test row (all `result.csv` columns) |
 
-Official-split and k-fold runs are summarised in separate rows (`split` column).

@@ -16,7 +16,6 @@
 #   GPUS=0                    GPU pool; cases are spread over it (''=CPU)
 #   JOBS_PER_GPU=1            cases sharing one GPU at a time (e.g. 2-4 for ctfm_frozen_3d)
 #   GPUS_PER_JOB=1            >1 = one DDP case over several GPUs
-#   FOLDS=official            "official" and/or fold numbers: FOLDS="0 1 2 3 4" (k-fold, K=${K:-5})
 #   SEEDS="0 1 2"             training seeds (official split, repeated with seeds)
 #   VARIANTS                  subset of the experiment's variants (exp04: default center mean max)
 #   HEADS / FRACTIONS         override the experiment's heads / training fractions
@@ -43,6 +42,10 @@ MODEL="${2:?usage: run_baseline_grid.sh <experiment> <model|all> [run_case args]
 shift 2
 PYTHON="${PYTHON:-python3}"
 
+if [[ -n "${FOLDS:-}" || -n "${K:-}" ]]; then
+  printf 'error: k-fold was removed; runs use the official split, repeat them with SEEDS / --seeds\n' >&2
+  exit 2
+fi
 PASSTHROUGH=()
 while (( $# )); do
   case "$1" in
@@ -72,13 +75,12 @@ GRID=(
   --gpus "${GPUS-0}"
   --jobs-per-gpu "${JOBS_PER_GPU:-1}"
   --gpus-per-job "${GPUS_PER_JOB:-1}"
-  --folds "${K:-5}"
   --task "${TASK:-diagnosis}"
   --cohort "${COHORT:-all}"
 )
 [[ -n "${LABEL:-}" ]] && GRID+=(--label "$LABEL")
 # shellcheck disable=SC2206
-GRID+=(--folds-to-run ${FOLDS:-official} --seeds ${SEEDS:-0 1 2})
+GRID+=(--seeds ${SEEDS:-0 1 2})
 case "$MODEL" in
   all) ;;
   dim:*) GRID+=(--dims "${MODEL#dim:}") ;;

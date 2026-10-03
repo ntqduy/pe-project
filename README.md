@@ -463,7 +463,7 @@ pe-project/
 │   ├── data/               everything about the cohort, in one package:
 │   │   ├── profiles/       the three active dataset profiles, as data not code
 │   │   ├── build/          stage 0: raw INSPECT -> eligible cohort -> manifests, EHR, sPESI, caches
-│   │   └── *.py            runtime: paths, PyTorch Dataset, manifest reading, preflight, folds
+│   │   └── *.py            runtime: paths, PyTorch Dataset, manifest reading, preflight, training fractions
 │   ├── clinical/           sPESI scoring, clinical preprocessing and the EHR encoder
 │   ├── components/         encoders, organ adapters, ROI pooling, fusion, PEFT
 │   ├── tasks/              diagnosis / prognosis models and heads
@@ -582,8 +582,8 @@ the ROI run instead — see [Where the anatomy masks come from](#where-the-anato
 
 **The split is preserved, never created.** INSPECT's official `train/valid/test` assignment is
 carried through unchanged (`valid` → `validation`); no tool creates a new split. The baseline
-zoo's k-fold / training-fraction manifests (`tools/data/build_split_manifests.py`) only
-re-divide the official train+validation patients and never touch the test split. Never select
+zoo's training-fraction manifests (exp02, `tools/data/build_split_manifests.py`) only
+subsample the official train patients and never touch validation or test; there is no k-fold. Never select
 checkpoints or thresholds on test.
 
 ## Test → full

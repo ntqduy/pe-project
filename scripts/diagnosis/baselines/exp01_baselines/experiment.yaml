@@ -1,6 +1,6 @@
 # exp01_baselines - the case grid of this experiment (read by tools/baselines/experiments.py).
-# A case = model x head x training fraction x fold x seed; folds and seeds come from the
-# command line (FOLDS=..., SEEDS=...). Each model's own contract is its run config
+# A case = model x head x training fraction x variant x seed on the official split; seeds come
+# from the command line (--seeds / SEEDS=...). Each model's own contract is its run config
 # configs/runs/02_diagnosis/baselines/<dim>/<model>.yaml; `overrides` adds --set values to every case of a
 # model in THIS experiment only (e.g. a smaller batch). Edit this file to change the grid.
 title: Baselines 2D / 2.5D / 3D (MLP head, 100% train)

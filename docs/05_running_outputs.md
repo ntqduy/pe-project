@@ -194,7 +194,7 @@ derived/datasets/<profile>/
 └── manifests/
     ├── ctpa.csv  diagnosis.csv  prognosis*.csv  paired_reports.csv  reports.csv  exclusions.csv
     ├── ct_fm/*.csv          manifest trỏ tới CT-FM feature (cột pooled_path)
-    └── experiments/...      manifest k-fold / fraction của baseline zoo
+    └── experiments/...      manifest training-fraction (exp02) của baseline zoo
 
 derived/cache/<profile>/
 ├── volumes/                 cache CT RAS đã tiền xử lý, dùng chung mọi stage
@@ -262,7 +262,7 @@ balanced_accuracy, accuracy, brier, [calibration_intercept, calibration_slope], 
 | sPESI score baseline | `prognosis/PR_spesi_only/score_baseline/` | `result.json`, `predictions.parquet`, `calibration_curve.parquet`; cạnh, không nằm trong, `epoch_<E>/` |
 | Zero-shot / External test-only | `diagnosis/DX_zeroshot_{penet,radar}[__ds_<p>]/`, `diagnosis/<id>/` | Không có `epoch_<E>/`: `result.csv`, `predictions.csv`, `logs.txt`, `result.json`, `preview/` |
 | Counterfactual | `counterfactual/CF_remove_{heart,pa,lung,random}/` | `counterfactual_predictions.parquet` (xác suất gốc vs sau khi xoá, theo cặp patient), `paired_bootstrap_metrics.parquet`, `result.json`; smoke: `CF_<x>__SMOKE_<digest>/` |
-| Baseline zoo | `diagnosis/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>/<fold>_seed<S>/epoch_<E>/` | Bundle như trên; mỗi `exp0*_*/` chứa bảng tổng hợp và symlink tới run dùng chung |
+| Baseline zoo | `diagnosis/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>[__v<variant>]/official_seed<S>/epoch_<E>/` | Bundle như trên; mỗi `exp0*_*/` chứa bảng tổng hợp và symlink tới run dùng chung |
 
 **`tools/build_summary.py`** quét mọi `result.json` (trừ `summary/`), ghi `<output_root>/summary/all_runs.csv` cùng `{silver,diagnosis,prognosis,architecture,ehr_ablation,counterfactual,roi,transfer}.csv` (family có run). **`tools/baselines/summarize.py --exp <exp>`** ghi `runs.csv`, `summary.csv`, `summary.md` (mean/std/n qua fold, seed) và hình `auroc_per_model.png` / `auroc_vs_fraction.png` / `mlp_vs_kan.png` (exp01/02/03) vào `diagnosis/BASE/<profile>/<task>/<exp>/`.
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Write k-fold / training-fraction manifests for the baseline experiments.
+"""Write training-fraction manifests (exp02) of the official INSPECT split ahead of time.
 
     python tools/data/build_split_manifests.py --profile full_inspect \
-        --base-manifest manifests/diagnosis.csv --label pe_present --folds 5 --seed 42 \
-        --apply manifests/diagnosis.csv manifests/ct_fm/diagnosis.csv \
-        --fold official 0 1 2 3 4 --fraction 25 50 75 100
+        --base-manifest manifests/diagnosis.csv --label pe_present --seed 0 \
+        --apply manifests/diagnosis.csv manifests/ct_fm/diagnosis.csv --fraction 25 50 75 100
 
-The official test split is never modified; see source/data/experiment_splits.py.
+tools/baselines/run_case.py writes them on demand anyway; only train patients are
+subsampled, validation and test never change; see source/data/experiment_splits.py.
 """
 from __future__ import annotations
 
@@ -41,10 +41,8 @@ def main() -> int:
     parser.add_argument("--task", default="diagnosis")
     parser.add_argument("--base-manifest", default="manifests/diagnosis.csv")
     parser.add_argument("--label", default="pe_present")
-    parser.add_argument("--folds", type=int, default=5)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42, help="split seed of the subsets (exp02 uses the training seed)")
     parser.add_argument("--apply", nargs="+", default=None, help="manifests to derive (default: the base)")
-    parser.add_argument("--fold", nargs="+", default=["official"])
     parser.add_argument("--fraction", nargs="+", default=["100"],
                         help="training percent (25, 12.5, 1%%) or fraction below 1 (0.25); a bare 1 is rejected")
     args = parser.parse_args()
@@ -60,13 +58,12 @@ def main() -> int:
         fractions.append(fraction)
     root = dataset_root(args.profile, args.dataset_root)
     splits = ExperimentSplits(root, task=args.task, label=args.label, base_manifest=args.base_manifest,
-                              folds=args.folds, seed=args.seed)
+                              seed=args.seed)
     for manifest in args.apply or [args.base_manifest]:
-        for fold in args.fold:
-            for fraction in fractions:
-                report = splits.materialize(manifest, fold, fraction)
-                report["manifest"] = str(Path(report["manifest"]).relative_to(root))
-                print(json.dumps(report, sort_keys=True))
+        for fraction in fractions:
+            report = splits.materialize(manifest, fraction)
+            report["manifest"] = str(Path(report["manifest"]).relative_to(root))
+            print(json.dumps(report, sort_keys=True))
     return 0
 
 

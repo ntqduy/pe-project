@@ -4,16 +4,16 @@
     # one experiment, everything it needs, 4 GPUs, one case per GPU at a time
     python tools/baselines/run_many.py --exp exp01_baselines --gpus 0,1,2,3
 
-    # a subset / another grid; k-fold (official split is 'official')
+    # a subset / another grid / more seeds (always the official INSPECT split)
     python tools/baselines/run_many.py --exp exp02_data_fraction --models vit_3d swin_3d --fractions 25 50
-    python tools/baselines/run_many.py --exp exp03_head_ablation --folds-to-run 0 1 2 3 4 --gpus 0,1
+    python tools/baselines/run_many.py --exp exp03_head_ablation --seeds 0 1 2 3 4 --gpus 0,1
 
     # two small cases per GPU (e.g. CT-FM frozen heads), or one DDP case over two GPUs
     python tools/baselines/run_many.py --exp exp03_head_ablation --models ctfm_frozen_3d --jobs-per-gpu 2
     python tools/baselines/run_many.py --exp exp01_baselines --models vmamba_3d --gpus-per-job 2 --gpus 0,1
 
 Each case is tools/baselines/run_case.py in its own process with its own GPU set and its own
-log file (<outputs>/<family>/BASE/<profile>/<task>/<exp>/launcher_logs/<run tag>__<fold>__s<seed>.log, the run tag
+log file (<outputs>/<family>/BASE/<profile>/<task>/<exp>/launcher_logs/<run tag>__official__s<seed>.log, the run tag
 carrying the same __x<settings> stamp as the case's output folder); finished cases are skipped, so re-running
 the same command resumes a grid. A failed case does not stop the others; the exit code is
 non-zero if any failed. --dry-list prints the grid without running it.
@@ -49,9 +49,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--fractions", nargs="+", type=int, help="override the experiment's fractions")
     parser.add_argument("--variants", nargs="+", help="subset of the experiment's variants (exp04: default center mean max)")
     parser.add_argument("--split-seed", type=int, default=42,
-                        help="seed of fold / fraction assignments (experiments with split_seed: per_seed use each case's seed)")
-    parser.add_argument("--folds-to-run", nargs="+", default=["official"], help="official and/or 0..K-1")
-    parser.add_argument("--folds", type=int, default=5)
+                        help="seed of the training-fraction subsets (experiments with split_seed: per_seed use each case's seed)")
     parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     parser.add_argument("--gpus", default=os.environ.get("GPUS", "0"), help="GPU pool, e.g. 0,1,2,3; '' = CPU")
     parser.add_argument("--gpus-per-job", type=int, default=1)
@@ -94,7 +92,7 @@ def case_command(args: argparse.Namespace, spec: dict, case: dict, extra: list[s
     """run_case.py arguments of one case (without the interpreter and script)."""
     split_seed = case["seed"] if spec.get("split_seed") == "per_seed" else args.split_seed
     command = ["--model", case["model"], "--head", case["head"], "--fraction", str(case["fraction"]),
-               "--fold", str(case["fold"]), "--folds", str(args.folds), "--seed", str(case["seed"]),
+               "--seed", str(case["seed"]),
                "--split-seed", str(split_seed), "--profile", args.profile, *task_arguments(args), "--gpus", gpu, *extra]
     overrides = spec["overrides"].get(case["model"]) or []
     if overrides:
@@ -107,7 +105,7 @@ def case_command(args: argparse.Namespace, spec: dict, case: dict, extra: list[s
 
 
 def case_names(args: argparse.Namespace, spec: dict, cases: list[dict], extra: list[str]) -> list[str]:
-    """``<run tag>__<fold>__s<seed>`` per case, with the same ``__x<settings>`` stamp run_case.py
+    """``<run tag>__official__s<seed>`` per case, with the same ``__x<settings>`` stamp run_case.py
     puts in the output folder (run_case.case_settings), so grids with different training flags
     never share a launcher log."""
     from tools.baselines import run_case
@@ -125,7 +123,7 @@ def case_names(args: argparse.Namespace, spec: dict, cases: list[dict], extra: l
                       "its launcher log name is unstamped", file=sys.stderr, flush=True)
                 stamps[case["model"]] = ""
         tag = run_tag(case["model"], case["head"], case["fraction"], parsed.variant, stamps[case["model"]])
-        names.append(f"{tag}__{case['fold']}__s{case['seed']}")
+        names.append(f"{tag}__official__s{case['seed']}")
     return names
 
 
@@ -148,9 +146,8 @@ def main(argv=None) -> int:
         raise SystemExit(f"{args.exp} has no variants {unknown_variants}; it has {sorted(spec['variants'])}")
     extra = [part for part in args.case_args if part != "--"]
     cases = [
-        {"model": model, "head": head, "fraction": fraction, "fold": fold, "seed": seed, "variant": variant}
-        for model, head, fraction, variant, fold, seed in itertools.product(
-            models, heads, fractions, variants, args.folds_to_run, args.seeds)
+        {"model": model, "head": head, "fraction": fraction, "seed": seed, "variant": variant}
+        for model, head, fraction, variant, seed in itertools.product(models, heads, fractions, variants, args.seeds)
     ]
     task_dir = task_directory(args.task, args.cohort, args.label)
     task_args = task_arguments(args)
