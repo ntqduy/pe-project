@@ -1,7 +1,3 @@
-[submodule "third_party/repos/CT-CLIP"]
-	path = third_party/repos/CT-CLIP
-	url = https://github.com/ibrahimethemhamamci/CT-CLIP.git
-	ignore = untracked
 [submodule "third_party/repos/CT-FM"]
 	path = third_party/repos/CT-FM
 	url = https://github.com/project-lighter/CT-FM.git
@@ -13,10 +9,6 @@
 [submodule "third_party/repos/NV-Reason-CT"]
 	path = third_party/repos/NV-Reason-CT
 	url = https://github.com/NVIDIA-Medtech/NV-Reason-CT.git
-	ignore = untracked
-[submodule "third_party/repos/TotalFM"]
-	path = third_party/repos/TotalFM
-	url = https://github.com/jichi-labo/TotalFM.git
 	ignore = untracked
 [submodule "third_party/repos/TotalSegmentator"]
 	path = third_party/repos/TotalSegmentator

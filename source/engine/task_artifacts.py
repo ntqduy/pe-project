@@ -165,8 +165,10 @@ def write_training_artifacts(
 
     ``run_dir`` is the bundle itself (``<id>/epoch_<training.epochs>``, see
     ``source.engine.experiment.run_output_id``). It receives checkpoint/{best,last}.ckpt,
-    logs.txt, history.csv, training_curves.png and preview/. result.csv and predictions.csv are added by
-    tools/tasks/evaluate.py, which is the only place task metrics are computed.
+    logs.txt, history.csv and training_curves.png. result.csv and predictions.csv are added by
+    tools/tasks/evaluate.py, which is the only place task metrics are computed. preview/ (or
+    visualize/ when ``preview.split: test``) is created by write_backbone_previews only when it
+    writes cases, so no run is left with an empty folder.
     """
     history = [dict(row) for row in training_result.get("history", [])]
     epochs_run = int(training_result.get("epochs_run") or (history[-1]["epoch"] if history else 0))
@@ -175,9 +177,7 @@ def write_training_artifacts(
     epochs_configured = int(training_result.get("epochs") or epochs_run)
     destination = run_dir
     checkpoint_dir = destination / "checkpoint"
-    preview_dir = destination / "preview"
-    for directory in (checkpoint_dir, preview_dir):
-        directory.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     for name in ("best.ckpt", "last.ckpt"):
         source = run_dir / name
@@ -270,8 +270,12 @@ def cleanup_task_run(run_dir: Path, *, keep: Sequence[Path] = ()) -> None:
                 continue
             if path.is_file():
                 path.unlink()
+        preview_dir = epoch_dir / "preview"
         for name in LEGACY_PREVIEW_FILES:
-            (epoch_dir / "preview" / name).unlink(missing_ok=True)
+            (preview_dir / name).unlink(missing_ok=True)
+        # Older bundles created preview/ up front even when the cases went to visualize/.
+        if preview_dir.is_dir() and not any(preview_dir.iterdir()):
+            preview_dir.rmdir()
 
 
 def refresh_epoch_log(run_dir: Path) -> Path | None:

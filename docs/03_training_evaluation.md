@@ -119,7 +119,9 @@ Mọi run trainable dùng `pretrained` (`encoders.yaml#from_pretrained`); `--scr
 ├── result.json                 training ghi; evaluate bổ sung evaluation, evaluation_checkpoint
 ├── checkpoint/best.ckpt  last.ckpt     best = epoch tốt nhất theo -val_loss; last = epoch cuối thực chạy
 ├── history.csv  logs.txt  training_curves.png
-├── preview/                    Grad-CAM (training ghi bản chưa threshold; evaluate ghi đè)
+├── preview/                    Grad-CAM (training ghi bản chưa threshold; evaluate ghi đè); chỉ có khi
+│                               preview.split=validation. Baseline (split: test) ghi visualize/{correct,incorrect}/
+│                               và không có preview/ (thư mục rỗng cũ bị cleanup_task_run xoá)
 ├── result.csv  predictions.csv  reporting_checklist.json     evaluate ghi
 ├── bootstrap_metrics.parquet   chỉ khi --reference-predictions
 └── smoke/<sha12>/              evaluate với --patient-id/--max-cases

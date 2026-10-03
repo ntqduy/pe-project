@@ -15,14 +15,18 @@
 Each case is tools/baselines/run_case.py in its own process with its own GPU set and its own
 log file (<outputs>/<family>/BASE/<profile>/<task>/<exp>/launcher_logs/<run tag>__official__s<seed>.log, the run tag
 carrying the same __x<settings> stamp as the case's output folder); finished cases are skipped, so re-running
-the same command resumes a grid. A failed case does not stop the others; the exit code is
-non-zero if any failed. --dry-list prints the grid without running it.
+the same command resumes a grid. The terminal shows [start i/N] / [done] per case plus the case's
+key lines (weights loaded, one line per epoch, progress of long passes, final test AUROC),
+prefixed with [model head fraction seed]; a failed case also prints the tail of its log. A failed
+case does not stop the others; the exit code is non-zero if any failed. --dry-list prints the
+grid without running it.
 """
 from __future__ import annotations
 
 import argparse
 import itertools
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -38,6 +42,21 @@ from tools.baselines.experiments import (  # noqa: E402
     DEFAULT_VARIANT, EXPERIMENTS, PROGNOSIS_LABELS, base_directory, check_label, dimension_folder, run_tag,
     task_directory,
 )
+
+# Lines of a case's output echoed to the terminal; everything still goes to the case's log.
+FOLLOW = re.compile(
+    r"==> (train|evaluate): skipped"
+    r"|(NO )?PRETRAINED"
+    r"|compute device="
+    r"|epoch=\d+/\d+ "
+    r"|run progress:"
+    r"|training run=.* status="
+    r"|AUROC +:"
+    r"|evaluation status="
+    r"|.* \d+/(\d+|\?) \w+ \([\d.]+ \w+/s"  # source/utils/progress.py lines of passes over a minute
+)
+TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\dT\S+ \| ")
+FAILURE_TAIL = 15
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -167,28 +186,53 @@ def main(argv=None) -> int:
         return 0
     log_dir.mkdir(parents=True, exist_ok=True)
     queue: Queue = Queue()
-    for item in zip(names, cases):
-        queue.put(item)
+    for index, item in enumerate(zip(names, cases), start=1):
+        queue.put((index, *item))
     failures: list[str] = []
+    finished = 0
     lock = threading.Lock()
+    # Unbuffered children, so their lines reach the terminal as they are written.
+    child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
 
     def worker(gpu: str) -> None:
+        nonlocal finished
         while True:
             try:
-                name, case = queue.get_nowait()
+                index, name, case = queue.get_nowait()
             except Empty:
                 return
             command = [sys.executable, "tools/baselines/run_case.py", *case_command(args, spec, case, extra, gpu)]
+            variant = case.get("variant") or DEFAULT_VARIANT
+            label = (f"[{case['model']} {case['head']} {case['fraction']}%"
+                     + (f" {variant}" if variant != DEFAULT_VARIANT else "") + f" s{case['seed']}]")
             started = time.time()
             with lock:
-                print(f"[start] {name} gpus={gpu or 'cpu'} log={log_dir / (name + '.log')}", flush=True)
+                print(f"[start {index}/{len(cases)}] {name} gpus={gpu or 'cpu'} log={log_dir / (name + '.log')}", flush=True)
+            echoed: set[str] = set()
+            tail: list[str] = []
             with (log_dir / f"{name}.log").open("w", encoding="utf-8") as handle:
-                code = subprocess.call(command, cwd=ROOT, stdout=handle, stderr=subprocess.STDOUT)
+                process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env)
+                for line in process.stdout:
+                    handle.write(line)
+                    handle.flush()
+                    text = TIMESTAMP.sub("", line.rstrip())
+                    tail = (tail + [text])[-FAILURE_TAIL:]
+                    # Weights / device lines are printed more than once per case; show each once.
+                    if FOLLOW.match(text) and text not in echoed:
+                        echoed.add(text)
+                        with lock:
+                            print(f"  {label} {text}", flush=True)
+                code = process.wait()
             with lock:
+                finished += 1
                 status = "ok" if code == 0 else f"FAILED (exit {code})"
-                print(f"[{'done' if code == 0 else 'fail'}] {name} {status} in {(time.time() - started) / 60:.1f} min", flush=True)
+                print(f"[{'done' if code == 0 else 'fail'} {finished}/{len(cases)}] {name} {status} "
+                      f"in {(time.time() - started) / 60:.1f} min", flush=True)
                 if code:
                     failures.append(name)
+                    for text in tail:
+                        print(f"  {label} | {text}", flush=True)
 
     threads = [threading.Thread(target=worker, args=(slot,), daemon=True) for slot in pool]
     for thread in threads:

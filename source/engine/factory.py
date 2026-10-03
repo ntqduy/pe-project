@@ -68,9 +68,11 @@ def _build_baseline_classifier(
         print(format_pretrained_report(str(getattr(encoder, "backbone_name", model_config.get("backbone"))),
                                        encoder.pretrained_report), flush=True)
     peft_report = apply_peft(encoder, dict(config.get("peft") or {"method": "full"}))
-    model = BaselineClassifier(
-        encoder, stage, targets, primary_target=primary, head=dict(config.get("head") or {})
-    )
+    head = dict(config.get("head") or {})
+    # The KAN head initialises from its own seed; tie it to the run seed so seeds 0/1/2 of a KAN
+    # arm vary its initial weights exactly as they vary the MLP head (fair seed comparison).
+    head["kan"] = {**dict(head.get("kan") or {}), "seed": int(config.get("seed", 42))}
+    model = BaselineClassifier(encoder, stage, targets, primary_target=primary, head=head)
     return model, peft_report
 
 

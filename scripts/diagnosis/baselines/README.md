@@ -72,7 +72,7 @@ built once per profile: `bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh`
 | `HEADS`, `FRACTIONS` | experiment's | e.g. `HEADS=kan`, `FRACTIONS="25 50"` (the `frac0NN/` and `*_kan.sh` wrappers already set them) |
 | `ACTION` | `all` | `all`, `prepare`, `train`, `evaluate`, `preflight`, `dry` |
 | `EPOCHS`, `EARLY_STOPPING`, `BATCH_SIZE`, `ACCUMULATION`, `LR` | config | training overrides |
-| `EPOCH_AUC=0` | on | skip the per-epoch AUROC pass (halves epoch time) |
+| `EPOCH_AUC=0` | on | skip the per-epoch AUROC pass (halves epoch time). Use one value for every arm you compare: the train AUROC pass draws from the seeded shuffle, so switching it changes the train order from epoch 2 on |
 | `SCRATCH=1` | off | ignore pretrained weights |
 | `OVERWRITE=1` | off | replace finished cases |
 | `TASK=prognosis` | `diagnosis` | image-only prognosis; `LABEL` is then required (`1_month_mortality`, `6_month_mortality`, `12_month_mortality`, `1_month_readmission`, `6_month_readmission`, `12_month_readmission`, `12_month_PH`); `COHORT=all` or `pe`. `LABEL` with diagnosis is an error |
@@ -80,6 +80,11 @@ built once per profile: `bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh`
 
 One case directly: `python tools/baselines/run_case.py --model vit_3d --head kan --fraction 50 --seed 1 --gpus 1`
 (prognosis: `--task prognosis --label 12_month_PH`).
+
+While a grid runs, the terminal shows `[start i/N]` / `[done i/N]` per case and that case's key
+lines prefixed with `[model head fraction seed]`: weights loaded, device, one line per epoch,
+progress of passes over a minute, the final test AUROC; a failed case prints the last lines of
+its log. The full output of every case is in `launcher_logs/<case>.log`.
 
 ## Training protocol (every arm, `configs/components/baselines.yaml`)
 
@@ -91,7 +96,7 @@ One case directly: `python tools/baselines/run_case.py --model vit_3d --head kan
 | checkpoint | `best.ckpt` = epoch with the highest validation AUROC (`training.selection_metric: val_auroc`) |
 | precision | `compute.precision: auto` = bf16 if the GPU supports it, else fp16 + GradScaler, fp32 on CPU |
 | memory | per-arm `gradient_checkpointing` in `backbones.yaml`; `run.log` prints device, precision, micro / effective batch and checkpointing |
-| seeds | python / numpy / torch / CUDA, cuDNN deterministic, seeded DataLoader order and workers |
+| seeds | python / numpy / torch / CUDA, cuDNN deterministic, seeded DataLoader order and workers; the shuffle has its own generator, so seed `s` gives every arm the same train order whatever its micro-batch or model (no random augmentation). Every experiment uses the same `SEEDS` (default `0 1 2`); the KAN head is initialised from the run seed (`source/engine/factory.py` overrides `head.kan.seed`), like the MLP head. Keep `EPOCH_AUC` and `GPUS_PER_JOB=1` identical across compared arms: both change the train order |
 | threshold | Youden on validation, applied unchanged to test |
 | CI | 95% patient-level bootstrap (2000 resamples) on test |
 

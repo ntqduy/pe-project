@@ -1,0 +1,84 @@
+# =====================================================================================
+# TỈ LỆ DỮ LIỆU TRAIN - exp02_data_fraction (25 / 50 / 75 / 100%, head MLP) - full_inspect
+# Cập nhật 2026-10-03. Mặc định: GPU 0, SEEDS="0 1 2", tối đa 100 epoch, early stopping 15.
+# Tập con lấy theo BỆNH NHÂN, phân tầng theo nhãn, lồng nhau 25 c 50 c 75 c 100, mỗi seed một
+# bộ riêng (seed s -> tập con của seed s, dùng chung cho mọi model). Validation và test GIỮ NGUYÊN.
+# Run 100% chính là run exp01 (dùng chung, đã xong thì tự bỏ qua).
+#
+# Đã kiểm tra seed 0 trên full_inspect: check PASS
+#   25%:  3 941 bệnh nhân /  4 708 study, tỉ lệ dương 20.75%
+#   50%:  7 881 / 9 389, 20.76%     75%: 11 821 / 14 135, 20.76%     100%: 15 761 / 18 900, 20.68%
+# Tập con: outputs/pe-project/outputs/diagnosis/BASE/full_inspect/diagnosis/splits/data_fraction/seed_<s>/
+# =====================================================================================
+
+# --- 0. Mở terminal ---------------------------------------------------------------
+cd /mnt/pe-project
+conda activate pe
+tmux new -s frac            # Ctrl+b rồi d để thoát ra; vào lại: tmux attach -t frac
+
+DRY_LIST=1 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh    # in 96 case, không chạy
+MAMBA_PY=~/miniconda3/envs/pe-mamba/bin/python   # nnmamba_3d / vmamba_3d cần env pe-mamba (mamba_ssm)
+
+# --- 1. 25% dữ liệu train ------------------------------------------------------------
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/vit_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/swin_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/ctfm_frozen_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/nnmamba_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/vmamba_3d.sh
+
+# --- 2. 50% dữ liệu train ------------------------------------------------------------
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/vit_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/swin_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/ctfm_frozen_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/nnmamba_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/vmamba_3d.sh
+
+# --- 3. 75% dữ liệu train ------------------------------------------------------------
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/vit_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/swin_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/ctfm_frozen_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/nnmamba_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/vmamba_3d.sh
+
+# --- 4. 100% (= run exp01, chỉ cần nếu exp01 của model đó chưa chạy) ----------------------
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/vit_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/swin_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/ctfm_frozen_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/nnmamba_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp02_data_fraction/frac100/vmamba_3d.sh
+
+# --- 5. Theo nhóm ------------------------------------------------------------------------
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/run_all.sh   # 8 model x 3 seed ở 25%
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/run_all.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/run_all.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh           # mọi tỉ lệ: 8 x 4 x 3 = 96 case
+# (run_all trong env pe: case nnmamba_3d / vmamba_3d báo lỗi, các case khác vẫn chạy;
+#  chạy riêng 2 model này bằng PYTHON=$MAMBA_PY như ở trên)
+
+# Một model, mọi tỉ lệ (25/50/75/100) trong 1 lệnh. Không dùng FRACTIONS với wrapper frac0NN/:
+# wrapper đã cố định --fractions và cờ thắng biến môi trường.
+bash scripts/tool/run_baseline_grid.sh exp02_data_fraction resnet18_3d
+FRACTIONS="25 50" bash scripts/tool/run_baseline_grid.sh exp02_data_fraction resnet18_3d   # chỉ 25 và 50
+
+# --- 6. Kết quả ----------------------------------------------------------------------------
+# Từng run: outputs/pe-project/outputs/diagnosis/BASE/full_inspect/diagnosis/runs/<model>__mlp__frac025/official_seed<S>/epoch_100/
+# Bảng + auroc_vs_fraction.png (tự dựng sau mỗi lệnh, hoặc):
+bash scripts/diagnosis/baselines/summarize.sh exp02_data_fraction
+#   -> outputs/pe-project/outputs/diagnosis/BASE/full_inspect/diagnosis/exp02_data_fraction/summary.md
+# Case bị ngắt giữa chừng: OVERWRITE=1 SEEDS=<seed> + đúng lệnh của model / tỉ lệ đó.
+
+# --- Thời gian / epoch (ước tính, resnet18_3d, L4, 16 vCPU) -------------------------------
+# 25% ~2.6 phút | 50% ~4.9 phút | 75% ~7.1 phút | 100% ~9.4 phút. Tập nhỏ thường cần nhiều epoch
+# hơn trước khi early stopping, nên tổng thời gian không giảm đúng theo tỉ lệ.

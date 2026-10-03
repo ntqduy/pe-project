@@ -1,0 +1,45 @@
+# =====================================================================================
+# HEAD KAN - exp03_head_ablation (MLP vs KAN, 3D, 100% train) - PROFILE=full_inspect
+# Cập nhật 2026-10-03. Mặc định: GPU 0, SEEDS="0 1 2", tối đa 100 epoch, early stopping 15.
+# Cùng encoder + cùng projection 64-d, chỉ thay head: MLP -> KAN [64, 16, 1] (pykan, B-spline
+# grid 5, bậc 3). Đã thử 1 bước train trên L4: resnet18_3d / vit_3d / ctfm_frozen_3d với KAN
+# đều OK, đủ gradient, Grad-CAM ok, VRAM < 1 GB.
+# =====================================================================================
+
+# --- 0. Mở terminal ---------------------------------------------------------------
+cd /mnt/pe-project
+conda activate pe
+tmux new -s kan             # Ctrl+b rồi d để thoát ra; vào lại: tmux attach -t kan
+
+# --- 1. Điều kiện trước ------------------------------------------------------------
+# Bên MLP của phép so sánh là run exp01 của cùng model (dùng chung, không train lại):
+# chạy exp01 của model đó trước (script_run_model_baseline.txt), rồi mới chạy KAN ở đây.
+DRY_LIST=1 bash scripts/diagnosis/baselines/exp03_head_ablation/run_all.sh    # in 18 case, không chạy
+
+# --- 2. Từng model với head KAN (mỗi lệnh = 3 seed) ---------------------------------
+bash scripts/diagnosis/baselines/exp03_head_ablation/resnet18_3d_kan.sh
+bash scripts/diagnosis/baselines/exp03_head_ablation/convnext_3d_kan.sh
+bash scripts/diagnosis/baselines/exp03_head_ablation/vit_3d_kan.sh
+bash scripts/diagnosis/baselines/exp03_head_ablation/ctfm_lora_3d_kan.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp03_head_ablation/ctfm_frozen_3d_kan.sh   # feature cache nhẹ: 3 seed song song
+
+# nnmamba_3d cần env pe-mamba (có mamba_ssm), không chạy được trong env pe:
+PYTHON=~/miniconda3/envs/pe-mamba/bin/python bash scripts/diagnosis/baselines/exp03_head_ablation/nnmamba_3d_kan.sh
+
+# Thử 1 seed trước để xem thời gian/epoch: thêm SEEDS=0 vào đầu lệnh.
+
+# --- 3. Tất cả 6 model x 3 seed = 18 case ---------------------------------------------
+bash scripts/diagnosis/baselines/exp03_head_ablation/run_all.sh
+# (trong env pe, 3 case nnmamba_3d sẽ báo lỗi, các case khác vẫn chạy; chạy riêng nnmamba ở trên)
+
+# --- 4. Kết quả -----------------------------------------------------------------------
+# Từng run:  outputs/pe-project/outputs/diagnosis/BASE/full_inspect/diagnosis/runs/<model>__kan__frac100/official_seed<S>/epoch_100/
+# So sánh MLP vs KAN (bảng + mlp_vs_kan.png), tự dựng sau mỗi lệnh, hoặc:
+bash scripts/diagnosis/baselines/summarize.sh exp03_head_ablation
+#   -> outputs/pe-project/outputs/diagnosis/BASE/full_inspect/diagnosis/exp03_head_ablation/summary.md
+# Log đầy đủ: .../exp03_head_ablation/launcher_logs/<model>__kan__frac100__official__s<S>.log
+# Case bị ngắt giữa chừng: OVERWRITE=1 SEEDS=<seed> + đúng lệnh của model đó (không dùng với run_all.sh).
+
+# --- Thời gian (ước tính, L4, 16 vCPU) -------------------------------------------------
+# Head KAN rất nhỏ nên thời gian ~ như MLP: resnet18_3d ~9.4 phút/epoch, 1 seed ~4-16 giờ tuỳ
+# early stopping (16-100 epoch).

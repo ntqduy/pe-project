@@ -1,0 +1,154 @@
+# =====================================================================================
+# DIAGNOSIS (PE có / không, nhãn pe_present) - exp01_baselines + exp02_data_fraction (head MLP)
+# PROFILE=full_inspect. Head KAN: xem run_kan.txt
+# Cập nhật 2026-10-03. Mặc định của mọi lệnh dưới: full_inspect, GPU 0, SEEDS="0 1 2",
+# tối đa 100 epoch, early stopping 15 epoch theo val AUROC, effective batch 4.
+# =====================================================================================
+# Visualize
+python3 -m http.server 8765 --directory /mnt/pe-project/outputs/pe-project/outputs
+
+
+# --- 0. Mở terminal ---------------------------------------------------------------
+cd /mnt/pe-project
+conda activate pe
+tmux new -s pe              # chạy trong tmux: tắt VS Code / mất SSH job vẫn chạy
+                            # thoát ra: Ctrl+b rồi d ; vào lại: tmux attach -t pe
+
+# --- 1. Kiểm tra trước, không train ---------------------------------------------------
+bash scripts/diagnosis/baselines/prepare_weights.sh          # bảng LOADED / UNAVAILABLE từng arm
+PROFILE=full_inspect SEEDS=0 ACTION=preflight bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh
+DRY_LIST=1 bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh     # in 60 case + lệnh, không chạy
+
+# --- 2. Từng architecture -----------------------------------------------------------
+# Lần đầu nên thêm SEEDS=0 (1 seed) để xem time_sec mỗi epoch trong log rồi mới chạy đủ 3 seed.
+# Case đã xong sẽ tự bỏ qua, nên chạy lại cùng lệnh để thêm seed là an toàn.
+
+# 2D (32 lát cắt axial, gated-attention MIL)
+bash scripts/diagnosis/baselines/exp01_baselines/2D/resnet18_2d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/2D/convnext_2d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/2D/vit_2d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/2D/swin_2d.sh
+
+# 2.5D (3 lát liền nhau làm 3 kênh RGB)
+bash scripts/diagnosis/baselines/exp01_baselines/2_5D/resnet18_25d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/2_5D/convnext_25d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/2_5D/vit_25d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/2_5D/swin_25d.sh
+
+# 3D (volume 128^3)
+bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet50_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/densenet121_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/vit_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/swin_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/penet_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp01_baselines/3D/ctfm_frozen_3d.sh   # feature cache nhẹ: 3 seed song song trên 1 GPU
+
+# 3D Mamba: CHƯA CHẠY ĐƯỢC, xem mục 5
+bash scripts/diagnosis/baselines/exp01_baselines/3D/nnmamba_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/mamba_mae_3d.sh
+bash scripts/diagnosis/baselines/exp01_baselines/3D/vmamba_3d.sh
+
+# --- 3. Theo nhóm / tất cả ----------------------------------------------------------
+bash scripts/diagnosis/baselines/exp01_baselines/2D/run_all.sh       # 4 arm x 3 seed
+bash scripts/diagnosis/baselines/exp01_baselines/2_5D/run_all.sh     # 4 arm x 3 seed
+bash scripts/diagnosis/baselines/exp01_baselines/3D/run_all.sh       # 12 arm x 3 seed
+bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh          # cả 20 arm x 3 seed = 60 case
+
+# --- 3b. exp02: tỉ lệ dữ liệu train 25 / 50 / 75% (head MLP, 8 model 3D) -------------------
+# Tập con theo BỆNH NHÂN, phân tầng theo nhãn, lồng nhau 25 c 50 c 75 c 100, rút riêng cho từng
+# seed (cùng seed -> cùng tập con cho mọi model); val/test giữ nguyên. Mốc 100% = run exp01 ở trên
+# (dùng chung, không train lại). Mỗi case tự kiểm tra tập con (check.json): FAIL thì dừng trước khi train.
+# Tập con lưu ở outputs/.../diagnosis/splits/data_fraction/seed_<S>/frac_025.csv ...
+DRY_LIST=1 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh           # liệt kê case, không chạy
+
+# 25%
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/vit_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/swin_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/ctfm_frozen_3d.sh
+PYTHON=~/miniconda3/envs/pe-mamba/bin/python bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/nnmamba_3d.sh   # env pe-mamba (mục 5)
+PYTHON=~/miniconda3/envs/pe-mamba/bin/python bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/vmamba_3d.sh    # env pe-mamba (mục 5)
+
+# 50%
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/vit_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/swin_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/ctfm_frozen_3d.sh
+PYTHON=~/miniconda3/envs/pe-mamba/bin/python bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/nnmamba_3d.sh
+PYTHON=~/miniconda3/envs/pe-mamba/bin/python bash scripts/diagnosis/baselines/exp02_data_fraction/frac050/vmamba_3d.sh
+
+# 75%
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/resnet18_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/convnext_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/vit_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/swin_3d.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/ctfm_lora_3d.sh
+JOBS_PER_GPU=3 bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/ctfm_frozen_3d.sh
+PYTHON=~/miniconda3/envs/pe-mamba/bin/python bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/nnmamba_3d.sh
+PYTHON=~/miniconda3/envs/pe-mamba/bin/python bash scripts/diagnosis/baselines/exp02_data_fraction/frac075/vmamba_3d.sh
+
+# Cả 1 tỉ lệ (8 model x 3 seed; 2 model Mamba sẽ lỗi trong env pe) / cả 4 tỉ lệ:
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/run_all.sh
+bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh
+# Bảng + auroc_vs_fraction.png:
+bash scripts/diagnosis/baselines/summarize.sh exp02_data_fraction
+# Thời gian 1 epoch tỉ lệ thuận với số study train (resnet18_3d: ~2.6 / 4.9 / 7.1 / 9.4 phút ở 25/50/75/100%),
+# nhưng tập nhỏ thường cần nhiều epoch hơn trước khi early stopping.
+
+# --- 4. Theo dõi / tổng hợp / chạy lại ----------------------------------------------
+# Terminal hiện [start i/N] / [done i/N] + dòng chính của case đang chạy, có nhãn [model head % seed]:
+# PRETRAINED LOADED, mỗi epoch 1 dòng, tiến độ mỗi phút, AUROC test; case lỗi in đuôi log.
+# Log đầy đủ của mỗi case (mở terminal khác):
+tail -f outputs/pe-project/outputs/diagnosis/BASE/full_inspect/diagnosis/exp01_baselines/launcher_logs/resnet18_3d__mlp__frac100__official__s0.log
+nvidia-smi -l 5
+# Kết quả từng case: outputs/pe-project/outputs/diagnosis/BASE/full_inspect/diagnosis/runs/<model>__mlp__frac100/official_seed<S>/epoch_100/
+# Bảng tổng hợp (tự chạy sau mỗi lệnh, hoặc dựng lại):
+bash scripts/diagnosis/baselines/summarize.sh exp01_baselines
+# Case bị ngắt giữa chừng KHÔNG tự resume ("holds an unfinished run"): train lại đúng case đó
+OVERWRITE=1 SEEDS=0 bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh
+# KHÔNG đặt OVERWRITE=1 cho run_all.sh: nó ghi đè cả các case đã xong.
+
+# Tuỳ chọn: EPOCH_AUC=0 bỏ lượt tính AUROC trên train mỗi epoch (nhanh hơn, mất đường train AUROC
+# trong training_curves; chọn best.ckpt vẫn theo val AUROC). Nếu dùng thì dùng cho TẤT CẢ arm:
+# lượt này làm thay đổi thứ tự xáo dữ liệu từ epoch 2, khác giá trị là 2 arm không còn cùng thứ tự.
+
+# --- 5. 3 arm Mamba (nnmamba_3d, mamba_mae_3d, vmamba_3d) -----------------------------
+# Env pe KHÔNG chạy được 3 arm này (thiếu mamba_ssm; torch của pe build cho CUDA 13.0, fork mamba
+# cần CUDA 12 / C++20). Chạy chúng trong env riêng pe-mamba (ĐÃ SẴN SÀNG, 2026-10-03):
+#   torch 2.14.0+cu126 (cùng phiên bản torch với pe), mamba_ssm 2.0.3 (fork Mamba-MAE),
+#   causal_conv1d 1.4.0, fvcore; các thư viện khác pin đúng phiên bản của pe.
+#   Đã kiểm 1 bước train bf16 ở 128^3 trên L4: nnmamba_3d OK (1.2 GB), mamba_mae_3d OK (5.8 GB,
+#   load 210/212 tensor, 2 tensor thiếu là rope.freqs tính lại), vmamba_3d OK (1.9 GB, 398/398).
+MAMBA_PY=~/miniconda3/envs/pe-mamba/bin/python
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp01_baselines/3D/nnmamba_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp01_baselines/3D/mamba_mae_3d.sh
+PYTHON=$MAMBA_PY bash scripts/diagnosis/baselines/exp01_baselines/3D/vmamba_3d.sh
+# Hoặc: conda activate pe-mamba rồi chạy không cần PYTHON=; xong thì conda activate pe.
+# Nếu quên PYTHON=$MAMBA_PY (hoặc $MAMBA_PY rỗng) -> chạy bằng env pe -> lỗi ImportError mamba_ssm.
+# KHÔNG `pip install fvcore` vào env pe: vmamba_3d sẽ chạy được nhưng thiếu selective_scan_cuda
+# thì VMamba tự chuyển sang selective scan PyTorch thuần (rất chậm, tốn bộ nhớ) mà không báo lỗi.
+#
+# Tạo lại env pe-mamba (chỉ khi cần, ~1 giờ build; MAX_JOBS=4, nice để không giành CPU của job đang chạy):
+#   CONDA_PKGS_DIRS=~/miniconda3/pkgs_fresh conda create -n pe-mamba python=3.11.16 -y   # cache pkgs cũ bị hỏng
+#   E=~/miniconda3/envs/pe-mamba/bin
+#   $E/pip install torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cu126
+#   ~/miniconda3/envs/pe/bin/pip freeze | grep -vE " @ |^-e|^(torch|torchvision|triton|nvidia-[a-z0-9-]+)==" > /tmp/pe_constraints.txt
+#   $E/pip install -r requirements.txt -c /tmp/pe_constraints.txt ninja packaging wheel
+#   CONDA_PKGS_DIRS=~/miniconda3/pkgs_fresh conda install -n pe-mamba -c conda-forge "gxx_linux-64=12.*" "gcc_linux-64=12.*" -y   # máy không có g++
+#   export PATH=$E:/usr/local/cuda-12.9/bin:$PATH CUDA_HOME=/usr/local/cuda-12.9 MAX_JOBS=4 \
+#          CC=$E/x86_64-conda-linux-gnu-gcc CXX=$E/x86_64-conda-linux-gnu-g++
+#   # causal-conv1d 1.4.0 (API mà mamba_ssm 2.0.3 gọi; sdist PyPI thiếu csrc -> lấy tag GitHub):
+#   git clone --depth 1 --branch v1.4.0 https://github.com/Dao-AILab/causal-conv1d.git /tmp/cc140
+#   sed -i 's/-std=c++17/-std=c++20/g' /tmp/cc140/setup.py          # torch 2.14 bắt buộc C++20
+#   (cd /tmp/cc140 && CAUSAL_CONV1D_FORCE_BUILD=TRUE nice -n 19 $E/pip install --no-build-isolation --no-deps .)
+#   # mamba_ssm từ fork trong repo, build trên bản copy để submodule sạch:
+#   cp -r third_party/repos/mamba_mae/mamba2 /tmp/mamba2 && sed -i 's/-std=c++17/-std=c++20/g' /tmp/mamba2/setup.py
+#   (cd /tmp/mamba2 && MAMBA_FORCE_BUILD=TRUE nice -n 19 $E/pip install --no-build-isolation --no-deps .)
+#   $E/python tools/baselines/smoke.py --models nnmamba_3d mamba_mae_3d vmamba_3d     # kiểm tra
