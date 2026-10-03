@@ -2,7 +2,7 @@
 
 **Đọc khi:** muốn biết mỗi nhóm experiment trả lời câu hỏi gì, chạy và đánh giá bằng lệnh nào, cái nào đang `blocked` và vì sao, và điền số vào bảng paper thế nào.
 
-**Code chính:** `tools/baselines/{experiments,run_case,run_many,summarize,fractions}.py`, `scripts/tool/run_baseline_grid.sh`, `scripts/diagnosis/baselines/exp0*_*/experiment.yaml`, `source/engine/{factory,task_steps}.py`, `source/model/classifier.py`, `source/data/experiment_splits.py`, `source/data/build/{manifest_writer,adjudication}.py`, `tools/tasks/{zeroshot_penet,zeroshot_radar,evaluate}.py`, `source/metrics/paired.py`, `configs/runs/**`, `configs/experiments.yaml`
+**Code chính:** `tools/baselines/{experiments,run_case,run_many,summarize,fraction_subsets}.py`, `scripts/tool/run_baseline_grid.sh`, `scripts/diagnosis/baselines/exp0*_*/experiment.yaml`, `source/engine/{factory,task_steps}.py`, `source/model/classifier.py`, `source/data/experiment_splits.py`, `source/data/build/{manifest_writer,adjudication}.py`, `tools/tasks/{zeroshot_penet,zeroshot_radar,evaluate}.py`, `source/metrics/paired.py`, `configs/runs/**`, `configs/experiments.yaml`
 
 Cơ chế train/evaluate dùng chung (launcher, Trainer, threshold, bootstrap, preview) ở [03_training_evaluation.md](03_training_evaluation.md); kiến trúc model ở [02_models.md](02_models.md); dữ liệu, mask, ROI, silver ở [01_data_pipeline.md](01_data_pipeline.md); thư mục output ở [05_running_outputs.md](05_running_outputs.md). Hướng dẫn chạy đầy đủ của lưới baseline: [scripts/diagnosis/baselines/README.md](../scripts/diagnosis/baselines/README.md).
 
@@ -75,26 +75,30 @@ Output cũ `DX_ctfm_frozen` / `PR_ctfm_frozen_*` (nếu còn trên bucket) do đ
 
 Một case = model × head × fraction × variant × seed trên split chính thức (`tools/baselines/experiments.py` đọc `experiment.yaml`). Một run được định danh bằng setting, không bằng experiment, nên case trùng (vd. `resnet18_3d` + MLP + 100%) chỉ train một lần và dùng chung.
 
-| Lưới | Thư mục `scripts/diagnosis/baselines/` | Model | Head | Fraction train | Câu hỏi |
+| Lưới | Script trong `scripts/diagnosis/baselines/` | Model | Head | Fraction train | Câu hỏi |
 |---|---|---|---|---|---|
-| exp01 | `exp01_baselines/` | cả 20 | `mlp` | 100 | Encoder nào tốt nhất? |
-| exp02 | `exp02_data_fraction/` | 8 model 3D (`resnet18_3d`, `convnext_3d`, `vit_3d`, `swin_3d`, `nnmamba_3d`, `vmamba_3d`, `ctfm_lora_3d`, `ctfm_frozen_3d`) | `mlp` | 25, 50, 75, 100 | Cần bao nhiêu dữ liệu train? |
-| exp03 | `exp03_head_ablation/` | 6 model 3D (`resnet18_3d`, `convnext_3d`, `vit_3d`, `nnmamba_3d`, `ctfm_frozen_3d`, `ctfm_lora_3d`) | `mlp`, `kan` | 100 | KAN có hơn MLP trên cùng projection? |
-| exp04 | `exp04_slice_ablation/` | `resnet18_2d`, `resnet18_25d` × variant `default` (32 lát, attention-MIL), `center` (lát giữa), `mean`, `max` | `mlp` | 100 | Nhìn cả volume quan trọng thế nào với 2D/2.5D? |
+| exp01 | `exp01_baselines/{2D,2_5D,3D}/<model>.sh` | cả 20 | `mlp` | 100 | Encoder nào tốt nhất? |
+| exp02 | `exp02_data_fraction/frac025/`, `frac050/`, `frac075/`, `frac100/` — mỗi thư mục `run_all.sh` + `<model>.sh` | 8 model 3D (`resnet18_3d`, `convnext_3d`, `vit_3d`, `swin_3d`, `nnmamba_3d`, `vmamba_3d`, `ctfm_lora_3d`, `ctfm_frozen_3d`) | `mlp` | 25, 50, 75, 100 | Cần bao nhiêu dữ liệu train? |
+| exp03 | `exp03_head_ablation/<model>_kan.sh` | 6 model 3D (`resnet18_3d`, `convnext_3d`, `vit_3d`, `nnmamba_3d`, `ctfm_frozen_3d`, `ctfm_lora_3d`) | script chạy `kan`; nhánh `mlp` là run exp01 | 100 | KAN có hơn MLP trên cùng projection? |
+| exp04 | `exp04_slice_ablation/{2D,2_5D}/<model>.sh` | `resnet18_2d`, `resnet18_25d` × variant `default` (32 lát, attention-MIL), `center` (lát giữa), `mean`, `max` | `mlp` | 100 | Nhìn cả volume quan trọng thế nào với 2D/2.5D? |
 
 - **exp02:** chỉ subsample bệnh nhân **train** (phân tầng theo nhãn, lồng nhau 25 ⊂ 50 ⊂ 75 ⊂ 100); validation và official test không đổi. `split_seed: per_seed`: mỗi seed một bộ subset, xuất kèm `check.json` ra `<task>/splits/data_fraction/seed_<s>/` (`tools/baselines/fraction_subsets.py`; FAIL dừng case trước khi train).
+- **exp02:** mỗi thư mục `frac0NN/` cố định một mức dữ liệu (`--fractions NN`), cùng tên với hậu tố `__frac0NN` của thư mục run; `frac100/` chính là các run exp01 (đã xong thì bỏ qua). `exp02_data_fraction/run_all.sh` chạy cả 4 mức.
+- **exp03:** script chỉ chạy head KAN (`--heads kan`); nhánh MLP là run exp01 của cùng model (dùng chung), nên chạy exp01 trước rồi exp03. `summarize.py --exp exp03_head_ablation` ghép MLP và KAN thành bảng + `mlp_vs_kan.png`.
 - **exp04:** variant là override trên run config, run tag `__v<variant>`; `default` chính là run exp01.
 - Seed lấy từ `--seeds` (mặc định `0 1 2`).
 
 ```bash
 python tools/baselines/run_case.py --model resnet18_3d --gpus 0                 # 1 case: prepare -> train -> evaluate
 python tools/baselines/run_many.py --exp exp01_baselines --gpus 0,1,2,3         # cả lưới, bỏ qua case đã xong
-GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh
+GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh         # cả 4 mức dữ liệu
+bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/run_all.sh --gpus 0      # chỉ 25%
+bash scripts/diagnosis/baselines/exp03_head_ablation/run_all.sh --gpus 0              # KAN (sau exp01)
 bash scripts/tool/run_baseline_grid.sh exp04_slice_ablation all --variants "center mean" --dry-run
 python tools/baselines/smoke_pipeline.py                                        # toàn pipeline trên dữ liệu tổng hợp (CPU)
 ```
 
-Bảng tổng hợp mỗi lưới (`tools/baselines/summarize.py`, chạy sau mỗi grid): `summary.md`, `summary_pretty.csv`, `summary_ensemble.csv` (xác suất trung bình qua seed, ghép theo `study_id`), `summary.csv`, `summary_raw.csv` + plot.
+Bảng tổng hợp mỗi lưới (`tools/baselines/summarize.py`, chạy sau mỗi grid): `summary.md`, `summary_pretty.csv`, `summary_ensemble.csv` (xác suất trung bình qua seed, ghép theo `study_id`), `summary.csv`, `summary_raw.csv` + plot. Mỗi dòng có thêm **Params (M)**, **Trainable (M)** và **GFLOPs / volume** (`ctfm_frozen_3d` ghi "(head only)" vì feature CT-FM đã tính trước).
 
 ---
 

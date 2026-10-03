@@ -114,7 +114,10 @@ bash scripts/diagnosis/baselines/prepare_weights.sh                             
 bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh                            # cache CT-FM cho ctfm_frozen_3d (một lần mỗi profile)
 python tools/baselines/smoke_pipeline.py                                          # toàn pipeline trên dữ liệu tổng hợp (CPU, output/_smoke)
 PROFILE=smoke_30 EPOCHS=1 bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh
-GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh          # exp02/03/04 tương tự
+GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh          # 20 model, MLP
+GPUS=0 bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/run_all.sh    # 25% (frac050/075/100 tương tự; run_all.sh ở exp02/ = cả 4)
+GPUS=0 bash scripts/diagnosis/baselines/exp03_head_ablation/run_all.sh            # KAN; nhánh MLP là run exp01
+GPUS=0 bash scripts/diagnosis/baselines/exp04_slice_ablation/run_all.sh           # center / mean / max (+ default = exp01)
 bash scripts/prognosis/baselines/exp01_baselines.sh --label 12_month_PH --gpus 0  # prognosis, --label bắt buộc
 ```
 
@@ -217,7 +220,7 @@ balanced_accuracy, accuracy, brier, [calibration_intercept, calibration_slope], 
 
 - `predictions.csv`: `split, target, patient_id, study_id, y_true, y_prob, y_pred`; dùng làm `--reference-predictions` cho paired bootstrap (evaluate ghi thêm `bootstrap_metrics.parquet` và khoá `paired_vs_reference`).
 - `history.csv`: một dòng mỗi epoch (`train_loss`, `val_loss`, `primary_val_metric`, `lr`, `peak_vram_gb`, loss từng head, AUROC/AUPRC khi `training.record_epoch_auc` bật).
-- `result.json` (`compact_result()`): `experiment`, `lineage` (backbone, init, dataset, code commit, ...), `data`, `model` (params, GFLOPs, kết quả load weight), `compute`, `evaluation.metrics.<tên> = {value, ci_low, ci_high}` + threshold + `training` (`epochs_run`, `stopped_early`), `evaluation_scope` (`full_test` hoặc smoke), `evaluation_checkpoint`, `config_hash`. `tools/baselines/summarize.py` đọc `result.csv`; [04_experiments.md](04_experiments.md) lấy số từ bảng tổng hợp.
+- `result.json` (`compact_result()`): `experiment`, `lineage` (backbone, init, dataset, code commit, ...), `data`, `model` (`total_params`, `trainable_params`, `gflops_per_volume`, `gflops_method`, `flops_scope`, kết quả load weight), `compute`, `evaluation.metrics.<tên> = {value, ci_low, ci_high}` + threshold + `training` (`epochs_run`, `stopped_early`), `evaluation_scope` (`full_test` hoặc smoke), `evaluation_checkpoint`, `config_hash`. `tools/baselines/summarize.py` đọc `result.csv`; [04_experiments.md](04_experiments.md) lấy số từ bảng tổng hợp.
 - `NN_<patient>_<study>_<TP|TN|FP|FN>.{html,png}` (`write_backbone_previews()`): Grad-CAM logit target chính. Mặc định `preview/`, tối đa 5 study validation đầu; baseline zoo ghi vào `visualize/{correct,incorrect}/` 3 ca **test** đúng + 3 ca sai tự tin nhất (`preview:` trong `configs/components/baselines.yaml`). CAM không phải mask huyết khối. Tạo lại: chạy lại evaluate (`ACTION=evaluate`).
 
 ## 10. Layout đặc biệt và bảng tổng hợp
@@ -229,7 +232,7 @@ balanced_accuracy, accuracy, brier, [calibration_intercept, calibration_slope], 
 | Baseline zoo | `<family>/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>[__v<variant>]/official_seed<S>/epoch_<E>/` | Bundle như trên; mỗi `exp0*_*/` chứa bảng tổng hợp và symlink tới run dùng chung; exp02 xuất subset train ở `<task>/splits/data_fraction/seed_<s>/` (+ `check.json`) |
 | Smoke pipeline | `output/_smoke/` hoặc `$PE_SMOKE_ROOT` | `tools/baselines/smoke_pipeline.py`: dữ liệu tổng hợp + `smoke_report.md` |
 
-**`tools/baselines/summarize.py --exp <exp>`** ghi vào `<family>/BASE/<profile>/<task>/<exp>/`: `summary.md`, `summary_pretty.csv`, `summary_ensemble.csv` (xác suất test trung bình qua seed, ghép theo `study_id`), `summary.csv` (mean/std/n qua seed), `summary_raw.csv`, `runs.csv` và hình `auroc_per_model.png` / `auroc_vs_fraction.png` / `mlp_vs_kan.png` / `slice_ablation.png` (exp01/02/03/04).
+**`tools/baselines/summarize.py --exp <exp>`** ghi vào `<family>/BASE/<profile>/<task>/<exp>/`: `summary.md`, `summary_pretty.csv`, `summary_ensemble.csv` (xác suất test trung bình qua seed, ghép theo `study_id`), `summary.csv` (mean/std/n qua seed), `summary_raw.csv` (mọi run) và hình `auroc_per_model.png` / `auroc_vs_fraction.png` / `mlp_vs_kan.png` / `slice_ablation.png` (exp01/02/03/04).
 
 ## 11. Resume và overwrite
 

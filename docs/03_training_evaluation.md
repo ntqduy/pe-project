@@ -128,7 +128,7 @@ Mọi run trainable dùng `pretrained` (`encoders.yaml#from_pretrained`); `--scr
 - `E` là **ngân sách** `training.epochs`, không phải số epoch thực chạy; mỗi ngân sách là một run độc lập. Run zero-shot không có `epoch_<E>`.
 - `cleanup_task_run` xoá bản sao ở gốc (`best.ckpt`, `last.ckpt`, `config.yaml`, `metrics.json`...), thư mục `logs/`, `checkpoints/`, `figures/`, `qc/`, `plots/` và file legacy sau khi bundle đã có `checkpoint/`; không xoá `bootstrap_metrics.parquet`/`reporting_checklist.json`.
 - Train copy `logs/run.log` → `logs.txt`; evaluate **append** vào `logs.txt`.
-- Sau train, `profile_model` đo latency/GFLOPs/VRAM trên một batch validation ở `eval()` (1 warm-up + `profiling.iterations`, mặc định 5), ghi vào `result.json` (`model.latency_ms_per_volume`, `gflops_per_volume`, `compute.peak_vram_gb`, `compute.training_time_min`).
+- Sau train, `profile_model` (`source/profiling/model_profile.py`) đo trên một batch validation ở `eval()` (1 warm-up + `profiling.iterations`, mặc định 5) và ghi vào `result.json`: `model.total_params`, `model.trainable_params`, `model.latency_ms_per_volume`, `model.gflops_per_volume`, `compute.peak_vram_gb`, `compute.training_time_min`. GFLOPs đếm bằng `torch.utils.flop_counter` (2 × multiply-accumulate của conv 2D/3D, matmul, attention; `model.gflops_method`); `torch.profiler` chỉ là phương án dự phòng vì nó bỏ sót conv 3D. Kernel CUDA riêng (selective scan của Mamba) không được đếm. `model.flops_scope`: cả model, hoặc "head only" với `ctfm_frozen_3d` (feature CT-FM tính sẵn). Evaluate chép ba số `total_params`, `trainable_params`, `gflops_per_volume` vào mọi dòng của `result.csv`.
 
 ---
 

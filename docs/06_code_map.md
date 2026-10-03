@@ -258,7 +258,7 @@ Chi tiết: [03_training_evaluation.md](03_training_evaluation.md).
 | `metrics/result_table.py` | `result.csv`, `predictions.csv`, chọn threshold, `metric_bundle` |
 | `metrics/reporting.py` | Checklist STARD-AI / TRIPOD-AI |
 | `distributed/setup.py`, `launcher.py`, `gather.py` | Process group + DDP; dựng lệnh python/torchrun; gom prediction mọi rank |
-| `profiling/model_profile.py` | Latency, FLOPs, VRAM đỉnh |
+| `profiling/model_profile.py` | Params tổng / trainable, latency, GFLOPs (`torch.utils.flop_counter`), VRAM đỉnh |
 
 ### 4.10 `analysis/`
 
@@ -275,7 +275,7 @@ Mọi script `source scripts/tool/use_gcs_storage.sh`; nhiều script dùng thê
 | `scripts/data/silver_labels.sh` | `run.py run data.silver.medgemma` -> `tools/launch.py` |
 | `scripts/data/eda.sh` | `analysis/run_eda.py` |
 | `scripts/diagnosis/zero_shot/{penet,radar}.sh` | `tools/tasks/zeroshot_penet.py` / `zeroshot_radar.py` |
-| `scripts/diagnosis/baselines/exp0*/**/<model>.sh`, `run_all.sh`; `scripts/prognosis/baselines/exp0*.sh` (`--label`) | `scripts/tool/run_baseline_grid.sh <exp> <model\|all\|dim:<dim>>` -> `tools/baselines/run_many.py` |
+| `scripts/diagnosis/baselines/exp01_baselines/{2D,2_5D,3D}/<model>.sh`, `exp02_data_fraction/frac0NN/<model>.sh` (mức dữ liệu cố định), `exp03_head_ablation/<model>_kan.sh` (head KAN), `exp04_slice_ablation/{2D,2_5D}/<model>.sh`, `run_all.sh` mỗi cấp; `scripts/prognosis/baselines/exp0*.sh` (`--label`) | `scripts/tool/run_baseline_grid.sh <exp> <model\|all\|dim:<dim>>` -> `tools/baselines/run_many.py` |
 | `scripts/diagnosis/baselines/prepare_ctfm_cache.sh` | `tools/data/build_ctfm_cache.py` (cache CT-FM cho `ctfm_frozen_3d`) |
 | `scripts/diagnosis/baselines/{summarize,prepare_weights,smoke}.sh` | `tools/baselines/{summarize,prepare_weights,smoke}.py` |
 | `scripts/tool/use_gcs_storage.sh`, `_flags.sh` | (không gọi Python) đặt biến storage; parse boolean |
