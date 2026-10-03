@@ -120,8 +120,6 @@ def build_checkpoint_lineage(
     organ_adapter = dict(config.get("organ_adapter") or {})
     fusion = dict(config.get("fusion") or {})
     effective_stage = str(experiment.get("stage") or "")
-    if effective_stage == "ablation":
-        effective_stage = str(task.get("base_stage") or effective_stage)
     source = source_checkpoint if source_checkpoint is not None else lineage.get("source_checkpoint")
     configured_hash = lineage.get("source_checkpoint_hash")
     source_hash = configured_hash

@@ -1,4 +1,1 @@
-from .ehr import EHREncoder
-from .spesi import SpesiEncoder
-
-__all__ = ["EHREncoder", "SpesiEncoder"]
+"""Image encoders (encoders/image): the CT-FM contract and the backbone registry."""

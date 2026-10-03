@@ -81,7 +81,7 @@ prognosis_pe_positive) with two differences only:
   * studies whose CT-FM preprocessing failed are dropped (listed in
     <derived>/cache/<profile>/ct_fm/dropped_rows.csv).
 Splits, labels and every other column are copied unchanged. Use them only with
-model.backbone=ct_fm_features (configs/runs/01_foundation/ct_fm_frozen/*.yaml); every other
+model.backbone=ct_fm_features (configs/runs/02_diagnosis/baselines/3D/ctfm_frozen_3d.yaml); every other
 model reads the base manifests in ../.
 """
 

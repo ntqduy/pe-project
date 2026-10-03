@@ -14,6 +14,6 @@ models:
 heads: [mlp]
 fractions: [25, 50, 75, 100]
 # Each training seed draws its own nested subsets (25 c 50 c 75 c 100, by patient, stratified),
-# exported with their check to <task dir>/splits/data_fraction/seed_<s>/ (tools/baselines/fractions.py).
+# exported with their check to <task dir>/splits/data_fraction/seed_<s>/ (tools/baselines/fraction_subsets.py).
 split_seed: per_seed
 overrides: {}

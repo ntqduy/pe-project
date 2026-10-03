@@ -25,23 +25,3 @@ _presets_:
       hidden_dim: 256
       silver_targets: [acuity, central, lobar, segmental, subsegmental, saddle, rv_enlargement, rv_lv_abnormal, septal_bowing, reflux, pleural_effusion, pericardial_effusion, chronic_lung_disease]
       silver_loss_weight: 0.2
-
-  prognosis:
-    task:
-      primary_target: mortality_30d
-      modalities: [image, ehr, spesi]
-      regions: [heart, pa, lung]
-      ehr_input_dim: 32
-      ehr_hidden_dim: 64
-      ehr_output_dim: 64
-      # sPESI is one ordinal 0-6 score; its missingness is carried beside it.
-      spesi_input_dim: 1
-      spesi_hidden_dim: 16
-      spesi_output_dim: 32
-      expert_dim: 128
-      hidden_dim: 256
-      ehr_include_missingness: true
-    clinical_preprocessing:
-      fit_split: train
-      normalization: zscore
-      imputation: mean

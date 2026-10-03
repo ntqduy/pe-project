@@ -194,73 +194,6 @@ experiments:
     produces: [accepted/abstained/no_result labels, audit trail, QC review queue]
     status: ready
 
-  # ----------------------------------------------------------- FOUNDATION
-  # Frozen public CT-FM: features are computed once per study by tools/data/build_ctfm_cache.py
-  # (scripts/tool/run_ctfm_frozen.sh ACTION=prepare); only the adapters, fusion and heads train.
-  # These replace the earlier fixed-probe arm repr.foundation.ct_fm (ct_fm_probe.yaml).
-  foundation.ct_fm_frozen.diagnosis:
-    config: configs/runs/01_foundation/ct_fm_frozen/diagnosis.yaml
-    group: FOUNDATION
-    description: "CT-FM frozen diagnosis: CT-FM backbone -> trainable MLP classifier"
-    question: How much PE signal does the frozen public CT-FM representation already carry?
-    representation: frozen public CT-FM (cached features)
-    task: diagnosis
-    modalities: [image]
-    anatomy: false
-    supervision: native PE label
-    fusion: concat_mlp
-    requires:
-      - what: Built dataset profile with the official split
-        experiment: data.dataset.full_inspect
-      - what: CT-FM feature cache and manifests/ct_fm/diagnosis.csv (scripts/tool/run_ctfm_frozen.sh ACTION=prepare)
-        path_key: data.manifest
-      - what: Staged CT-FM feature-extractor weights (third_party/versions.yaml)
-        path_key: model.checkpoint
-    produces: [DX_ctfm_frozen checkpoint, validation/test metrics and predictions]
-    status: ready
-
-  foundation.ct_fm_frozen.prognosis_all_patient:
-    config: configs/runs/01_foundation/ct_fm_frozen/prognosis_all.yaml
-    group: FOUNDATION
-    description: "CT-FM frozen prognosis on all eligible index patients"
-    question: How much outcome signal do frozen CT-FM features carry for all eligible index patients?
-    representation: frozen public CT-FM (cached features)
-    task: prognosis
-    modalities: [image]
-    anatomy: false
-    supervision: seven masked native INSPECT outcome labels
-    fusion: concat_mlp
-    requires:
-      - what: Built dataset profile with the official split
-        experiment: data.dataset.full_inspect
-      - what: CT-FM feature cache and manifests/ct_fm/prognosis_all_patient.csv (scripts/tool/run_ctfm_frozen.sh ACTION=prepare)
-        path_key: data.manifest
-      - what: Staged CT-FM feature-extractor weights (third_party/versions.yaml)
-        path_key: model.checkpoint
-    produces: [PR_ctfm_frozen_all checkpoint, validation/test metrics and predictions]
-    status: ready
-
-  foundation.ct_fm_frozen.prognosis_pe_positive:
-    config: configs/runs/01_foundation/ct_fm_frozen/prognosis_pe.yaml
-    group: FOUNDATION
-    description: "CT-FM frozen prognosis restricted to patients with positive PE"
-    question: How much outcome signal do frozen CT-FM features carry in the PE-positive cohort?
-    representation: frozen public CT-FM (cached features)
-    task: prognosis
-    modalities: [image]
-    anatomy: false
-    supervision: seven masked native INSPECT outcome labels
-    fusion: concat_mlp
-    requires:
-      - what: Built dataset profile with the official split
-        experiment: data.dataset.full_inspect
-      - what: CT-FM feature cache and manifests/ct_fm/prognosis_pe_positive.csv (scripts/tool/run_ctfm_frozen.sh ACTION=prepare)
-        path_key: data.manifest
-      - what: Staged CT-FM feature-extractor weights (third_party/versions.yaml)
-        path_key: model.checkpoint
-    produces: [PR_ctfm_frozen_pe checkpoint, validation/test metrics and predictions]
-    status: ready
-
   # ----------------------------------------------------------- ZERO-SHOT
   diag.zeroshot.penet:
     config: configs/runs/01_foundation/zero_shot/penet.yaml
@@ -495,7 +428,7 @@ experiments:
     fusion: none (baseline head)
     requires:
       - what: Diagnosis manifest with the official patient-level split
-      - what: CT-FM feature cache and manifests/ct_fm/diagnosis.csv (scripts/tool/run_ctfm_frozen.sh ACTION=prepare)
+      - what: CT-FM feature cache and manifests/ct_fm/diagnosis.csv (scripts/diagnosis/baselines/prepare_ctfm_cache.sh)
         path_key: data.manifest
       - what: Staged CT-FM feature-extractor weights (third_party/versions.yaml)
         path_key: model.checkpoint

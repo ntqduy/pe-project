@@ -1,7 +1,5 @@
 # `tools/` — CLI reference
 
-> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
-
 Normally you do not call these directly: `python run.py <command> <experiment>` resolves a
 semantic name from `configs/experiments.yaml` and delegates here. This file is for when you
 want the underlying command, a nested entrypoint, or an option `run.py` does not pass through.
@@ -14,16 +12,14 @@ tools/
 ├── _common.py              parser, config, dataset, patient filter, atomic table writers
 ├── preflight.py            pre-run validation; never trains or infers
 ├── launch.py               one training or generation job on CPU / one GPU / DDP
-├── launch_parallel.py      several independent jobs across GPU groups, in waves
-├── build_summary.py        aggregate existing result.json files
 ├── run_status.py           how far a task run got (absent/incomplete/trained/evaluated/different)
-├── create_masks/{generate_masks,refresh_previews}.py   TotalSegmentator + LungMask QC
+├── create_masks/generate_masks.py    TotalSegmentator + LungMask QC
 ├── build_rois/build_rois.py          ROI1-ROI8 from a stored segmentation run
 ├── silver_labels/generate_silver_labels.py
-├── tasks/{train_task,evaluate,counterfactual,gradcam_preview,score_baseline}.py
+├── tasks/{train_task,evaluate}.py
 ├── tasks/{zeroshot_penet,zeroshot_radar,zeroshot_radar_worker}.py
 ├── data/{build_dataset,build_ctfm_cache,build_split_manifests}.py
-└── baselines/{run_case,run_many,summarize,smoke,prepare_weights,experiments}.py
+└── baselines/{run_case,run_many,summarize,smoke,smoke_data,smoke_pipeline,fraction_subsets,prepare_weights,experiments}.py
 ```
 
 ## `data/build_dataset.py`
@@ -62,7 +58,7 @@ not run a model.
 
 ```bash
 python tools/preflight.py --config configs/runs/00_data/segmentation/inspect.yaml --gpus 0
-python tools/preflight.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml --gpus 0,1
+python tools/preflight.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0,1
 ```
 
 `launch.py` and the domain CLIs call preflight themselves, so calling it separately is only
@@ -77,14 +73,13 @@ The launcher reads `experiment.stage` and picks the single matching entrypoint:
 |---|---|
 | `dataset` | `data/build_dataset.py` (own CLI, not via `launch.py`) |
 | `silver` | `silver_labels/generate_silver_labels.py` |
-| `diagnosis`, `prognosis` | `tasks/train_task.py` |
-| `counterfactual` | `tasks/counterfactual.py` (frozen inference only) |
+| `diagnosis`, `prognosis` | `tasks/train_task.py` (`--evaluate` → `tasks/evaluate.py`) |
 
 ```bash
-python tools/launch.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml --gpus 0
-python tools/launch.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml --gpus 0,1,2,3
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0,1,2,3
 python tools/launch.py --config configs/runs/00_data/silver/medgemma.yaml --gpus 0,1 --allow-full
-python tools/launch.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml --gpus 0,1 --dry-run
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0,1 --dry-run
 ```
 
 `--gpus` takes physical IDs. The launcher sets `CUDA_VISIBLE_DEVICES`, remaps the child process
@@ -95,10 +90,9 @@ processes a shard of reports, then rank 0 merges. the medgemma method loads MedG
 
 ## Data selection
 
-Segmentation, ROI, silver generation and counterfactual inference each require exactly one
-selection mode:
+Segmentation, ROI and silver generation each require exactly one selection mode:
 
-| Mode | Segmentation / ROI / counterfactual | Silver generation |
+| Mode | Segmentation / ROI | Silver generation |
 |---|---|---|
 | one or more patients | `--patient-id ID` (repeatable) | `--patient-id ID` (repeatable) |
 | first N items | `--max-cases N` | `--max-reports N` |
@@ -116,82 +110,48 @@ exist in the stored segmentation manifest; for silver it must exist in the repor
 
 ## Task tools
 
-`tasks/counterfactual.py` is the necessity stage (`anatomy.remove_*`). It loads one full-model
-checkpoint, freezes every parameter, computes the original probability, erases the ROI with the
-configured neutral/local-mean policy, and re-runs **the same model with the same original
-masks**. It writes `counterfactual_predictions.parquet`, paired bootstrap metrics and
-`result.json`. It never calls segmentation and has no optimizer.
-
 `tasks/evaluate.py` also accepts `--patient-id` or `--max-cases` for smoke inference on a real
 checkpoint. Smoke artifacts (`result.csv`, `predictions.csv`, `logs.txt`, `result.json`) go to
 `RUN/smoke/<scope-hash>/` and never overwrite the full-test files in `RUN/epoch_<N>/` and
 `RUN/result.json`.
 
 `tasks/evaluate.py --restrict-to <csv>` limits evaluation to one shared list of
-`patient_id[,study_id]`, so every arm of a comparison is scored on identical cases. Stage 0
-writes `<derived>/cache/<profile>/clinical/spesi_evaluable.csv` for exactly this.
+`patient_id[,study_id]`, so every arm of a comparison is scored on identical cases.
 
-`tasks/score_baseline.py` evaluates a manifest score column (for example `spesi`) as a fixed
-clinical baseline -- no model, no training -- with the same threshold rule, metrics, patient
-bootstrap and output layout as `evaluate.py`. `--transform` selects `platt` (default,
-calibrated on validation only), `minmax`, or `raw_sigmoid` (INSPECT's choice). Combine it
-with `--restrict-to` when the baseline is not computable for every case. Its outputs go to
-`<run>/score_baseline/`, so `--overwrite` never touches trained `epoch_<E>/` bundles of the same
-experiment id.
-
-`tasks/gradcam_preview.py --run-dir <run>` rebuilds `epoch_<N>/preview/` (Grad-CAM `.html`
-viewer + `.png` summary per study) for an already evaluated diagnosis/prognosis run. It reads the
-run's `resolved_config.yaml`, `checkpoint/best.ckpt`, the validation threshold stored in `result.json` (never
-re-selected) and the validation probabilities in `predictions.csv`; `--output` writes elsewhere,
-`--method gradcam` switches from the default element-wise form to classic Grad-CAM. Source the
-storage roots first (`source scripts/tool/use_gcs_storage.sh`). Details: `docs/03_training_evaluation.md`.
+`tasks/evaluate.py` also writes the Grad-CAM preview (`preview/`, or `visualize/{correct,incorrect}/`
+for the baseline zoo's `preview.split: test`); re-running evaluate rebuilds it. Details:
+`docs/03_training_evaluation.md`.
 
 Prognosis evaluation writes `calibration_curve.parquet`, and `result.json` carries calibration
 slope/intercept, Brier score and patient-bootstrap confidence intervals.
-`--reference-predictions` runs a paired patient bootstrap and refuses mismatched
-patient/study sets or targets.
+`--reference-predictions` runs a paired patient bootstrap (generic comparison of two models on
+the same test patients) and refuses mismatched patient/study sets or targets.
 
-## `launch_parallel.py`: several jobs
+## `baselines/`: the baseline experiments
 
-It accepts any config `launch.py` supports and splits the GPU list into
-disjoint groups.
-
-The batch file is yours to write — there is none in this repository — and
-`parallel.enabled: true` is an explicit opt-in the launcher refuses to run without:
-
-```yaml
-parallel:
-  enabled: true
-  devices: [0, 1, 2, 3]
-  gpus_per_job: 1
-  jobs:
-    - config: configs/runs/02_diagnosis/anatomy/single_concat.yaml
-    - config: configs/runs/02_diagnosis/global/global_single.yaml
-    - config: configs/runs/03_prognosis/modality/image_ehr.yaml
-```
+`run_case.py` runs one case (prepare split manifests → train → evaluate), `run_many.py` a whole
+experiment grid in parallel over GPU slots, `summarize.py` the per-experiment tables
+(`summary.md`, `summary_pretty.csv`, `summary_ensemble.csv`, `summary.csv`, `summary_raw.csv`).
+`experiments.py` reads `scripts/diagnosis/baselines/<exp>/experiment.yaml`; `fraction_subsets.py`
+exports and checks the exp02 training subsets per seed (`--dir <seed dir>` re-checks one);
+`prepare_weights.py` fetches weights once; `smoke.py` runs one real train step per arm;
+`smoke_data.py` writes a tiny synthetic dataset and `smoke_pipeline.py` runs the whole pipeline
+on it (CPU is enough; `output/_smoke` or `$PE_SMOKE_ROOT`). Usually driven by
+`scripts/tool/run_baseline_grid.sh`; see `scripts/diagnosis/baselines/README.md`.
 
 ```bash
-python tools/launch_parallel.py --config sweep.yaml --dry-run
-python tools/launch_parallel.py --config sweep.yaml
+python tools/baselines/run_case.py --model resnet18_3d --head kan --fraction 50 --seed 1 --gpus 0
+python tools/baselines/run_many.py --exp exp01_baselines --gpus 0,1,2,3
+python tools/baselines/smoke_pipeline.py
 ```
-
-Per-job `args` accept only `--patient-id`, `--max-reports`, `--max-cases`, `--allow-full` and
-`--resume`, under the same rules as `launch.py`: a silver job needs exactly one of
-`--patient-id` / `--max-reports` / `--allow-full`, a counterfactual job exactly one of
-`--patient-id` / `--max-cases` / `--allow-full`, and every other job none of them. Scientific
-changes belong in a run config. **`--set` is not accepted per job**, so one
-parallel sweep cannot vary `encoder.init_source` or `data.profile` across jobs — every job
-must name a distinct config. Run an encoder-initialization comparison sequentially through
-`scripts/` instead, or give each cell its own run config. Do not schedule two stages in one
-wave when one waits on the other's checkpoint.
 
 ## Direct nested entrypoints
 
 `launch.py` is the normal path, but a single process can be debugged directly:
 
 ```bash
-python tools/tasks/train_task.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml --gpus 0
-python tools/tasks/evaluate.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml --gpus 0
+python tools/tasks/train_task.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0
+python tools/tasks/evaluate.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0
 ```
 
 Calling a nested file directly with several GPUs does not spawn several processes; use
@@ -200,7 +160,7 @@ Calling a nested file directly with several GPUs does not spawn several processe
 ## Overrides, resume, overwrite
 
 ```bash
-python tools/launch.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml \
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml \
   --set training.epochs=1 --gpus 0,1
 ```
 
@@ -224,11 +184,12 @@ python tools/data/build_split_manifests.py --profile full_inspect \
 #   (0.25); a bare 1 is rejected. Tags are lossless (12.5% -> frac012p5).
 #   tools/baselines/run_case.py --fraction is always a whole percent (1 = 1%).
 
-# aggregate existing result.json files into <outputs>/summary/<family>.csv
-python tools/build_summary.py
+# CT-FM feature cache for ctfm_frozen_3d (normally via scripts/diagnosis/baselines/prepare_ctfm_cache.sh)
+python tools/data/build_ctfm_cache.py --dataset-root <derived>/datasets/<profile> \
+    --raw-root <raw INSPECT> --output-name ct_fm --device cuda:0
 
 # how far a run got, for the same --config/--set as launch.py (--format text|tsv|json; tsv/json for scripts)
-python tools/run_status.py --config configs/runs/01_foundation/ct_fm_frozen/diagnosis.yaml --format json
+python tools/run_status.py --config configs/runs/02_diagnosis/baselines/3D/ctfm_frozen_3d.yaml --format json
 ```
 
 No tool creates a train/validation/test split: the official INSPECT split comes from the

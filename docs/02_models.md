@@ -1,44 +1,35 @@
 # 02. Models
 
-> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
-
 **Đọc khi:** cần biết một config biến thành `nn.Module` thế nào; muốn thêm/đổi backbone; muốn hiểu
-forward pass (tensor shape) của baseline 3D, 2.5D slice-MIL và model anatomy-aware; muốn biết PEFT
-(full / frozen / LoRA) thực sự đóng băng cái gì.
+forward pass (tensor shape) của baseline 3D và 2D/2.5D slice-MIL; muốn biết PEFT (full / frozen /
+LoRA) thực sự đóng băng cái gì.
 
 **Code chính:** `source/engine/factory.py`, `source/components/encoders/image/`, `source/model/`
 (`base.py`, `classifier.py`, `registry.py`, `inflate.py`, `weights.py`, `2D_model/`, `3D_model/`,
-`head/`), `source/components/{peft,anatomy.py,roi/pooling.py,adapters,fusion}`,
-`source/tasks/{diagnosis,prognosis}/model.py`,
-`configs/components/{backbones,encoders,baselines,fusions,anatomy}.yaml`.
+`head/`), `source/components/{peft,adapters/standardization.py}`,
+`configs/components/{backbones,encoders,baselines}.yaml`.
 
-Dữ liệu và ROI mask ở [01_data_pipeline.md](01_data_pipeline.md); loss, trainer, evaluation ở
-[03_training_evaluation.md](03_training_evaluation.md); các arm thí nghiệm (baseline grid,
-anatomy, counterfactual) ở [04_experiments.md](04_experiments.md).
+Dữ liệu ở [01_data_pipeline.md](01_data_pipeline.md); loss, trainer, evaluation ở
+[03_training_evaluation.md](03_training_evaluation.md); các lưới thí nghiệm exp01-exp04 và
+zero-shot ở [04_experiments.md](04_experiments.md).
 
 ---
 
 ## 1. Lắp model: `build_task_model`
 
 `source/engine/factory.py:build_task_model(config) -> (model, peft_report)` là điểm vào duy nhất
-(train, evaluate, counterfactual, Grad-CAM đều gọi nó).
+(train, evaluate, Grad-CAM preview đều gọi nó).
 
 ```text
-config  (experiment.stage ∈ {diagnosis, prognosis}; ablation/counterfactual dùng task.base_stage)
-  └─ task.architecture
-        ├─ "baseline_classifier" -> build_image_encoder -> apply_peft
-        │                           -> BaselineClassifier(encoder, targets, head)
-        ├─ stage=diagnosis -> build_image_encoder -> apply_peft
-        │                     -> DiagnosisModel(encoder, targets, regions, organ_adapter, fusion, ...)
-        └─ stage=prognosis -> image encoder (nếu "image" ∈ task.modalities) -> apply_peft
-                              + EHREncoder ("ehr") + SpesiEncoder ("spesi") -> PrognosisModel(...)
+config  (experiment.stage ∈ {diagnosis, prognosis})
+  └─ task.architecture == "baseline_classifier"   (giá trị khác -> ValueError)
+        └─ build_image_encoder -> apply_peft -> BaselineClassifier(encoder, targets, head)
 ```
 
-- **Hai họ model**: *baseline zoo* (`baseline_classifier`, chỉ dùng `global_embedding`, không có
-  ROI) và *anatomy-aware task model* (`DiagnosisModel`/`PrognosisModel`, pool feature map theo mask
-  heart/PA/lung rồi fuse).
-- PEFT chỉ áp lên **image encoder**; projection, adapter, fusion, head luôn trainable.
-- Baseline từ chối prognosis đa modality (`task.modalities` phải là `[image]`). Với arm CT-FM, cờ
+- **Một kiến trúc trainable duy nhất**: `baseline_classifier` (chỉ dùng `global_embedding` của
+  encoder). Zero-shot PENet/RADAR không đi qua factory (runner riêng, [04](04_experiments.md)).
+- PEFT chỉ áp lên **image encoder**; standardizer, projection, head luôn trainable/fit.
+- Prognosis chỉ image-only (`task.modalities` phải là `[image]`). Với arm CT-FM, cờ
   `--scratch` dịch thành `model.load_pretrained=false`; với `cached_features` thì scratch bị cấm
   (feature đã trích bằng weight pretrained).
 - Chọn backbone: `--set model.backbone=resnet18_3d`; `resolve_backbone` (`source/utils/config.py`)
@@ -51,11 +42,11 @@ config  (experiment.stage ∈ {diagnosis, prognosis}; ablation/counterfactual d�
 
 File `source/components/encoders/image/base.py`. Mọi encoder trả `ImageFeatures`:
 
-`ImageFeatures`: `feature_map [B, C_map, d, h, w]` (luôn 5-D, theo trục input RAS), `global_embedding [B, feature_dim]` (luôn 2-D), `pyramid` (level trung gian), `metadata` (`{"backbone", "pooling"}`; `pooling` quyết định global branch ở §8).
+`ImageFeatures`: `feature_map [B, C_map, d, h, w]` (luôn 5-D, theo trục input RAS; Grad-CAM đọc nó), `global_embedding [B, feature_dim]` (luôn 2-D, cái classifier dùng), `pyramid` (level trung gian), `metadata` (`{"backbone", "pooling", ...}`).
 
-`forward(volume)` trả `global_embedding`. `feature_map_dim` (số kênh `feature_map`, cái mà ROI
-pooling nhìn thấy) mặc định bằng `feature_dim`; chỉ khác khi embedding không phải mean của map
-(nnMamba: embedding 448 = concat mean 3 level, map 256).
+`forward(volume)` trả `global_embedding`. `feature_map_dim` (số kênh `feature_map`) mặc định bằng
+`feature_dim`; chỉ khác khi embedding không phải mean của map (nnMamba: embedding 448 = concat mean
+3 level, map 256).
 
 **`train(mode)` override.** Trainer gọi `model.train()` mỗi epoch, sẽ bật lại train mode cho encoder
 đã đóng băng (BatchNorm cập nhật running stats với batch 1, Dropout bật). Override xử lý:
@@ -73,7 +64,7 @@ pooling nhìn thấy) mặc định bằng `feature_dim`; chỉ khác khi embedd
 ## 3. Registry backbone
 
 1. `source/components/encoders/image/registry.py`: `_REGISTRY` tên → builder (tên chuẩn hoá `lower`,
-   `-` → `_`). Đăng ký sẵn `ct_fm`, `ct_fm_features`, `penet_style` và toàn bộ baseline zoo. Tên lạ →
+   `-` → `_`). Đăng ký sẵn `ct_fm`, `ct_fm_features` và toàn bộ baseline zoo. Tên lạ →
    `KeyError` liệt kê `registered_backbones()`.
 2. `source/model/registry.py:BASELINE_BACKBONES`: `name -> (module, function)` dưới `source.model`,
    import **lazy** (thư mục `2D_model`/`3D_model` không phải identifier hợp lệ; thiếu
@@ -96,7 +87,7 @@ MONAI SegResEncoder (init_filters 32, blocks_down [1,2,2,4,4]) → pyramid 5 lev
 feature_map = pyramid[-1]; global = adaptive_avg_pool3d → [B,512]
 ```
 
-- `CTFMInputContractEncoder` là **subclass** của `SegResEncoder` nên state-dict key giữ nguyên → strict load đủ 161 tensor. Feature map trả về theo RAS nên mask vùng và counterfactual khớp. Spacing **không** được chuyển (cache 1.5 mm khác 3×1×1 mm của CT-FM). Input 128³ cho `feature_map [B,512,8,8,8]`.
+- `CTFMInputContractEncoder` là **subclass** của `SegResEncoder` nên state-dict key giữ nguyên → strict load đủ 161 tensor. Feature map trả về theo RAS (Grad-CAM khớp input). Spacing **không** được chuyển (cache 1.5 mm khác 3×1×1 mm của CT-FM). Input 128³ cho `feature_map [B,512,8,8,8]`.
 - LoRA: `SegResEncoder` không có `nn.Linear`, nên `lora_target_modules: [layers.3.blocks, layers.4.blocks]` (conv hai stage sâu nhất).
 
 ### 4.2 CT-FM cached features (`backbone: ct_fm_features`)
@@ -109,13 +100,13 @@ Nhét cả ngực vào một patch 24×128×128 cho voxel ~12×1.9×2.6 mm là s
   `CTFMFeaturePassthrough` chỉ tách hai phần.
 - `global_embedding` = **mean có trọng số body** (loại ô padding không khí), `metadata.pooling =
   "body_weighted_mean"`.
-- `CachedCTFMEncoder` không có tham số; chỉ dùng frozen, **không** làm counterfactual ảnh
-  (`tools/_common.py` chặn khi `model.cached_features`). Arm `ctfm_frozen_3d` đọc bản pooled
-  `[513,1,1,1]`.
+- `CachedCTFMEncoder` không có tham số; chỉ dùng frozen, không chạy scratch được. Arm
+  `ctfm_frozen_3d` (đường CT-FM frozen duy nhất) đọc bản pooled `[513,1,1,1]`; cache dựng một lần
+  mỗi profile bằng `bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh`.
 
 ### 4.3 PENet
 
-`penet_style` (`encoders/image/penet.py`, `diag.global.penet_style`): CNN residual 3D tự viết, **random init**, `feature_dim` 256, không phải tái hiện PENet gốc. `penet_3d` (`3D_model/penet.py`): PENet thật (`third_party/repos/penet`, weight `penet_best.pth.tar` load strict + SHA-256), RAS → layout DICOM của PENet, intensity `penet`, giữ stochastic depth nên `encoder.ddp_find_unused_parameters = True`. Zero-shot (`penet_zeroshot.py`, `diag.zeroshot.penet`) đọc NIfTI gốc, không train.
+`penet_3d` (`3D_model/penet.py`): PENet thật (`third_party/repos/penet`, weight `penet_best.pth.tar` load strict + SHA-256), RAS → layout DICOM của PENet, intensity `penet`, giữ stochastic depth nên `encoder.ddp_find_unused_parameters = True`. Zero-shot (`penet_zeroshot.py`, `diag.zeroshot.penet`) đọc NIfTI gốc, không train.
 
 ---
 
@@ -139,7 +130,10 @@ quy ước lúc pretrain (không tham số nên checkpoint load chéo giữa cá
   (1 kênh); `2.5d` = 3 kênh `[i-offset, i, i+offset]`. Resize bilinear về 224, encode theo chunk,
   pooling `attention` (`GatedAttentionPool`), `mean` hoặc `max`. Output `feature_map [B,C,h,w,N]`
   (N slice ở trục cuối), `pooling = "slice_mil_<pooling>"`, metadata `slice_indices`,
-  `slice_attention`, `slice_depth` (ROI pooling đọc mask đúng trên các slice này).
+  `slice_attention`, `slice_depth`.
+- `model.mil.slice_selection`: `uniform` (mặc định, N slice cách đều) hoặc `center` (chỉ 1 instance
+  ở lát giữa: 2D = lát giữa, 2.5D = 3 lát giữa); `model.mil.pooling` ∈ `attention | mean | max`.
+  Đây là các biến thể của exp04.
 - `build_slice_mil_encoder` đặt `peft_trainable_modules = ("model.attention",)`: attention pool là
   module mới không có weight pretrained nên **vẫn train dưới LoRA/frozen**.
 
@@ -211,65 +205,7 @@ Head: `MLPHead` (Linear(P, hidden) → GELU → Dropout → Linear(hidden, out);
 
 ---
 
-## 8. Đường anatomy-aware (`source/components/anatomy.py`)
-
-Ý tưởng: **encode cả CTPA một lần**, rồi pool cùng một feature map thành vector global và vector
-theo vùng. `z_heart`, `z_pa`, `z_lung` *không* chỉ chứa thông tin của cơ quan: receptive field của
-encoder nhìn cả volume.
-
-`pool_anatomy_features(encoder, roi, volume, masks)`:
-
-1. `image = encoder.forward_features(volume)`.
-2. `z_global` theo `metadata.pooling`: `body_weighted_mean` (CT-FM cached) → dùng `global_embedding`
-   (plain mean sẽ trộn vector "air" theo kích thước cơ thể); bắt đầu bằng `slice_mil_` → dùng
-   aggregate MIL (đồng thời để attention pool nhận gradient, tránh lỗi DDP unused params); còn lại →
-   mean không gian của `feature_map`.
-3. `ROIFeatureExtractor(regions)` gọi `mask_guided_pool` cho từng vùng (thiếu mask → `KeyError`).
-4. `available = {"global": True, <region>: present}`.
-
-**ROI coverage pooling (`components/roi/pooling.py`).** `resize_mask` co mask về lưới feature bằng
-`adaptive_avg_pool3d` nên **trọng số = tỉ lệ ô nằm trong vùng**; nearest sẽ chỉ đọc một voxel mỗi ô
-và làm mất vùng nhỏ như PA. `mask_guided_pool`: `pooled = Σ f·w / Σ w`; `present` đọc trên **mask
-gốc** (`amax > ε`), không trên tổng trọng số. Vùng vắng → vector 0, `present = False`.
-
-**Slice-MIL.** `select_mask_slices` lấy mask trung bình đúng trên các slice (hoặc bộ 3 slice) mà mỗi
-instance đã encode, tạo mặt trọng số `[B,1,x,y,N]`, nên pooling theo vùng khớp với feature map `[B,C,h,w,N]`.
-
-**Organ adapter (`components/adapters/`).** `OrganAdapterBank(input_dim=feature_map_dim, output_dim=expert_dim, regions)`: một adapter **độc lập** cho mỗi branch (`global` + từng region). Loại: `bottleneck_mlp` (mặc định: Linear → LayerNorm → GELU → Dropout → Linear), `residual` (skip + bottleneck, `up` init 0), `lora`. `standardize_inputs: true` → z-score từng branch fit trên train; output nhân với `present` nên branch vắng thành vector 0. Hidden width = `task.hidden_dim` (256). Nguồn mask: `configs/components/anatomy.yaml#anatomy_masks` (`heart: ROI2`, `pa: ROI4`, `lung: ROI6`).
-
----
-
-## 9. Fusion (`source/components/fusion/`)
-
-`resolve_fusion_type` chuẩn hoá `fusion.type` (fallback `task.architecture`; preset ở `configs/components/fusions.yaml`):
-
-| Canonical (alias) | Mức | Cơ chế | Branch vắng |
-|---|---|---|---|
-| `concat_mlp` (`concat`) | feature | concat → Linear → LayerNorm → GELU → Dropout → Linear | nhân 0 trước khi concat (vẫn chiếm chỗ) |
-| `soft_moe` (`moe`) | feature | router MLP trên concat → logits/`temperature` → softmax → tổng có trọng số các expert | logit router = `-inf` rồi **renormalize**; mọi branch vắng → lỗi |
-| `late_logit` (`late`) | logit | mỗi branch một head; trung bình logit có trọng số (`learned: true` → softmax `log_weights`) | bỏ khỏi trung bình và renormalize |
-
----
-
-## 10. Task model
-
-**`DiagnosisModel` (`source/tasks/diagnosis/model.py`).** Shared encoder → organ adapters →
-prediction head → fusion. Chỉ dựng **một** trong hai đường: feature fusion (`self.fusion` +
-`self.heads = DiagnosisHeads`, một `nn.Linear` mỗi target) hoặc late-logit
-(`branch_heads` + `logit_fusion`). Tên module `image_encoder, roi, organ_adapters, fusion, heads`
-được giữ ổn định vì `lineage.transfer_modules` của counterfactual liệt kê đúng các tên này.
-
-- `DEFAULT_TARGETS`: `pe_present` + 13 target phụ. Auxiliary organ heads (`task.auxiliary_targets`) gắn vào branch adapted của **đúng cơ quan** (heart/pa/lung), mỗi target thuộc một cơ quan (`organ_targets.py`), nguồn `native | silver | expert_reviewed`.
-- Output: `logits`, `auxiliary_logits`, `routing` (`None` với concat), `features`, `branch_features`, `roi_present`. Loss (`losses.py`): BCE-with-logits / CE chỉ trên nhãn valid, nhân `task.loss_weights`; `organ_auxiliary_loss` masked theo nguồn nhãn; chi tiết ở [03_training_evaluation.md](03_training_evaluation.md).
-
-**`PrognosisModel` (`source/tasks/prognosis/model.py`).** Cùng stack ảnh như diagnosis (kiến trúc
-không là confound), thêm branch `ehr` (`EHREncoder`) và `spesi` (`SpesiEncoder`) **chỉ ở bước
-fusion**, mỗi branch lâm sàng có adapter riêng về cùng width. `task.modalities` chọn branch; branch
-thiếu dữ liệu bị mask; image encoder có thể `None` (EHR-only).
-
----
-
-## 11. Forward pass có shape
+## 8. Forward pass có shape
 
 Shape **đo trên CPU** với input cache thật 128³, B = batch.
 
@@ -297,24 +233,3 @@ volume [B,1,128,128,128]
  └ GatedAttentionPool         global_embedding [B, 512]  (+ slice_attention [B, 32])
  └ projection [B,64] → head → {"pe_present": [B, 1]}      (11,345,154 tham số)
 ```
-
-### (c) Anatomy-aware diagnosis: CT-FM + ROI branch + concat fusion
-
-```text
-volume [B,1,128,128,128]     masks heart(ROI2) / pa(ROI4) / lung(ROI6) [B,1,128,128,128]
- └ CT-FM (remap HU, RAS→SPL, SegResEncoder, SPL→RAS)   feature_map [B, 512, 8, 8, 8]
-     ├─ global: adaptive_avg_pool3d ─────────────────────► z_global [B,512]   present=1
-     ├─ heart : resize_mask (coverage) → w [B,1,8,8,8]; Σ f·w / Σ w ─► z_heart [B,512] present_heart [B]
-     ├─ pa    : ...                                      ─► z_pa   [B,512]
-     └─ lung  : ...                                      ─► z_lung [B,512]
- └ OrganAdapterBank (bottleneck_mlp, độc lập mỗi branch): 512 → 256 → 128, × present
-     adapted_{global,heart,pa,lung}  4 × [B,128]
- └ ConcatMLPFusion: concat [B,512] → Linear(512,128) → LN → GELU → Dropout → Linear(128,128)
-     fused [B,128]                  routing = None
- └ DiagnosisHeads: Linear(128, dim) mỗi target → logits {"pe_present": [B,1], ...}
-
-Biến thể soft_moe: router concat [B,512] → MLP → Linear(·,4) → /T → mask branch vắng → softmax;
-   fused = Σ_k weight[B,k]·adapted_k [B,128]; routing [B,4]
-```
-
----

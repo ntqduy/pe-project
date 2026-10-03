@@ -1,10 +1,8 @@
 # 03. Huấn luyện và đánh giá (cơ chế chung)
 
-> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
-
 **Đọc khi:** muốn hiểu một run diagnosis/prognosis chạy thế nào từ lệnh đến `result.csv`: chọn GPU, DDP, vòng epoch, chọn checkpoint, chọn threshold, bootstrap CI, so sánh cặp, Grad-CAM preview, resume/overwrite.
 
-**Code chính:** `tools/launch.py`, `tools/tasks/train_task.py`, `source/engine/{trainer,checkpoint,transfer,task_artifacts,experiment}.py`, `tools/tasks/evaluate.py`, `source/distributed/{setup,gather,launcher}.py`, `source/metrics/{classification,bootstrap,calibration,paired,result_table,reporting}.py`, `tools/run_status.py`, `source/profiling/model_profile.py`
+**Code chính:** `tools/launch.py`, `tools/tasks/train_task.py`, `source/engine/{trainer,checkpoint,task_artifacts,experiment}.py`, `tools/tasks/evaluate.py`, `source/distributed/{setup,gather,launcher}.py`, `source/metrics/{classification,bootstrap,calibration,paired,result_table,reporting}.py`, `tools/run_status.py`, `source/profiling/model_profile.py`
 
 Đây là phần máy móc dùng chung cho mọi task. Nội dung riêng của từng task và danh sách experiment ở [04_experiments.md](04_experiments.md); kiến trúc model ở [02_models.md](02_models.md); thư mục output ở [05_running_outputs.md](05_running_outputs.md).
 
@@ -27,24 +25,24 @@ tools/launch.py  ── preflight ── chọn CPU / 1 GPU / torchrun DDP
                                                          reporting_checklist.json}
 ```
 
-Train và evaluate là **hai process riêng**: `python run.py run` chỉ train; evaluate gọi riêng (`tools/launch.py --evaluate` hoặc `tools/tasks/evaluate.py`). Các wrapper (`scripts/tool/run_ctfm_frozen.sh`, `scripts/tool/run_baseline_grid.sh` → `tools/baselines/run_case.py`) với `ACTION=all` gọi lần lượt cả hai. Metric task chỉ được tính ở `evaluate.py`; training chỉ ghi loss và AUROC theo epoch để vẽ đường cong.
+Train và evaluate là **hai process riêng**: `python run.py run` chỉ train; evaluate gọi riêng (`tools/launch.py --evaluate` hoặc `tools/tasks/evaluate.py`). Wrapper `scripts/tool/run_baseline_grid.sh` → `tools/baselines/run_case.py` với `ACTION=all` gọi lần lượt cả hai. Metric task chỉ được tính ở `evaluate.py`; training chỉ ghi loss và AUROC theo epoch để vẽ đường cong.
 
 ---
 
 ## 2. `tools/launch.py`: chọn thiết bị và chế độ chạy
 
 - **Resolve config:** `resolve_cli_config` (`tools/_common.py`) = `load_config` + `--set` + `--gpus` → `compute.devices`, `compute.strategy` (`[]`→`cpu`, 1 GPU→`single`, ≥2→`ddp`).
-- **Entrypoint** (`ENTRYPOINTS`): `diagnosis`/`prognosis` → `train_task.py`; `silver` → `generate_silver_labels.py`; `counterfactual` → `counterfactual.py`; `--evaluate` → `evaluate.py`.
-- **Chặn sai cách dùng:** `experiment.family == remove_roi` bị từ chối; cờ chọn ca (`--patient-id`, `--max-cases`, `--max-reports`, `--allow-full`) chỉ hợp lệ cho silver/counterfactual/evaluate.
+- **Entrypoint** (`ENTRYPOINTS`): `diagnosis`/`prognosis` → `train_task.py`; `silver` → `generate_silver_labels.py`; `--evaluate` → `evaluate.py`. Stage khác bị từ chối.
+- **Chặn sai cách dùng:** cờ chọn ca (`--patient-id`, `--max-cases`, `--max-reports`, `--allow-full`) chỉ hợp lệ cho silver/evaluate.
 - **Preflight** (`require_preflight`, `source/data/preflight.py`) chạy ở process cha, fail sớm.
 - **Map GPU:** đặt `CUDA_VISIBLE_DEVICES=<GPU vật lý>`, process con thấy `compute.devices=[0..n-1]`.
 - **Spawn** (`build_launch_spec`): ≤1 GPU → `python <entrypoint>`; ≥2 GPU → `torchrun --standalone --nproc-per-node=<n>` (fallback `python -m torch.distributed.run`).
 - **Evaluate** mà không `--overwrite` → `config["resume"]=True` để đọc lại thư mục run đã train.
 
 ```bash
-python tools/launch.py --config configs/runs/02_diagnosis/global/global_single.yaml --gpus 0,1 --dry-run
-python tools/launch.py --config configs/runs/02_diagnosis/global/global_single.yaml --gpus 0,1
-python tools/launch.py --config configs/runs/02_diagnosis/global/global_single.yaml --gpus 0,1 --evaluate --allow-full
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0,1 --dry-run
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0,1
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0,1 --evaluate --allow-full
 ```
 
 Trong process con, `initialize_distributed` (`source/distributed/setup.py`) đọc `WORLD_SIZE`/`RANK`/`LOCAL_RANK`, `init_process_group` (`nccl` nếu có CUDA, `gloo` nếu không; `compute.distributed_backend`) và trả `DistributedContext`. `rank_zero_call` chạy side effect (preflight, tạo thư mục) ở rank 0 rồi broadcast kết quả hoặc lỗi, nên mọi rank cùng fail thay vì treo.
@@ -53,23 +51,22 @@ Trong process con, `initialize_distributed` (`source/distributed/setup.py`) đ�
 
 ## 3. `train_task.py`: các bước
 
-1. Từ chối `--resume` (task training không resume), và config có `external_evaluation.test_only`/`prohibit_training`.
+1. Từ chối `--resume` (task training không resume), config có `external_evaluation.test_only`/`prohibit_training`, và `lineage.source_checkpoint` (không còn transfer từ checkpoint task khác).
 2. Init DDP, preflight (rank 0).
 3. Thư mục run: `run_output_id(config)` = `<experiment.id>/epoch_<training.epochs>`; `OutputManager.prepare` kiểm collision, ghi `resolved_config.yaml`.
 4. `seed_everything(seed)` **giống nhau ở mọi rank** cho tới khi bọc DDP (model khởi tạo và standardizer fit ra cùng giá trị); `seed` mặc định 42.
 5. Dataset `CTPADataset` cho train/validation; prognosis bỏ dòng không có nhãn quan sát nào. `data.preload_inputs` nạp feature CT-FM pooled vào RAM.
 6. DataLoader: `compute.num_workers` (`auto` bị chặn theo RAM trống và chia cho `world_size`); DDP dùng `DistributedSampler(train, shuffle=True, seed)`.
 7. `build_task_model(config)` → `(model, peft_report)`; log số tham số trainable.
-8. Transfer nếu có `lineage.source_checkpoint` (mục 5).
-9. Fit trên train: `_fit_clinical_preprocessor` (impute/z-score EHR) và `_fit_feature_standardizer` (z-score feature đã pool), chỉ từ split train.
-10. `wrap_ddp` (`find_unused_parameters=True` chỉ khi encoder khai báo `ddp_find_unused_parameters`, ví dụ PENet); sau đó `seed_everything(seed + rank)` để augmentation/dropout khác nhau giữa rank.
-11. `AdamW(lr, weight_decay)` trên tham số `requires_grad`, scheduler từ `build_scheduler`.
-12. `Trainer(...).fit(...)`.
-13. Rank 0: `best_epoch(history)` (không có epoch hữu hạn nào → lỗi), load lại `best.ckpt` strict, `write_training_artifacts`, `write_backbone_previews`, `profile_model`, ghi `result.json` (`status=completed`), `cleanup_task_run`.
+8. Fit trên train: `_fit_feature_standardizer` (z-score feature đã pool), chỉ từ split train.
+9. `wrap_ddp` (`find_unused_parameters=True` chỉ khi encoder khai báo `ddp_find_unused_parameters`, ví dụ PENet); sau đó `seed_everything(seed + rank)` để augmentation/dropout khác nhau giữa rank.
+10. `AdamW(lr, weight_decay)` trên tham số `requires_grad`, scheduler từ `build_scheduler`.
+11. `Trainer(...).fit(...)`.
+12. Rank 0: `best_epoch(history)` (không có epoch hữu hạn nào → lỗi), load lại `best.ckpt` strict, `write_training_artifacts`, `write_backbone_previews`, `profile_model`, ghi `result.json` (`status=completed`), `cleanup_task_run`.
 
-**Feature standardizer** (`_fit_feature_standardizer`): baseline classifier tự fit khi `head.standardize_inputs: true`; model có `organ_adapters.input_standardizer` (bật bằng `organ_adapter.standardize_inputs: true`) fit một lượt qua train: mỗi rank xử lý một shard rời, `all_reduce` tổng/tổng bình phương/số dòng, nên mọi rank có cùng `μ`, `σ` trước khi bọc DDP. `μ`, `σ` là buffer trong `state_dict` nên nằm trong checkpoint. Nhánh có < 2 dòng train không chuẩn hoá được (ghi `identity_branches` + `WARNING`). Bật mà model không hỗ trợ → `ValueError`.
+**Feature standardizer** (`_fit_feature_standardizer`): `BaselineClassifier.fit_input_standardizer` fit khi `head.standardize_inputs: true`, một lượt qua train: mỗi rank xử lý một shard rời, `all_reduce` tổng/tổng bình phương/số dòng, nên mọi rank có cùng `μ`, `σ` trước khi bọc DDP. `μ`, `σ` là buffer trong `state_dict` nên nằm trong checkpoint. Nhánh có < 2 dòng train không chuẩn hoá được (ghi `identity_branches` + `WARNING`). Bật mà model không hỗ trợ → `ValueError`.
 
-Seed khác: `apply_counterfactual` dùng `seed` (+ patient/study id); `evaluate.py` dùng `seed + rank`, bootstrap dùng `seed`.
+Seed khác: `evaluate.py` dùng `seed + rank`, bootstrap dùng `seed`.
 
 ---
 
@@ -90,7 +87,7 @@ rank 0: lưu last.ckpt
 
 - **AMP:** `compute.precision` = `bf16` (mặc định) / `fp16` / `fp32` / `auto` (baseline zoo: bf16 nếu GPU hỗ trợ, không thì fp16, CPU thì fp32; `resolve_precision` trong `source/engine/trainer.py`, `run.log` ghi giá trị thực dùng); autocast chỉ bật trên CUDA với bf16/fp16, `GradScaler` chỉ cho fp16.
 - **Gradient accumulation** (`training.gradient_accumulation = K`): loss chia cho **kích thước thật của nhóm** (`min(K, len(loader) - group_start)`), nên nhóm cuối epoch ngắn hơn K vẫn là trung bình đúng; `optimizer.step()` mỗi K batch hoặc ở batch cuối. Batch hiệu dụng = `batch_size × K × số GPU`. DDP không dùng `no_sync`, nên gradient all-reduce ở mọi micro-step (đúng, chỉ tốn giao tiếp).
-- **Reduce qua rank:** loss trung bình qua `all_reduce`. Metric phụ (`main.<target>.loss`, `auxiliary.*`, `total_loss`) `all_gather_object` tên của mọi rank, lấy hợp rồi một `all_reduce` duy nhất, vì một rank có thể thiếu target không có nhãn trong batch. AUROC theo epoch: `gather_prediction_rows` về rank 0 tính `roc_auc_score`/`average_precision_score`, rồi broadcast; target một lớp → NaN. Pass này đọc lại cả train + validation mỗi epoch; tắt bằng `training.record_epoch_auc: false`.
+- **Reduce qua rank:** loss trung bình qua `all_reduce`. Metric phụ (`main.<target>.loss`, `total_loss`) `all_gather_object` tên của mọi rank, lấy hợp rồi một `all_reduce` duy nhất, vì một rank có thể thiếu target không có nhãn trong batch. AUROC theo epoch: `gather_prediction_rows` về rank 0 tính `roc_auc_score`/`average_precision_score`, rồi broadcast; target một lớp → NaN. Pass này đọc lại cả train + validation mỗi epoch; tắt bằng `training.record_epoch_auc: false`.
 - **Chọn checkpoint:** mặc định theo **`-val_loss`** (`selection_metric: negative_validation_loss` trong `result.json`). `training.selection_metric: val_auroc` (mọi baseline zoo, `baselines.yaml`) chọn theo **val AUROC** của target chính (`validation_auroc` trong `result.json`); khi đó pass AUROC validation chạy mỗi epoch kể cả khi `record_epoch_auc: false` (chỉ bỏ pass train). `best.ckpt` = epoch đầu tiên có metric cao nhất; NaN không bao giờ "cải thiện".
 - **Seed:** `seed_everything` (python / numpy / torch / CUDA, cuDNN deterministic) và DataLoader có `generator` + `worker_init_fn` (`source/utils/seed.py:loader_seeding`), nên thứ tự shuffle và RNG của worker lặp lại theo seed.
 - **Early stopping:** `training.early_stopping_patience: P` dừng khi P epoch liên tiếp không cải thiện (`null` = chạy hết). Quyết định tính từ giá trị đã reduce nên mọi rank dừng cùng lúc. `result.json` → `evaluation.training` ghi `epochs_configured`, `epochs_run`, `early_stopping_patience`, `stopped_early`. Patience phải giống nhau cho mọi arm của một so sánh.
@@ -99,27 +96,18 @@ rank 0: lưu last.ckpt
 
 ---
 
-## 5. Checkpoint, transfer, `encoder.init_source`
+## 5. Checkpoint, `encoder.init_source`
 
-**Định dạng** (`source/engine/checkpoint.py`): `save_checkpoint_atomic` ghi dict `schema_version (=2), lineage, model_state (bỏ "module."), optimizer_state, scheduler_state, extra` vào file tạm, `fsync`, `os.replace`, rồi **load lại để kiểm lineage**; ghi thêm `<ckpt>.metadata.json` (`checkpoint_id` = SHA-256 của file...). `lineage` phải đủ `REQUIRED_LINEAGE` (experiment_id, stage, backbone, initialization, source_checkpoint, source_checkpoint_hash, dataset, split, task, fusion_type, random_seed, code_commit, epoch, validation_metric...); có `source_checkpoint` thì hash phải là SHA-256 hex. `load_checkpoint(path, model, strict=True)` kiểm lineage và shape, thiếu/thừa key là lỗi.
-
-**Transfer một phần** (`source/engine/transfer.py`): `transfer_modules(model, ckpt, modules)` chỉ lấy key có tiền tố của module chọn (mặc định `image_encoder.`), vẫn strict trong phạm vi đó; head và fusion giữ khởi tạo mới.
+**Định dạng** (`source/engine/checkpoint.py`): `save_checkpoint_atomic` ghi dict `schema_version (=2), lineage, model_state (bỏ "module."), optimizer_state, scheduler_state, extra` vào file tạm, `fsync`, `os.replace`, rồi **load lại để kiểm lineage**; ghi thêm `<ckpt>.metadata.json` (`checkpoint_id` = SHA-256 của file...). `lineage` phải đủ `REQUIRED_LINEAGE` (experiment_id, stage, backbone, initialization, source_checkpoint, source_checkpoint_hash, dataset, split, task, fusion_type, random_seed, code_commit, epoch, validation_metric...); có `source_checkpoint` thì hash phải là SHA-256 hex. `load_checkpoint(path, model, strict=True)` kiểm lineage và shape, thiếu/thừa key là lỗi. Các trường `fold` (luôn `"official"`), `fusion_type`, `organ_adapter_configuration` được giữ vì là một phần của hợp đồng checkpoint, không phải tính năng đang dùng.
 
 **Nguồn khởi tạo encoder** (`resolve_encoder_initialization`, preset ở `configs/components/encoders.yaml`):
 
 | `encoder.init_source` | Load gì | `lineage.initialization` |
 |---|---|---|
 | `pretrained` (alias `public`, `published`, `original`) | trọng số public qua contract backbone; cấm kèm checkpoint | `public` |
-| `diagnosis` (alias `c_diagnosis`) | transfer `lineage.transfer_modules` từ `encoder.sources.diagnosis` (= `DX_anatomy_concat/epoch_50/checkpoint/best.ckpt`) | `C_diagnosis` |
-| `custom` | bắt buộc `encoder.checkpoint`, nên kèm `encoder.source_experiment` | `custom` |
+| `diagnosis`, `custom` | đặt `lineage.source_checkpoint`, mà `train_task.py` nay từ chối | — |
 
-Checkpoint mặc định của một nguồn chỉ dùng cho `experiment.baseline_backbone` tương ứng, backbone khác → `ConfigError`. `stamp_experiment_variant` thêm hậu tố vào run ID khi lệch baseline: `__ds_<profile>` (profile ≠ `full_inspect`), `__bb_<backbone>`, `__enc_<init_source>`; `experiment.variant_stamp: false` tắt việc này. Vì vậy evaluate phải lặp lại đúng các `--set` đã dùng khi train.
-
-```bash
-python tools/tasks/train_task.py --config configs/runs/02_diagnosis/global/global_single.yaml \
-  --set encoder.init_source=custom --set encoder.checkpoint=<path/best.ckpt> \
-  --set encoder.source_experiment=<RUN_ID> --gpus 0
-```
+Mọi run trainable dùng `pretrained` (`encoders.yaml#from_pretrained`); `--scratch` / `SCRATCH=1` là cách duy nhất để bỏ weight public. `stamp_experiment_variant` thêm hậu tố vào run ID khi lệch baseline: `__ds_<profile>` (profile ≠ `full_inspect`), `__bb_<backbone>`, `__enc_<init_source>`; `experiment.variant_stamp: false` tắt việc này. Vì vậy evaluate phải lặp lại đúng các `--set` đã dùng khi train.
 
 ---
 
@@ -137,7 +125,7 @@ python tools/tasks/train_task.py --config configs/runs/02_diagnosis/global/globa
 └── smoke/<sha12>/              evaluate với --patient-id/--max-cases
 ```
 
-- `E` là **ngân sách** `training.epochs`, không phải số epoch thực chạy; mỗi ngân sách là một run độc lập. Run test-only, `remove_roi`, `external_zero_shot` không có `epoch_<E>`.
+- `E` là **ngân sách** `training.epochs`, không phải số epoch thực chạy; mỗi ngân sách là một run độc lập. Run zero-shot không có `epoch_<E>`.
 - `cleanup_task_run` xoá bản sao ở gốc (`best.ckpt`, `last.ckpt`, `config.yaml`, `metrics.json`...), thư mục `logs/`, `checkpoints/`, `figures/`, `qc/`, `plots/` và file legacy sau khi bundle đã có `checkpoint/`; không xoá `bootstrap_metrics.parquet`/`reporting_checklist.json`.
 - Train copy `logs/run.log` → `logs.txt`; evaluate **append** vào `logs.txt`.
 - Sau train, `profile_model` đo latency/GFLOPs/VRAM trên một batch validation ở `eval()` (1 warm-up + `profiling.iterations`, mặc định 5), ghi vào `result.json` (`model.latency_ms_per_volume`, `gflops_per_volume`, `compute.peak_vram_gb`, `compute.training_time_min`).
@@ -146,10 +134,10 @@ python tools/tasks/train_task.py --config configs/runs/02_diagnosis/global/globa
 
 ## 7. `evaluate.py`
 
-1. **External test-only** (`external_evaluation.test_only`): bắt buộc `--checkpoint`, `threshold_source: internal_validation_artifact`, `evaluation_split: test`.
+1. **External test-only** (`external_evaluation.test_only`, hiện không config nào dùng): bắt buộc `--checkpoint`, `threshold_source: internal_validation_artifact`, `evaluation_split: test`.
 2. Dùng cùng `run_output_id` như train; thư mục không tồn tại mà không có `--checkpoint` → lỗi "train with the same training.epochs first".
 3. Checkpoint: `--checkpoint` hoặc `best.ckpt` của run (gốc → `checkpoint/` → `epoch_*/checkpoint/` cao nhất); load **strict**, rồi `wrap_ddp`.
-4. Target: diagnosis chấm primary trước, cộng các head native binary khác có cột nhãn (silver/multiclass/head organ phụ bị bỏ); prognosis chấm các `task.targets` có trong `data.label_columns`; test-only chỉ primary.
+4. Target: diagnosis chấm primary trước, cộng các head native binary khác có cột nhãn (silver/multiclass bị bỏ); prognosis chấm các `task.targets` có trong `data.label_columns`; test-only chỉ primary.
 5. Threshold (xem dưới), dự đoán test, rank 0 tính `metric_bundle` (train/validation không CI, test có CI).
 6. Ghi `result.csv`, `predictions.csv`, `result.json` (giữ `evaluation.training`, thêm `evaluation_scope`, `evaluation_checkpoint` gồm path, sha256, lineage), preview, `reporting_checklist.json` (`stard_ai_checklist` hoặc `tripod_ai_checklist`: chỉ là khung trỏ tới bằng chứng, không phải tuyên bố tuân thủ).
 
@@ -157,7 +145,7 @@ python tools/tasks/train_task.py --config configs/runs/02_diagnosis/global/globa
 
 ### Threshold chỉ chọn trên validation
 
-`select_threshold` chọn threshold cho từng target trên **validation**: `evaluation.threshold_method` = `youden` (mặc định, tối đa `TPR − FPR`) hoặc `f1`. Validation một lớp → 0.5 với `threshold_source = fallback_0.5_validation_single_class`. Threshold được áp **nguyên vẹn** cho train, validation, test. Checkpoint chọn theo `-val_loss` và threshold chọn theo Youden là hai lựa chọn độc lập, đều chỉ dùng validation.
+`select_threshold` chọn threshold cho từng target trên **validation**: `evaluation.threshold_method` = `youden` (mặc định, tối đa `TPR − FPR`) hoặc `f1`. Validation một lớp → 0.5 với `threshold_source = fallback_0.5_validation_single_class`. Threshold được áp **nguyên vẹn** cho train, validation, test. Checkpoint chọn theo val AUROC (baseline) / `-val_loss` và threshold chọn theo Youden là hai lựa chọn độc lập, đều chỉ dùng validation.
 
 ### Threshold khoá cho external test
 
@@ -178,7 +166,7 @@ Smoke vẫn ghi preview vào `<bundle>/preview/`, đè preview của lần full-
 
 ### So sánh cặp (`--reference-predictions`, `source/metrics/paired.py`)
 
-Dùng cho counterfactual/ablation hoặc so hai model trên cùng bệnh nhân (chỉ primary target):
+So hai model trên cùng bệnh nhân test (chỉ primary target):
 
 1. Đọc `predictions.csv` test của reference.
 2. Threshold của reference lấy từ `result.json` cạnh file đó, không có thì dùng cột `y_pred` sẵn có. **Mỗi model dùng threshold validation của chính nó**, không bao giờ áp threshold của model này cho model kia.
@@ -186,7 +174,7 @@ Dùng cho counterfactual/ablation hoặc so hai model trên cùng bệnh nhân (
 4. `paired_patient_bootstrap`: mỗi replicate rút **cùng** tập bệnh nhân cho hai arm, `delta = comparison − reference`, CI theo phân vị, cùng luật "đủ replicate".
 5. Ghi `bootstrap_metrics.parquet` và `result.json` → `evaluation.paired_vs_reference`.
 
-`--restrict-to <csv/parquet>` (cột `patient_id`, tuỳ chọn `study_id`) giới hạn mọi split vào một danh sách ca chung để mọi arm được chấm trên cùng ca (ví dụ `cache/<profile>/clinical/spesi_evaluable.csv`).
+`--restrict-to <csv/parquet>` (cột `patient_id`, tuỳ chọn `study_id`) giới hạn mọi split vào một danh sách ca chung để mọi arm được chấm trên cùng ca.
 
 ### Calibration (chỉ prognosis, `source/metrics/calibration.py`)
 
@@ -213,19 +201,14 @@ Xác suất phải hữu hạn và trong [0,1]. `result.csv` (`result_table.py`)
 
 ## 9. Grad-CAM preview (tóm tắt)
 
-`write_backbone_previews` (`source/engine/task_artifacts.py`) dựng file bằng `source/imaging/cam_preview.py`. Chỉ dùng validation, định tính, chạy ở rank 0 trên module đã unwrap.
+`write_backbone_previews` (`source/engine/task_artifacts.py`) dựng file bằng `source/imaging/cam_preview.py`. Định tính, chạy ở rank 0 trên module đã unwrap.
 
-- **Khi nào:** cuối training (chưa có threshold, lớp dự đoán N/A) và cuối evaluate (ghi đè, có threshold).
-- **Chọn ca:** mặc định 5 study validation đầu; config `preview: {correct: N, wrong: M}` (baseline zoo dùng 3/3) chọn N ca đúng và M ca sai tự tin nhất theo `|p − threshold|`; `preview.nifti: true` ghi thêm `_ct.nii.gz` + `_gradcam.nii.gz`.
+- **Khi nào:** cuối training (chưa có threshold, lớp dự đoán N/A) và cuối evaluate (ghi đè, có threshold). Run có `preview.split: test` (baseline zoo) bỏ bước ở training.
+- **Chọn ca:** mặc định 5 study validation đầu vào `preview/`; baseline zoo đặt `preview: {correct: 3, wrong: 3, split: test, directory: visualize, nifti: true}`: 3 ca **test** đúng và 3 ca sai tự tin nhất theo `|p − threshold|` vào `visualize/{correct,incorrect}/`, kèm `_ct.nii.gz` + `_gradcam.nii.gz`.
 - **Cách tính:** `backward()` từ logit của primary target, hook feature map 5D sâu nhất của backbone. Mặc định `hirescam`, tuỳ chọn `gradcam`. Không đổi weights.
 - **File:** `NN_<patient>_<study>_<TP|TN|FP|FN>.html` (viewer offline có thanh trượt z) và `.png`; model 2D/2.5D slice-MIL thêm `_mil_attention.png`.
 
-```bash
-python tools/tasks/gradcam_preview.py --run-dir <outputs>/diagnosis/<RUN_ID>/epoch_<E>
-# --method gradcam | --maximum-patients 10 | --output <dir> | --checkpoint <ckpt> | --device cpu
-```
-
-Chi tiết cho CT-FM cached và PENet/RADAR zero-shot: [04_experiments.md](04_experiments.md).
+Dựng lại preview = chạy lại evaluate (`ACTION=evaluate` với wrapper baseline). Preview PENet/RADAR zero-shot: [04_experiments.md](04_experiments.md).
 
 ---
 
@@ -237,12 +220,12 @@ Chi tiết cho CT-FM cached và PENet/RADAR zero-shot: [04_experiments.md](04_ex
 | `--resume` | **từ chối** | — |
 | `--overwrite` | `rmtree` đúng `epoch_<E>` rồi train lại | ghi đè smoke dir đã có |
 
-`OutputManager.prepare` còn từ chối `--resume` + `--overwrite` cùng lúc, resume run `completed`, và `config_hash` khác run có sẵn. `seed` không được stamp vào run ID, nên nhiều seed cùng config va `OutputCollisionError`.
+`OutputManager.prepare` còn từ chối `--resume` + `--overwrite` cùng lúc, resume run `completed`, và `config_hash` khác run có sẵn. `seed` không được stamp vào run ID, nên nhiều seed cùng config qua `run.py` va `OutputCollisionError`; lưới baseline đặt mỗi seed vào `official_seed<S>/` riêng.
 
 `tools/run_status.py` (cùng `--config/--set` như `launch.py`) in trạng thái `epoch_<E>`: `absent`; `incomplete` (`result.json` chưa `completed` hoặc thiếu `best.ckpt`); `trained`; `evaluated` (đã có full-test `result.csv` + `predictions.csv`); `different` (`resolved_config.yaml` khác config yêu cầu, bỏ qua `paths`, `config_hash`, `resume`, `overwrite`, `compute.devices`, `compute.num_workers`). Wrapper dùng nó để bỏ qua bước đã xong; `incomplete`/`different` báo lỗi trừ khi `OVERWRITE=1`.
 
 ```bash
-python tools/run_status.py --config configs/runs/01_foundation/ct_fm_frozen/diagnosis.yaml --format tsv
+python tools/run_status.py --config configs/runs/02_diagnosis/baselines/3D/ctfm_frozen_3d.yaml --format tsv
 ```
 
 ---
@@ -250,12 +233,13 @@ python tools/run_status.py --config configs/runs/01_foundation/ct_fm_frozen/diag
 ## 11. Lệnh thường dùng
 
 ```bash
-python run.py preflight diag.global.single --gpus 0
-python run.py dry diag.global.single --gpus 0,1
-python run.py run diag.global.single --gpus 0,1                       # train (DDP 2 GPU)
-python tools/launch.py --config configs/runs/02_diagnosis/global/global_single.yaml --gpus 0,1 --evaluate --allow-full
-python tools/tasks/evaluate.py --config configs/runs/02_diagnosis/global/global_single.yaml --max-cases 20 --gpus 0   # smoke
+python run.py preflight baseline.resnet18_3d --gpus 0
+python run.py dry baseline.resnet18_3d --gpus 0,1
+python run.py run baseline.resnet18_3d --gpus 0,1                     # train (DDP 2 GPU)
+python tools/launch.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --gpus 0,1 --evaluate --allow-full
+python tools/tasks/evaluate.py --config configs/runs/02_diagnosis/baselines/3D/resnet18_3d.yaml --max-cases 20 --gpus 0   # smoke
 python tools/tasks/evaluate.py --config <config> --allow-full \
   --reference-predictions <outputs>/diagnosis/<REF_ID>/epoch_<E>/predictions.csv                                       # so cặp
-python run.py run diag.global.single --gpus 0 --set data.profile=smoke_30 --set training.epochs=1                      # rehearse
+python run.py run baseline.resnet18_3d --gpus 0 --set data.profile=smoke_30 --set training.epochs=1                    # rehearse
+python tools/baselines/run_case.py --model resnet18_3d --gpus 0                                                         # prepare -> train -> evaluate (lưới)
 ```

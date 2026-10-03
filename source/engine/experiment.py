@@ -26,12 +26,6 @@ FAMILY_PATHS = {
     "silver": "silver_label",
     "diagnosis": "diagnosis",
     "prognosis": "prognosis",
-    "silver_ablation": "ablation/silver",
-    "architecture_ablation": "ablation/architecture",
-    "ehr_ablation": "ablation/ehr",
-    "remove_roi": "ablation/remove_roi",
-    "transfer": "ablation/transfer",
-    "counterfactual": "counterfactual",
     "summary": "summary",
     "segmentation_validation": "segmentation_validation",
 }
@@ -86,8 +80,6 @@ def task_epoch_bundle(config: Mapping[str, Any]) -> str | None:
     experiment = dict(config.get("experiment") or {})
     task = dict(config.get("task") or {})
     stage = str(experiment.get("stage") or "")
-    if stage == "ablation":
-        stage = str(task.get("base_stage") or "")
     if stage not in TASK_TRAINING_STAGES or experiment.get("family") == "remove_roi":
         return None
     if task.get("architecture") == "external_zero_shot":

@@ -1,7 +1,5 @@
 # 01. Data pipeline
 
-> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
-
 **Đọc khi:** cần biết cohort được dựng thế nào từ bản phát hành INSPECT, mask giải phẫu / ROI /
 silver label được sinh ra sao, split train/validation/test được bảo vệ thế nào, và một batch
 khi train chứa gì.
@@ -153,7 +151,9 @@ kiểm tra lại split và nhãn. Preprocessing riêng theo contract CT-FM upstr
 chồng lấn → SegResEncoder. Mỗi study: `features/<study_id>.npy` float16 `[513, d, h, w]` (512
 kênh + 1 kênh "tỉ lệ ô nằm trong body") và `pooled/<study_id>.npy` `[513,1,1,1]`. Ghi
 `manifests/ct_fm/*.csv` (`image_path` → feature file, thêm `pooled_path`; study lỗi vào
-`dropped_rows.csv`). Chi tiết dùng ở [02_models.md](02_models.md).
+`dropped_rows.csv`). Dựng một lần mỗi profile bằng `bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh`
+(env `PROFILE`, `GPUS`, `WORKERS`, `VERIFY_CACHE=1`, `REBUILD_CACHE=1`); chỉ arm `ctfm_frozen_3d`
+đọc nó (bản pooled). Chi tiết ở [02_models.md](02_models.md).
 
 **Training-fraction (exp02; `experiment_splits.py`, `tools/data/build_split_manifests.py`).**
 Không có k-fold: mọi run dùng split chính thức và lặp lại bằng seed. Với exp02, một assignment
@@ -162,7 +162,7 @@ cấp patient được lưu cho mỗi (task, label, seed): trong mỗi nhóm lab
 lồng nhau (25% ⊂ 50% ⊂ 75% ⊂ 100%), patient giữ mọi study. Chỉ cắt **train**; `validation` và
 `test` **luôn giữ nguyên**. `base_fingerprint` chặn dùng assignment cũ khi manifest gốc đã đổi.
 Tên: `<task>_<label>_s<seed>`, thư mục `frac{PPP}/`. Danh sách ID mỗi subset + kiểm tra được xuất
-ra `<task>/splits/data_fraction/seed_<s>/` (`tools/baselines/fractions.py`). `parse_fraction`: "25"
+ra `<task>/splits/data_fraction/seed_<s>/` (`tools/baselines/fraction_subsets.py`). `parse_fraction`: "25"
 hay "12.5%" là phần trăm, "0.25" là phân số, "1" bị từ chối vì mơ hồ.
 
 ### 1.7 Bảo đảm split cấp patient
@@ -205,7 +205,7 @@ Chạy: `python run.py run data.dataset.<profile> --allow-full` (hoặc `--max-c
 ## 2. Segmentation pseudo-anatomy
 
 **Code:** `source/segmentation/pipeline.py` (`generate_pseudo_anatomy`), `totalsegmentator.py`,
-`lungmask.py`, `resume.py`, `tools/create_masks/generate_masks.py`, `refresh_previews.py`,
+`lungmask.py`, `resume.py`, `tools/create_masks/generate_masks.py`,
 `configs/runs/00_data/segmentation/{inspect,turkey}.yaml`, `scripts/data/segmentation.sh`.
 
 Stage này **không train model segmentation**: chạy TotalSegmentator công khai để tạo mask
@@ -300,7 +300,7 @@ Chạy: `PROFILE=smoke_30 GPUS=0 bash scripts/data/segmentation.sh` hoặc `pyth
 ## 3. ROI1-ROI8 và control ROI
 
 **Code:** `source/roi/builder.py` (`build_roi_dataset`), `random_controls.py`
-(`matched_random_control`), `registry.py` (`ROI_DEFINITIONS`), `masks.py`, `counterfactual.py`,
+(`matched_random_control`), `registry.py` (`ROI_DEFINITIONS`), `masks.py`,
 `tools/build_rois/build_rois.py`, `configs/runs/00_data/roi/{inspect,turkey}.yaml`,
 `scripts/data/roi.sh`.
 
@@ -357,10 +357,8 @@ translation_voxels, attempts_tested, ...` (danh sách đủ trong `random_contro
 > ngực ở các lát của chúng, nên không có độ dịch in-plane nào vừa thoát chính nó + vùng cấm vừa
 > còn trong body. Kết quả mong đợi: dòng ROI8 `failed` với `failure_reason=no_valid_control_location`.
 > ROI2 (nhỏ hơn) có cơ hội cao hơn nhưng cũng có thể thất bại. **Luôn kiểm tra `roi_manifest.csv`
-> thay vì giả định ROI8 có sẵn.** Hệ quả: `anatomy.remove_random`
-> (`roi_control_for: {random: ROI4}`) cần ROI8 cho ROI4; study không có control không nạp được
-> (`CTPADataset` raise `required ROI mask is unavailable`). Đổi `preserve_z_range`,
-> `exclusion_margin_mm` hay `excluded_anatomies` là đổi protocol (resume sẽ chặn).
+> thay vì giả định ROI8 có sẵn.** Đổi `preserve_z_range`, `exclusion_margin_mm` hay
+> `excluded_anatomies` là đổi protocol (resume sẽ chặn).
 
 ### 3.3 Output, resume, lệnh chạy
 
@@ -379,13 +377,9 @@ Run dir `<output_root>/roi/ROI_anatomy_and_controls[__ds_<profile>]/` (Turkey:
 
 ### 3.4 ROI được dùng thế nào sau đó
 
-`configs/components/anatomy.yaml#anatomy_masks` đặt `data.roi_manifest:
-roi/ROI_anatomy_and_controls/roi_manifest.csv` và `data.roi_mask_ids: {heart: ROI2, pa: ROI4,
-lung: ROI6}`; arm counterfactual random thêm `{random: ROI8}` với `roi_control_for: {random: ROI4}`.
-`MaskingPolicy`: `zero`, `global_mean`, `local_mean` (mặc định), `noise_matched`. Region `random`
-bắt buộc là ROI8 tính sẵn: `matched_random_mask` luôn raise (cấm tạo control lúc runtime). Đường dẫn
-trên là run của `full_inspect`; train anatomy trên profile khác phải trỏ `data.roi_manifest` (và
-`supervision.masks`/`supervision.rois`) tới run `__ds_<profile>` bằng `--set`.
+ROI là artifact dữ liệu (QC, phân tích); không model trainable nào đọc nó. `CTPADataset` vẫn nạp
+được mask nếu config đặt `data.roi_manifest` + `data.roi_mask_ids` (vd. `{heart: ROI2}`), nhưng
+không config đang dùng nào đặt hai key này.
 
 ---
 
@@ -410,17 +404,17 @@ report. Stage này trích **19 target** thành nhãn "silver" bằng MedGemma + 
 ### 4.1 Target schema (`source/silver/schema.py`)
 
 `TARGETS` là tuple 19 `TargetSpec(name, kind, values, aliases, ...)`; danh sách đầy đủ và mô tả
-nằm ở đó. Nhóm chính (branch organ = cơ quan nhận loss phụ trong `diagnosis_organ_silver`):
+nằm ở đó. Nhóm chính:
 
-| Nhóm | Target | Kind | Branch |
-|---|---|---|---|
-| PE | `pe_present` | binary | (native) |
-| Acuity | `acuity` (`acute, chronic, acute_on_chronic, uncertain`) | categorical | pa |
-| Vị trí | `central, lobar, segmental, subsegmental, saddle` | binary | pa |
-| RV / tim | `rv_enlargement, rv_lv_ratio_abnormal` (alias `rv_lv_abnormal`), `septal_bowing`, `contrast_reflux` (alias `reflux`), `pericardial_effusion` | binary | heart |
-| RV ratio | `rv_lv_ratio_mentioned`, `rv_lv_ratio_value` (continuous, ≥ 0) | binary / continuous | không gắn branch |
-| Phổi | `pleural_effusion, chronic_lung_disease, fibrosis, emphysema` | binary | lung |
-| Khác | `malignancy_related_finding` | binary | không gắn branch |
+| Nhóm | Target | Kind |
+|---|---|---|
+| PE | `pe_present` | binary (native) |
+| Acuity | `acuity` (`acute, chronic, acute_on_chronic, uncertain`) | categorical |
+| Vị trí | `central, lobar, segmental, subsegmental, saddle` | binary |
+| RV / tim | `rv_enlargement, rv_lv_ratio_abnormal` (alias `rv_lv_abnormal`), `septal_bowing`, `contrast_reflux` (alias `reflux`), `pericardial_effusion` | binary |
+| RV ratio | `rv_lv_ratio_mentioned`, `rv_lv_ratio_value` (continuous, ≥ 0) | binary / continuous |
+| Phổi | `pleural_effusion, chronic_lung_disease, fibrosis, emphysema` | binary |
+| Khác | `malignancy_related_finding` | binary |
 
 
 ### 4.2 MedGemma extractor
@@ -504,8 +498,9 @@ Output `<output_root>/silver_label/medgemma/`: `silver_labels.csv` (một dòng/
 `silver_label_confidence.csv` (thêm `decision, abstain_reason, evidence_text`; không giả confidence
 thành xác suất), `result.json`, `logs/`, `.state/`.
 
-Downstream:
-1. Config diagnosis đặt `supervision.require_silver_labels: true` và `supervision.silver_labels:
+Downstream (silver hiện là artifact dữ liệu; lưới baseline đặt `silver_targets: []`,
+`require_silver_labels: false`):
+1. Config muốn dùng silver đặt `supervision.require_silver_labels: true` và `supervision.silver_labels:
    silver_label/medgemma/silver_labels.csv` (tương đối với output root).
 2. Preflight (`audit_silver_table`): cột bắt buộc, status hợp lệ, accepted có value; mỗi
    `task.silver_targets` phải có ít nhất một dòng accepted; không hai dòng accepted cho cùng
@@ -513,9 +508,4 @@ Downstream:
 3. `CTPADataset` chỉ đọc `accepted`: binary → 0/1, categorical → index trong `values`
    (acuity: `acute`=0, `chronic`=1, `acute_on_chronic`=2, `uncertain`=3), continuous → số. Không có
    dòng accepted → NaN, `silver_valid=False` (bị mask).
-4. Loss (`source/engine/task_steps.py::task_loss_step`): `diag.global.silver_multitask` cộng
-   `silver_loss_weight` (0.2) × loss silver lên các head cùng tên; `diag.anatomy.silver.
-   {concat,late,moe}` gắn target vào branch heart/pa/lung qua `auxiliary_targets`
-   (`organ_auxiliary_loss`, trọng số 0.2 mỗi organ, `silver_loss_weight: 0.0` để không cộng hai
-   lần). `source/tasks/diagnosis/organ_targets.py` từ chối target gán sai branch hoặc cho hai branch.
-5. **Evaluation không bao giờ dùng silver** (`diagnosis_evaluation_targets` bỏ target trong `silver_targets`).
+4. **Evaluation không bao giờ dùng silver** (`diagnosis_evaluation_targets` bỏ target trong `silver_targets`).

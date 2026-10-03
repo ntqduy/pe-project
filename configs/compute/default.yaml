@@ -7,5 +7,5 @@ compute:
   precision: bf16
   distributed_backend: nccl
   # Four workers matches the current project host and avoids DataLoader oversubscription.
-  # Override per run with NUM_WORKERS=<n> in scripts/tool/run_ctfm_frozen.sh.
+  # Override per run with NUM_WORKERS=<n> (scripts/tool/run_baseline_grid.sh).
   num_workers: 4

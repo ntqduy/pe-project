@@ -825,8 +825,6 @@ def write_backbone_previews(
     for name in LEGACY_PREVIEW_FILES:
         (destination / name).unlink(missing_ok=True)
     stage = str((config.get("experiment") or {}).get("stage") or "")
-    if stage == "ablation":
-        stage = str((config.get("task") or {}).get("base_stage") or stage)
     if stage not in {"diagnosis", "prognosis"}:
         return {"status": "skipped", "reason": f"stage_{stage or 'unknown'}", "patients": 0, "errors": []}
     target = str((config.get("task") or {}).get("primary_target") or "pe_present")

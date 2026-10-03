@@ -24,8 +24,8 @@ training:
   gradient_accumulation: 1
 
 data:
-  # Pooled CT-FM features [513,1,1,1] kept in RAM (see configs/runs/01_foundation/
-  # 01_foundation/ct_fm_frozen/diagnosis.yaml); the preview still renders on the full feature grid.
+  # Pooled CT-FM features [513,1,1,1] kept in RAM, built once by
+  # scripts/diagnosis/baselines/prepare_ctfm_cache.sh; the preview renders on the full feature grid.
   manifest: manifests/ct_fm/diagnosis.csv
   file_column: pooled_path
   preload_inputs: true

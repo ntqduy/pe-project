@@ -13,12 +13,8 @@ warnings.filterwarnings(
 
 from torch import nn
 
-from source.components.encoders.ehr import EHREncoder
-from source.components.encoders.spesi import SpesiEncoder
 from source.components.encoders.image.registry import build_image_encoder
 from source.components.peft.freeze import apply_peft
-from source.tasks.diagnosis.model import DEFAULT_TARGETS, DiagnosisModel
-from source.tasks.prognosis.model import PrognosisModel
 
 
 # task.architecture of the 2D / 2.5D / 3D baseline zoo (source/model): encoder -> shared
@@ -79,68 +75,20 @@ def _build_baseline_classifier(
 
 
 def build_task_model(config: Mapping[str, Any]) -> tuple[nn.Module, dict[str, Any]]:
+    """The task model of a run: every trainable arm is a baseline classifier (source/model).
+
+    Encoder (2D / 2.5D slice-MIL, 3D, CT-FM LoRA or cached CT-FM features) -> shared projection
+    -> MLP or KAN head, for diagnosis and image-only prognosis.
+    """
     experiment = dict(config.get("experiment") or {})
     stage = str(experiment.get("stage"))
     model_config = dict(config.get("model") or {})
     model_config["data_mode"] = str((config.get("data") or {}).get("mode"))
     task = dict(config.get("task") or {})
-    if stage in {"ablation", "counterfactual"}:
-        stage = str(task.get("base_stage") or "")
-        if stage not in {"diagnosis", "prognosis"}:
-            raise ValueError(
-                f"{experiment.get('stage')} task.base_stage must be diagnosis or prognosis"
-            )
-    peft_report: dict[str, Any] = {"method": "none", "modified_modules": []}
-    if str(task.get("architecture") or "") == BASELINE_ARCHITECTURE:
-        return _build_baseline_classifier(config, stage, task, model_config)
-    if stage == "diagnosis":
-        targets = task.get("targets") or DEFAULT_TARGETS
-        if isinstance(targets, list):
-            targets = {name: 1 for name in targets}
-        encoder = build_image_encoder(model_config)
-        peft_report = apply_peft(encoder, dict(config.get("peft") or {"method": "full"}))
-        model = DiagnosisModel(
-            encoder,
-            targets=targets,
-            regions=tuple(task.get("regions", ("heart", "pa", "lung"))),
-            expert_dim=int(task.get("expert_dim", 128)),
-            hidden_dim=int(task.get("hidden_dim", 256)),
-            architecture=str(task.get("architecture", "soft_moe")),
-            organ_adapter=config.get("organ_adapter"),
-            fusion=config.get("fusion"),
-            auxiliary_targets=task.get("auxiliary_targets"),
-            auxiliary_default_source=str(task.get("auxiliary_default_source", "native")),
+    architecture = str(task.get("architecture") or "")
+    if architecture != BASELINE_ARCHITECTURE:
+        raise ValueError(
+            f"task.architecture={architecture!r} is not supported; every trainable run uses "
+            f"{BASELINE_ARCHITECTURE!r} (configs/components/baselines.yaml)"
         )
-    elif stage == "prognosis":
-        modalities = set(task.get("modalities") or ("image", "ehr", "spesi"))
-        image = build_image_encoder(model_config) if "image" in modalities else None
-        if image is not None:
-            peft_report = apply_peft(image, dict(config.get("peft") or {"method": "full"}))
-        ehr = EHREncoder(
-            int(task.get("ehr_input_dim", 1)),
-            int(task.get("ehr_hidden_dim", 64)),
-            int(task.get("ehr_output_dim", 64)),
-            include_missingness=bool(task.get("ehr_include_missingness", True)),
-            preprocessing=dict(config.get("clinical_preprocessing") or {}),
-        ) if "ehr" in modalities else None
-        spesi = SpesiEncoder(
-            int(task.get("spesi_input_dim", 1)),
-            int(task.get("spesi_hidden_dim", 16)),
-            int(task.get("spesi_output_dim", 32)),
-        ) if "spesi" in modalities else None
-        model = PrognosisModel(
-            image,
-            ehr,
-            spesi,
-            regions=tuple(task.get("regions", ("heart", "pa", "lung"))),
-            expert_dim=int(task.get("expert_dim", 128)),
-            hidden_dim=int(task.get("hidden_dim", 256)),
-            architecture=str(task.get("architecture", "soft_moe")),
-            organ_adapter=config.get("organ_adapter"),
-            fusion=config.get("fusion"),
-            targets=tuple((task.get("targets") or {task.get("primary_target", "mortality_30d"): 1}).keys()),
-            primary_target=str(task.get("primary_target", "mortality_30d")),
-        )
-    else:
-        raise ValueError(f"task model factory does not support stage={stage!r}")
-    return model, peft_report
+    return _build_baseline_classifier(config, stage, task, model_config)

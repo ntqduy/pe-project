@@ -40,14 +40,11 @@ tools/launch.py main()
     ├── source/engine/factory.build_task_model
     │   ├── components/encoders/image/registry.build_image_encoder
     │   │   ├── "ct_fm" / "ct_fm_features" -> model/3D_model/ctfm.py -> image/ct_fm.py
-    │   │   ├── "penet_style"              -> image/penet.py
     │   │   └── tên baseline zoo           -> model/registry.baseline_builders
     │   │        -> model/2D_model/*.py (-> builder.build_slice_mil_encoder) | model/3D_model/*.py
     │   ├── components/peft/freeze.apply_peft (-> lora.inject_lora)
-    │   └── baseline_classifier ? model/classifier.BaselineClassifier
-    │       : tasks/diagnosis/model.DiagnosisModel | tasks/prognosis/model.PrognosisModel
-    ├── source/engine/transfer.transfer_modules     (khi có lineage.source_checkpoint)
-    ├── _fit_clinical_preprocessor / _fit_feature_standardizer   (chỉ trên train)
+    │   └── model/classifier.BaselineClassifier   (task.architecture=baseline_classifier, khác -> lỗi)
+    ├── _fit_feature_standardizer                    (chỉ trên train)
     ├── source/distributed/setup.wrap_ddp
     ├── source/engine/trainer.Trainer.fit  (task_steps.task_loss_step -> tasks/*/losses;
     │                                       checkpoint.save_checkpoint_atomic: best.ckpt, last.ckpt)
@@ -61,13 +58,13 @@ tools/launch.py main()
 tools/launch.py --evaluate => tools/tasks/evaluate.py main()
 ├── resolve_cli_config -> require_preflight -> OutputManager
 ├── build_task_model -> load_checkpoint(strict=True)       (best.ckpt của run)
-├── tools/_common.build_dataset (validation, test) -> components/roi/masks.apply_counterfactual -> model
+├── tools/_common.build_dataset (validation, test) -> model
 ├── source/distributed/gather.gather_prediction_rows
 ├── metrics/result_table.select_threshold (validation) | _locked_external_threshold
 ├── metrics/result_table.metric_bundle -> classification | prognosis metrics + bootstrap
 ├── write_result_csv, write_predictions_csv
 ├── (--reference-predictions) metrics/paired.paired_patient_bootstrap
-├── write_backbone_previews (Grad-CAM)
+├── write_backbone_previews (Grad-CAM, visualize/{correct,incorrect}/)
 └── metrics/reporting.stard_ai_checklist | tripod_ai_checklist
 ```
 
@@ -98,21 +95,20 @@ tools/launch.py (silver) => tools/silver_labels/generate_silver_labels.py
 ### 2.4 Các luồng phụ
 
 ```text
-tools/launch.py (counterfactual) => tools/tasks/counterfactual.py
-    build_task_model -> load_checkpoint -> components/roi/masks.remove_roi
-    -> metrics/bootstrap + metrics/paired
-
 scripts/tool/run_baseline_grid.sh => tools/baselines/run_many.py
     => run_case.py (mỗi case một tiến trình / GPU slot)
         case_manifest -> source/data/experiment_splits.ExperimentSplits.materialize
+                      -> tools/baselines/fraction_subsets.py (exp02: xuất subset + check.json)
         => tools/preflight.py | run_status.py | launch.py | launch.py --evaluate
     => tools/baselines/summarize.py
 
 tools/tasks/zeroshot_penet.py -> components/encoders/image/penet_zeroshot -> imaging/penet_preview
 tools/tasks/zeroshot_radar.py => zeroshot_radar_worker.py   (trong conda env RADAR)
 
-scripts/tool/run_ctfm_frozen.sh => tools/data/build_ctfm_cache.py => preflight.py
-    => run_status.py => launch.py => launch.py --evaluate
+scripts/diagnosis/baselines/prepare_ctfm_cache.sh => tools/data/build_ctfm_cache.py
+    (một lần mỗi profile, trước mọi case ctfm_frozen_3d)
+
+tools/baselines/smoke_pipeline.py => smoke_data.py (dữ liệu tổng hợp) => run_case.py --smoke
 ```
 
 ## 3. Abstraction trung tâm
@@ -126,10 +122,10 @@ scripts/tool/run_ctfm_frozen.sh => tools/data/build_ctfm_cache.py => preflight.p
 | `require_preflight` | `source/data/preflight.py` | Cổng kiểm tra trước khi chạy (PROJECT, DATA, MODEL, SUPERVISION, LINEAGE, COMPUTE, OUTPUT); mọi CLI gọi trước khi ghi gì |
 | `BaseImageEncoder` | `source/components/encoders/image/base.py` | Hợp đồng của mọi image encoder: `forward_features` trả `ImageFeatures` (feature map + global embedding) |
 | `BaselineEncoder` | `source/model/base.py` | Bọc "core" của baseline zoo, thêm `IntensityAdapter` và báo cáo nạp pretrained weight |
-| `build_image_encoder` | `source/components/encoders/image/registry.py` | Ánh xạ `model.backbone` -> builder (CT-FM, PENet-style, toàn bộ zoo) |
-| `build_task_model` | `source/engine/factory.py` | Dựng model hoàn chỉnh từ config (`BaselineClassifier` / `DiagnosisModel` / `PrognosisModel` + PEFT); dùng bởi train, evaluate, counterfactual, Grad-CAM |
+| `build_image_encoder` | `source/components/encoders/image/registry.py` | Ánh xạ `model.backbone` -> builder (CT-FM, toàn bộ zoo) |
+| `build_task_model` | `source/engine/factory.py` | Dựng `BaselineClassifier` + PEFT từ config (kiến trúc trainable duy nhất); dùng bởi train, evaluate, Grad-CAM |
 | `Trainer` | `source/engine/trainer.py` | Vòng lặp chung: AMP, grad accumulation, DDP reduce, scheduler, early stopping, `history.csv`, checkpoint |
-| `CTPADataset` | `source/data/dataset.py` | Dataset trên manifest: `volume`, `masks`, `labels`, `label_valid`, tùy chọn `ehr`, `spesi`, `silver_labels` |
+| `CTPADataset` | `source/data/dataset.py` | Dataset trên manifest: `volume`, `labels`, `label_valid` (+ trường tùy chọn) |
 | `metric_bundle` | `source/metrics/result_table.py` | Metric + CI bootstrap cấp patient cho một split; dùng chung evaluate và zero-shot |
 
 ## 4. File quan trọng theo package
@@ -142,16 +138,13 @@ Cách chạy: [05_running_outputs.md](05_running_outputs.md).
 |---|---|
 | `run.py` | Menu theo tên experiment: đọc registry, in thông tin/kế hoạch, kiểm tra cờ scope, chuyển sang CLI đúng stage |
 | `tools/_common.py` | Parser chuẩn (`--config/--set/--gpus/--resume/--overwrite`), `resolve_cli_config`, `build_dataset`, `build_training_lineage`, `import_symbol` |
-| `tools/launch.py` | Chạy một experiment trên CPU/1 GPU/DDP: kiểm tra stage và scope, preflight, rồi gọi entrypoint (train, evaluate, silver, counterfactual) |
-| `tools/launch_parallel.py` | Chạy nhiều experiment độc lập theo wave trên các nhóm GPU (file YAML có mục `parallel`) |
+| `tools/launch.py` | Chạy một experiment trên CPU/1 GPU/DDP: kiểm tra stage và scope, preflight, rồi gọi entrypoint (train, evaluate, silver) |
 | `tools/preflight.py` | In báo cáo preflight JSON cho một config, exit 2 nếu có FAIL |
 | `tools/run_status.py` | Trạng thái một task run (`absent`, `incomplete`, `trained`, `evaluated`) và settings có khác config không |
-| `tools/build_summary.py` | Gom `result.json` thành bảng tóm tắt |
 | `tools/data/build_dataset.py` | Build dataset profile ([01_data_pipeline.md](01_data_pipeline.md)) |
 | `tools/data/build_ctfm_cache.py` | Chạy CT-FM frozen theo patch, lưu feature grid + pooled, viết `manifests/ct_fm/*.csv` |
 | `tools/data/build_split_manifests.py` | Manifest theo tỷ lệ train (exp02) cho baseline |
 | `tools/create_masks/generate_masks.py`, `tools/build_rois/build_rois.py`, `tools/silver_labels/generate_silver_labels.py` | CLI segmentation / ROI / silver: preflight, resume an toàn, ghi QC |
-| `tools/create_masks/refresh_previews.py` | Vẽ lại contact sheet segmentation từ mask đã có |
 
 ### 4.2 `tools/tasks/` và `tools/baselines/`
 
@@ -159,15 +152,14 @@ Train/evaluate: [03_training_evaluation.md](03_training_evaluation.md); các arm
 
 | File | Vai trò |
 |---|---|
-| `tools/tasks/train_task.py` | Train diagnosis/prognosis: dataset, model, fit preprocessor trên train, `Trainer`, epoch bundle, Grad-CAM, profile |
-| `tools/tasks/evaluate.py` | Suy luận validation/test, chọn threshold, metric + bootstrap CI, paired bootstrap, checklist STARD/TRIPOD |
-| `tools/tasks/counterfactual.py` | Xoá một ROI (heart/pa/lung/random ROI8) trên model frozen, so xác suất trước/sau |
-| `tools/tasks/score_baseline.py` | Chấm một cột điểm trong manifest (vd `spesi`) như baseline cố định |
-| `tools/tasks/gradcam_preview.py` | Dựng lại preview Grad-CAM của run đã đánh giá |
+| `tools/tasks/train_task.py` | Train diagnosis/prognosis: dataset, model, fit standardizer trên train, `Trainer`, epoch bundle, profile |
+| `tools/tasks/evaluate.py` | Suy luận validation/test, chọn threshold, metric + bootstrap CI, paired bootstrap (`--reference-predictions`), Grad-CAM preview, checklist STARD/TRIPOD |
 | `tools/tasks/zeroshot_penet.py`, `zeroshot_radar.py` | Zero-shot PENet / RADAR (RADAR gọi `zeroshot_radar_worker.py` trong env riêng) |
-| `tools/baselines/experiments.py` | Lưới model × head × fraction của exp01–03 (đọc `scripts/diagnosis/baselines/<exp>/experiment.yaml`) |
+| `tools/baselines/experiments.py` | Lưới model × head × fraction × variant của exp01–04 (đọc `scripts/diagnosis/baselines/<exp>/experiment.yaml`) |
 | `tools/baselines/run_case.py`, `run_many.py` | Một case (manifest fraction → preflight/train/evaluate) / cả lưới song song theo slot GPU |
+| `tools/baselines/fraction_subsets.py` | Xuất subset train exp02 theo seed ra `splits/data_fraction/seed_<s>/` + `check.json`; `--dir` kiểm lại một thư mục |
 | `tools/baselines/summarize.py`, `prepare_weights.py`, `smoke.py` | Bảng + biểu đồ kết quả / tải trước pretrained weight / một bước train thật cho từng arm |
+| `tools/baselines/smoke_data.py`, `smoke_pipeline.py` | Dataset tổng hợp nhỏ (không dữ liệu bệnh nhân) / chạy toàn pipeline trên nó (CPU được, `output/_smoke` hoặc `$PE_SMOKE_ROOT`) |
 
 ### 4.3 `source/utils/`, `source/data/`
 
@@ -177,7 +169,7 @@ Train/evaluate: [03_training_evaluation.md](03_training_evaluation.md); các arm
 | `utils/workers.py`, `seed.py`, `environment.py`, `logger.py` | Số worker theo CPU/RAM, seed, git state + phiên bản thư viện, `RunLogger` |
 | `data/paths.py` | `ProjectPaths` |
 | `data/manifests.py` | `read_rows`, audit manifest/report/silver/temporal holdout |
-| `data/dataset.py` | `CTPADataset` (đọc volume cache kèm kiểm sidecar, mask ROI, nhãn, EHR, sPESI, silver) |
+| `data/dataset.py` | `CTPADataset` (đọc volume cache kèm kiểm sidecar, nhãn) |
 | `data/preflight.py` | `run_preflight`, `require_preflight`, `checkpoint_lineage_errors` |
 | `data/experiment_splits.py` | Subset train cấp patient (stratify, lồng nhau, theo seed) cho exp02 |
 | `data/profiles/__init__.py` | Đọc dataset profile (YAML kế thừa), `require_active_profile`, `assert_shared_preprocessing` |
@@ -207,7 +199,6 @@ Train/evaluate: [03_training_evaluation.md](03_training_evaluation.md); các arm
 | `roi/registry.py` | 8 ROI (mã, tên, vai trò KEEP_ONLY/REMOVE_ROI) |
 | `roi/builder.py`, `masks.py` | Dựng ROI từ mask segmentation (union/dilate/subtract); phép toán mask |
 | `roi/random_controls.py` | ROI8: tịnh tiến cứng ROI tới vị trí ngẫu nhiên tái lập được trong cơ thể |
-| `roi/counterfactual.py` | `MaskingPolicy`: giá trị thay thế khi xoá/giữ ROI |
 
 ### 4.6 `source/silver/`, `source/clinical/`
 
@@ -217,8 +208,7 @@ Train/evaluate: [03_training_evaluation.md](03_training_evaluation.md); các arm
 | `silver/rules.py` | Luật regex xử lý section, mệnh đề, phủ định, không chắc chắn |
 | `silver/providers.py`, `extractor.py`, `medgemma.py` | Provider Hugging Face + prompt/parse JSON; hỏi một target mỗi lần theo hợp đồng JSON; `MedGemmaExtractor` |
 | `silver/schema.py`, `confidence.py`, `audit.py`, `qc.py` | Target + kiểu giá trị; ngưỡng confidence; bản ghi audit; QC |
-| `clinical/spesi.py` | `compute_spesi`, báo rõ thành phần thiếu |
-| `clinical/preprocessing.py`, `encoder.py` | `ClinicalPreprocessor` (impute + chuẩn hóa, fit trên train); `ClinicalEncoder` (MLP + chỉ báo missing) |
+| `clinical/spesi.py` | `compute_spesi`, báo rõ thành phần thiếu (dùng khi build dataset) |
 
 ### 4.7 `source/components/`
 
@@ -226,19 +216,13 @@ Chi tiết kiến trúc: [02_models.md](02_models.md).
 
 | File | Vai trò |
 |---|---|
-| `anatomy.py` | Encode CTPA một lần, pool feature map thành vector global/heart/PA/lung, qua adapter |
 | `targets.py` | `TargetSpec`, loss có mask cho đa nhiệm |
-| `adapters/organ.py` | `OrganAdapterBank`: adapter cho từng nhánh (bottleneck MLP, residual, LoRA) |
-| `adapters/standardization.py` | `PooledFeatureStandardizer`: z-score theo nhánh, fit trên train |
+| `adapters/standardization.py` | `PooledFeatureStandardizer`: z-score feature pooled, fit trên train |
 | `encoders/image/base.py`, `registry.py` | Hợp đồng `BaseImageEncoder`; `build_image_encoder` |
 | `encoders/image/ct_fm.py` | CT-FM: đổi hướng RAS↔SPL, thang HU, feature theo patch, `CachedCTFMEncoder` |
-| `encoders/image/penet.py`, `penet_zeroshot.py` | `penet_style` train từ đầu; nạp PENet đã phát hành + cửa sổ 32 lát cho zero-shot |
+| `encoders/image/penet_zeroshot.py` | Nạp PENet đã phát hành + cửa sổ 32 lát cho zero-shot |
 | `encoders/image/external.py` | Bọc encoder bên thứ ba sau khi kiểm tra API, nạp state file |
-| `encoders/ehr.py`, `spesi.py` | Nhánh EHR / sPESI cho prognosis |
-| `fusion/factory.py` | `build_fusion` theo `fusion.type`: `concat_mlp.py`, `soft_moe.py`, `late_logit.py` |
 | `peft/freeze.py`, `lora.py` | Chiến lược fine-tune (full, frozen, LoRA); `inject_lora` |
-| `roi/pooling.py`, `feature_extractor.py` | `mask_guided_pool` (hỗ trợ slice-MIL); `ROIFeatureExtractor` |
-| `roi/masks.py` | Counterfactual lúc chạy: `apply_counterfactual`, `remove_roi`, `keep_only_roi` |
 
 ### 4.8 `source/model/`, `source/tasks/`
 
@@ -255,9 +239,7 @@ Chi tiết kiến trúc: [02_models.md](02_models.md).
 | `model/3D_model/penet.py`, `ctfm.py` | PENet fine-tune từ weight PE; hai arm CT-FM (LoRA, frozen cached) |
 | `model/3D_model/_thirdparty.py` | Import module từ `third_party/repos` không sửa chúng |
 | `model/head/{factory,mlp,kan}.py` | Chọn head theo `head.type`; MLP; KAN (pykan vendored) |
-| `tasks/diagnosis/model.py` | `DiagnosisModel`: encoder chung -> adapter theo cơ quan -> fusion -> head; head phụ theo cơ quan |
-| `tasks/diagnosis/losses.py`, `organ_targets.py` | Loss chính có mask + loss phụ theo cơ quan; ánh xạ target phụ |
-| `tasks/prognosis/model.py`, `heads.py`, `losses.py` | `PrognosisModel` (thêm nhánh EHR, sPESI ở fusion); head mỗi endpoint; BCE có mask |
+| `tasks/diagnosis/losses.py` | `diagnosis_loss`: BCE / CE có mask theo target (prognosis dùng `targets.masked_multitask_loss`) |
 
 ### 4.9 `source/engine/`, `source/metrics/`, `source/distributed/`, `source/profiling/`
 
@@ -267,11 +249,10 @@ Chi tiết: [03_training_evaluation.md](03_training_evaluation.md).
 |---|---|
 | `engine/factory.py` | `build_task_model` |
 | `engine/trainer.py`, `schedulers.py` | `Trainer`; warm-up tuyến tính + cosine |
-| `engine/task_steps.py` | Loss một bước diagnosis/prognosis (gồm counterfactual input, silver/aux loss) |
-| `engine/checkpoint.py` | Lưu/nạp checkpoint atomic kèm lineage + SHA-256 |
+| `engine/task_steps.py` | Loss một bước diagnosis/prognosis |
+| `engine/checkpoint.py` | Lưu/nạp checkpoint atomic kèm lineage + SHA-256 (giữ trường hợp đồng `fold`, `fusion_type`, `organ_adapter_configuration`) |
 | `engine/experiment.py` | `OutputManager`, `prepare_resumable_run`, `run_output_id`, `compact_result` |
 | `engine/task_artifacts.py` | Epoch bundle (đường cong, log), `cleanup_task_run`, `write_backbone_previews` |
-| `engine/transfer.py` | Chép module (mặc định `image_encoder`) từ checkpoint nguồn |
 | `metrics/classification.py`, `prognosis.py`, `calibration.py` | Metric nhị phân, metric prognosis, calibration slope/intercept |
 | `metrics/bootstrap.py`, `paired.py` | Bootstrap theo patient; paired bootstrap so với reference |
 | `metrics/result_table.py` | `result.csv`, `predictions.csv`, chọn threshold, `metric_bundle` |
@@ -294,8 +275,8 @@ Mọi script `source scripts/tool/use_gcs_storage.sh`; nhiều script dùng thê
 | `scripts/data/silver_labels.sh` | `run.py run data.silver.medgemma` -> `tools/launch.py` |
 | `scripts/data/eda.sh` | `analysis/run_eda.py` |
 | `scripts/diagnosis/zero_shot/{penet,radar}.sh` | `tools/tasks/zeroshot_penet.py` / `zeroshot_radar.py` |
-| `scripts/diagnosis/foundation/ctfm_frozen.sh`, `scripts/prognosis/foundation/ctfm_frozen_{all,pe}.sh` | `scripts/tool/run_ctfm_frozen.sh` (`TASK`, `COHORT`) |
-| `scripts/diagnosis/baselines/exp0*/**/<model>.sh`, `run_all.sh` | `scripts/tool/run_baseline_grid.sh <exp> <model\|all\|dim:<dim>>` -> `tools/baselines/run_many.py` |
+| `scripts/diagnosis/baselines/exp0*/**/<model>.sh`, `run_all.sh`; `scripts/prognosis/baselines/exp0*.sh` (`--label`) | `scripts/tool/run_baseline_grid.sh <exp> <model\|all\|dim:<dim>>` -> `tools/baselines/run_many.py` |
+| `scripts/diagnosis/baselines/prepare_ctfm_cache.sh` | `tools/data/build_ctfm_cache.py` (cache CT-FM cho `ctfm_frozen_3d`) |
 | `scripts/diagnosis/baselines/{summarize,prepare_weights,smoke}.sh` | `tools/baselines/{summarize,prepare_weights,smoke}.py` |
 | `scripts/tool/use_gcs_storage.sh`, `_flags.sh` | (không gọi Python) đặt biến storage; parse boolean |
 

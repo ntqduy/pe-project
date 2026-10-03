@@ -229,24 +229,16 @@ def infer_compute_strategy(devices: Iterable[int]) -> str:
 
 DEFAULT_DATASET_PROFILE = "full_inspect"
 
-# Encoder initialization sources. These are the checkpoint kinds a downstream task may be
-# initialized from; the task model itself is identical across all of them, which is the
-# whole point -- the comparison is between representations, not between architectures.
-ENCODER_INIT_SOURCES = (
-    "pretrained",
-    "diagnosis",
-    "custom",
-)
+# Encoder initialization: every trainable arm starts from its public weights (or from
+# scratch with model.pretrained.enabled=false); no run starts from another task's checkpoint.
+ENCODER_INIT_SOURCES = ("pretrained",)
 _ENCODER_INIT_ALIASES = {
     "public": "pretrained",
     "published": "pretrained",
     "original": "pretrained",
-    "c_diagnosis": "diagnosis",
 }
 _ENCODER_INITIALIZATION = {
     "pretrained": "public",
-    "diagnosis": "C_diagnosis",
-    "custom": "custom",
 }
 
 
@@ -319,21 +311,14 @@ def _with_defaults(values: Mapping[str, Any], defaults: Mapping[str, Any]) -> di
 
 
 def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
-    """Turn ``encoder.init_source`` into the concrete checkpoint the stage will load.
-
-    Diagnosis, prognosis and the probes all consume an image encoder. Which weights that
-    encoder starts from is an experiment variable, not a code path: one task model, the
-    public backbone, the canonical diagnosis model, or an explicitly supplied custom
-    checkpoint.
+    """Record where the encoder starts from: its public weights (``init_source: pretrained``).
 
         encoder:
           backbone: ct_fm          # selects the registry entry (same key as model.backbone)
-          init_source: pretrained | diagnosis | custom
-          checkpoint: <explicit path, or null to use encoder.sources[init_source]>
+          init_source: pretrained
 
-    ``pretrained`` loads the public weights through the backbone contract and transfers
-    nothing; the other sources transfer ``lineage.transfer_modules`` out of a project
-    checkpoint. Either way the model built afterwards is the same model.
+    The public weights load through the backbone contract; nothing is transferred from another
+    run's checkpoint (an explicit ``encoder.checkpoint`` is rejected).
     """
     encoder = config.get("encoder")
     if not isinstance(encoder, dict):
@@ -388,28 +373,15 @@ def resolve_encoder_initialization(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(model, dict):
         raise ConfigError("model must be a mapping")
 
-    if source == "pretrained":
-        if checkpoint:
-            raise ConfigError(
-                "encoder.init_source=pretrained loads the public backbone weights; "
-                "it must not also name an adapted checkpoint"
-            )
-        lineage["source_checkpoint"] = None
-        lineage["source_experiment"] = None
-        lineage["initialization"] = _ENCODER_INITIALIZATION[source]
-        model["load_pretrained"] = True
-    else:
-        if not checkpoint:
-            raise ConfigError(
-                f"encoder.init_source={source} needs a checkpoint: set encoder.checkpoint "
-                f"or encoder.sources.{source}"
-            )
-        lineage["source_checkpoint"] = checkpoint
-        lineage["initialization"] = _ENCODER_INITIALIZATION[source]
-        experiments = dict(encoder.get("source_experiments") or {})
-        lineage["source_experiment"] = encoder.get("source_experiment") or experiments.get(source)
-        lineage.setdefault("transfer_modules", ["image_encoder"])
-        model.setdefault("load_pretrained", False)
+    if checkpoint:
+        raise ConfigError(
+            "encoder.init_source=pretrained loads the public backbone weights; "
+            "it must not also name an adapted checkpoint"
+        )
+    lineage["source_checkpoint"] = None
+    lineage["source_experiment"] = None
+    lineage["initialization"] = _ENCODER_INITIALIZATION[source]
+    model["load_pretrained"] = True
     return config
 
 

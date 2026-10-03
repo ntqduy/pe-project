@@ -1,9 +1,7 @@
 # `scripts/`
 
-> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
-
-The general launcher is still `run.py`, but the CT-FM frozen baseline also has explicit
-task wrappers. The wrappers only select a reviewed config/cohort; preprocessing and model
+The general launcher is still `run.py`; the baseline experiments and data stages also have
+explicit wrappers. The wrappers only select a reviewed config/cohort; preprocessing and model
 logic remain in `source/` and `tools/`.
 
 ```text
@@ -18,25 +16,20 @@ scripts/
 │   ├── zero_shot/
 │   │   ├── penet.sh            released PENet applied unchanged, no training
 │   │   └── radar.sh            released RADAR (abdominal-CT generalist) probed for PE, no training
-│   ├── foundation/
-│   │   └── ctfm_frozen.sh      CT-FM frozen + trainable MLP for PE diagnosis
 │   └── baselines/              the 2D / 2.5D / 3D baseline zoo (see baselines/README.md)
 │       ├── exp01_baselines/{2D,2_5D,3D}/   20 models, MLP head; one wrapper per model + run_all.sh
 │       ├── exp02_data_fraction/3D/         training-set size 25/50/75/100% (subsets per seed)
 │       ├── exp03_head_ablation/3D/         MLP vs KAN head
 │       ├── exp04_slice_ablation/{2D,2_5D}/ attention-MIL vs mean / max pooling vs middle slice
+│       ├── prepare_ctfm_cache.sh  CT-FM feature cache, once per profile (ctfm_frozen_3d)
 │       ├── prepare_weights.sh  fetch the pretrained weights of every arm once
 │       ├── smoke.sh            one bf16 train step per arm on GPU
 │       └── summarize.sh        rebuild the tables / plots from finished runs
 ├── prognosis/
-│   ├── baselines/              exp01..exp04 for prognosis (--label required), same grids
-│   └── foundation/
-│       ├── ctfm_frozen_all.sh  CT-FM frozen + MLP prognosis on all eligible patients
-│       └── ctfm_frozen_pe.sh   CT-FM frozen + MLP prognosis on PE-positive patients
+│   └── baselines/              exp01..exp04 for prognosis (--label required), same grids
 └── tool/                       shared code only; nothing here is one experiment
     ├── use_gcs_storage.sh      storage roots (PE_*); sourced by every script, see Storage
     ├── _flags.sh               is_true / is_false for on/off environment flags
-    ├── run_ctfm_frozen.sh      CT-FM prepare/train/evaluate behind the foundation wrappers
     └── run_baseline_grid.sh    env vars -> tools/baselines/run_many.py, behind every baselines wrapper
 ```
 
@@ -86,7 +79,7 @@ its name in `EXPERIMENT_NAMES` (`tools/baselines/experiments.py`), and a `run_al
 
 What goes where: a wrapper that builds or describes a data artifact lives in `data/`; a
 wrapper for one diagnosis or prognosis arm lives under `diagnosis/` or `prognosis/`, in a
-subfolder named for its family (`zero_shot/`, `foundation/`, `baselines/`); `tool/` holds only
+subfolder named for its family (`zero_shot/`, `baselines/`); `tool/` holds only
 code shared by several wrappers and is not an experiment by itself. File names say what runs,
 not how (`penet.sh`, not `run_zeroshot_penet.sh`): the folder already gives the stage and family.
 
@@ -127,11 +120,11 @@ moves a row between train/validation/test.
 
 ```bash
 python run.py list                      # every experiment, grouped by pipeline stage
-python run.py show  diag.anatomy.concat # what it is, what it needs, what it produces
-python run.py plan  diag.anatomy.concat # dependency chain: READY / MISSING / BLOCKED
-python run.py preflight diag.anatomy.concat --gpus 0
-python run.py dry   diag.anatomy.concat --gpus 0
-python run.py run   diag.anatomy.concat --gpus 0
+python run.py show  baseline.resnet18_3d # what it is, what it needs, what it produces
+python run.py plan  baseline.resnet18_3d # dependency chain: READY / MISSING / BLOCKED
+python run.py preflight baseline.resnet18_3d --gpus 0
+python run.py dry   baseline.resnet18_3d --gpus 0
+python run.py run   baseline.resnet18_3d --gpus 0   # train one run; grids: tools/baselines/run_case.py
 ```
 
 ## What the old environment variables map to
@@ -140,64 +133,38 @@ python run.py run   diag.anatomy.concat --gpus 0
 |---|---|
 | `DATASET=<profile>` | `--set data.profile=<profile>` |
 | `BACKBONE=<name>` | `--set model.backbone=<name>` |
-| `ENCODER_SOURCE=<stage>` | `--set encoder.init_source=<stage>` |
-| `ENCODER_CHECKPOINT=<path>` | `--set encoder.checkpoint=<path>` |
-| `ENCODER_EXPERIMENT=<id>` | `--set encoder.source_experiment=<id>` |
 | `SMOKE=1` | `--set training.epochs=1` |
 | `GPUS=0,1` | `--gpus 0,1` |
 | `ACTION=<verb>` | the `run.py` subcommand (`show`, `plan`, `preflight`, `dry`, `run`) |
 | `ALLOW_ALL=1` | `--allow-full` |
 | `MAX_CASES=N` / `MAX_REPORTS=N` / `PATIENT_ID=id` | `--max-cases N` / `--max-reports N` / `--patient-id id` |
 | `RESUME=1` / `OVERWRITE=1` | `--resume` / `--overwrite` |
-| `REBUILD_CACHE=1` (CT-FM wrappers) | `build_ctfm_cache.py --overwrite`; `OVERWRITE=1` no longer rebuilds the feature cache |
+| `REBUILD_CACHE=1` (`prepare_ctfm_cache.sh`) | `build_ctfm_cache.py --overwrite`; `OVERWRITE=1` never rebuilds the feature cache |
 | `SET="a=1 b=2"` | `--set a=1 --set b=2` |
 
-For the explicit CT-FM wrappers:
-
-```bash
-# Technical rehearsal: existing small profile, one epoch, one GPU.
-PROFILE=smoke_30 EPOCHS=1 GPUS=0 bash scripts/diagnosis/foundation/ctfm_frozen.sh
-
-# Full diagnosis: 100-epoch budget, early stop after 15 validation stalls, two GPUs
-# (the defaults; batch size 4 comes from the ct_fm_frozen_*.yaml configs, BATCH_SIZE=N overrides).
-PROFILE=full_inspect EPOCHS=100 EARLY_STOPPING=15 GPUS=0,1 \
-  bash scripts/diagnosis/foundation/ctfm_frozen.sh
-
-# Prognosis variants.
-PROFILE=full_inspect GPUS=0,1 bash scripts/prognosis/foundation/ctfm_frozen_all.sh
-PROFILE=full_inspect TARGET=12_month_PH GPUS=0,1 \
-  bash scripts/prognosis/foundation/ctfm_frozen_pe.sh
-```
-
-`ACTION` for these wrappers is `prepare`, `train`, `evaluate`, `all`, `preflight`, or
-`dry`. `all` prepares the CT-FM cache, trains the MLP, then evaluates the untouched test
-split. The task output is intentionally compact: one `epoch_<EPOCHS>/` folder per training
-budget, so `EPOCHS=1` and `EPOCHS=30` of the same run sit side by side and only repeating a
-budget is an output collision (`OVERWRITE=1` replaces just that folder). Each folder holds
-`resolved_config.yaml`, `result.json`, `checkpoint/{best.ckpt,last.ckpt}`, `logs.txt`,
-`result.csv`, `predictions.csv`, `training_curves.png`, and a validation-only `preview/` for up
-to five patients: per patient an offline `.html` Grad-CAM viewer (every input slice as CT |
-CT + CAM, opacity, 8-slice top-CAM montage) and a `.png` summary; see
-`docs/03_training_evaluation.md` (Grad-CAM preview). `python tools/tasks/gradcam_preview.py
---run-dir <run>` rebuilds it for an evaluated run without re-evaluating.
-`result.csv` has one row per target and split (`train`, `validation`, `test`) with the same
-columns in every run, including zero-shot PENet (`n_pos`/`n_neg`, AUROC/AUPRC, the
-validation-selected `threshold` and its `threshold_rule`, threshold metrics, and a `note`
-explaining every empty cell); only the test row carries patient-bootstrap CIs. For prognosis
-this includes all seven endpoints plus calibration columns. `logs.txt` holds the training log
+A baseline case (`tools/baselines/run_case.py`, behind every `exp0*` wrapper) writes one
+`epoch_<E>/` folder per training budget under
+`<outputs>/<family>/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>[__v<variant>]/official_seed<S>/`,
+so `EPOCHS=1` and `EPOCHS=100` of the same case sit side by side (`OVERWRITE=1` replaces just
+that folder). Each folder holds `resolved_config.yaml`, `result.json`,
+`checkpoint/{best.ckpt,last.ckpt}`, `logs.txt`, `result.csv`, `predictions.csv`,
+`training_curves.png` and `visualize/{correct,incorrect}/`: Grad-CAM of the 3 most confident
+correct and 3 most confident wrong **test** cases, per case an offline `.html` viewer (every
+input slice as CT | CT + CAM, opacity, top-CAM montage), a `.png` summary and NIfTI
+`_ct.nii.gz` / `_gradcam.nii.gz`; see `docs/03_training_evaluation.md` (Grad-CAM preview).
+`ACTION=evaluate` rebuilds it. `result.csv` has one row per target and split (`train`,
+`validation`, `test`) with the same columns in every run, including zero-shot PENet
+(`n_pos`/`n_neg`, AUROC/AUPRC, the validation-selected `threshold` and its `threshold_rule`,
+threshold metrics, and a `note` explaining every empty cell); only the test row carries
+patient-bootstrap CIs. Prognosis adds calibration columns. `logs.txt` holds the training log
 followed by the evaluation section (thresholds, per-split case counts, warnings, final test
 block); launcher command lines are not stored there. Column meanings:
-`docs/05_running_outputs.md`.
-Diagnosis reports AUROC/AUPRC, sensitivity, specificity, F1, Brier and
-the validation-selected threshold; prognosis reports the same plus calibration metrics and
-a calibration curve. Prognosis runs default to all seven endpoints; set `TARGET` to run
-one endpoint independently, with a separate output ID. Early stopping selects the best
-checkpoint using negative validation loss; the final clinical metrics are computed only
-afterward by `evaluate.py` on the test split. CT preprocessing QC counts are in
-`data_quality.md` and the CT-FM cache's `dataset.json`; failure ID CSVs appear only
-when cases fail. QC is not mixed into task clinical metrics.
+`docs/05_running_outputs.md`. `best.ckpt` is the epoch with the highest validation AUROC; the
+final clinical metrics are computed only afterward by `evaluate.py` on the test split. CT
+preprocessing QC counts are in `data_quality.md` and the CT-FM cache's `dataset.json`;
+failure ID CSVs appear only when cases fail. QC is not mixed into task clinical metrics.
 
-Progress on long runs: `prepare` prints `N/total computed (s/study, ~left, failed)` every 25
+Progress on long runs: `prepare_ctfm_cache.sh` prints `N/total computed (s/study, ~left, failed)` every 25
 studies (into `<derived>/datasets/<profile>/logs.txt`). Training and evaluation log a line at
 most once a minute per pass (`epoch 3/50 train 2410/18900 batches (…, ~8.8 min left)
 loss=…`, the same for `validation`, `epoch AUROC pass train|validation` and `evaluate
@@ -205,11 +172,10 @@ train|validation|test`) plus a `run progress` line per epoch with an upper bound
 remaining epochs; passes shorter than a minute stay silent, so smoke logs look as before.
 `PE_PROGRESS_EVERY_SEC=30` changes the interval. While training runs, follow
 `epoch_<EPOCHS>/logs/run.log` (it becomes `logs.txt` when training ends; evaluation then
-appends to `logs.txt`). `training.record_epoch_auc: true` (the CT-FM default) adds an
-inference pass over train and validation every epoch for the AUROC curves; with pooled
-inputs (below) that pass is cheap, with `FEATURE_INPUT=grid` it roughly doubles epoch time.
+appends to `logs.txt`). `training.record_epoch_auc: true` adds an inference pass over train
+and validation every epoch for the AUROC curves (`EPOCH_AUC=0` skips the train pass).
 
-Workers adapt to the machine. `WORKERS` (prepare's preprocessing processes) and
+Workers adapt to the machine. `WORKERS` (the CT-FM cache's preprocessing processes) and
 `NUM_WORKERS` (train/evaluate DataLoader workers) default to `auto`: sized from the CPU count
 and the RAM free at start (`source/utils/workers.py`; measured budgets 2 GB per
 preprocessing worker, 0.5 GB per loader worker, 4 GB kept for the main process). A number
@@ -218,20 +184,24 @@ is an upper bound: when free memory cannot hold it the run uses fewer and logs w
 therefore fits the 4-vCPU/15 GB VM (≈3 preprocessing workers when idle) and a 16-vCPU/64 GB
 one (≈15). Evaluation now also loads with workers (it used none).
 
-Pooled features. `prepare` writes, next to each `features/<study>.npy` grid, a pooled copy
-`pooled/<study>.npy` (float32 `[513, 1, 1, 1]` + sidecar): the body-weighted mean the MLP
-takes from the grid, plus a weight channel of 1, so the unchanged model reads it as a
-one-cell grid. `manifests/ct_fm/*.csv` gain a `pooled_path` column, and the three frozen
-arms (`ct_fm_frozen_{diagnosis,prognosis_all,prognosis_pe}.yaml`) train and evaluate on it
-with `data.preload_inputs: true`: all ~2 KB files are read once into RAM instead of
-re-reading 5.9 MB per study per pass. Previews still render on the grid and check their
-forward pass against the pooled probabilities. Checks on smoke_30: a fixed checkpoint gives
-the same logits on grid and pooled inputs (max difference < 1e-6); retraining diagnosis
-reproduced every loss and prediction; retraining prognosis drifted by at most 6e-4 in
-probability (float rounding amplified by Adam, the same order as changing GPU).
-`FEATURE_INPUT=grid` reads the grids as before; the anatomy arms always use the grid. A
-cache built before pooling existed gets its pooled copies from `ACTION=prepare` without
-recomputing CT-FM (train/evaluate refuse a manifest without `pooled_path` and say so).
+## CT-FM feature cache (`ctfm_frozen_3d`)
+
+```bash
+bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh                         # full_inspect, cuda:0
+PROFILE=smoke_30 GPUS='' bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh  # CPU
+VERIFY_CACHE=1 bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh          # re-check every cached study
+bash scripts/diagnosis/baselines/exp01_baselines/3D/ctfm_frozen_3d.sh          # then the arm itself
+```
+
+Run it once per dataset profile before any `ctfm_frozen_3d` case. It wraps
+`tools/data/build_ctfm_cache.py`, never creates a split (it reads the profile's
+official-split manifests), and writes per-study `features/<study>.npy` grids plus pooled
+copies `pooled/<study>.npy` (float32 `[513, 1, 1, 1]`: the body-weighted mean plus a weight
+channel) and `manifests/ct_fm/*.csv` with a `pooled_path` column. `ctfm_frozen_3d` trains
+and evaluates on the pooled copies with `data.preload_inputs: true`. A finished cache is
+recognised in seconds; an unfinished one resumes. `REBUILD_CACHE=1` recomputes every study
+(~20 h on `full_inspect`); `WORKERS` sizes the preprocessing processes. Progress goes to
+`<derived>/datasets/<profile>/logs.txt`.
 
 ## Segmentation, ROI and silver labels
 
@@ -252,7 +222,7 @@ output-affecting setting changed since the run started (recorded in the run's
 `resume_settings.json`; the error names the changed keys): rerun with `OVERWRITE=1`, restore
 the settings, or use another experiment id.
 
-Generation stages (dataset, segmentation, ROI, silver labels, counterfactual) still need an
+Generation stages (dataset, segmentation, ROI, silver labels, zero-shot) still need an
 explicit scope: pass `--max-cases N`, `--patient-id <id>` or `--allow-full`. A training stage
 has no per-case limit — its scope *is* the dataset profile, so rehearse on
 `--set data.profile=test_500_sample` and use `preflight` / `dry` to check a run without
@@ -310,7 +280,7 @@ and `OVERWRITE` are the other knobs. Pass `RESTRICT_TO` whenever the row has to 
 the same table as an arm that is not computable for every case.
 
 Output: `outputs/diagnosis/DX_zeroshot_penet__ds_<profile>/` with `result.csv` (validation and
-test rows, same columns as the CT-FM `result.csv`, so the tables can be stacked and compared),
+test rows, same columns as every trained arm's `result.csv`, so the tables can be stacked and compared),
 `predictions.csv`, `logs.txt`, `result.json` and `resolved_config.yaml`. An existing run is
 never overwritten silently; re-run with `OVERWRITE=1`. `logs.txt` gets a
 `scored N/total (s/study, ~h left)` line every 25 studies and one line per skipped study;
@@ -356,27 +326,16 @@ studies: RADAR's input with its pulmonary-artery mask, TP/TN/FP/FN in the file n
 
 ## Sweeps
 
-Matrix and ablation sweeps were loops over config overrides, not separate code paths.
-Write the loop inline:
+Sweeps are loops over flags, not separate code paths. A prognosis outcome sweep:
 
 ```bash
-for V in global_only global_heart global_pa global_lung full_moe full_no_router; do
-  python run.py run ablation.arch.$V --set data.profile=full_inspect --gpus 0
+for L in 1_month_mortality 12_month_mortality 12_month_PH; do
+  bash scripts/prognosis/baselines/exp01_baselines.sh --label "$L" --cohort pe --gpus 0,1
 done
 ```
 
-For a cohort × endpoint sweep, drive the config directly and give each cell its own
-output directory:
-
-```bash
-for CH in PE_positive all_patient; do
-  for T in 1_month_mortality 12_month_mortality 12_month_PH; do
-    python tools/tasks/train_task.py \
-      --config configs/runs/03_prognosis/modality/image_ehr.yaml \
-      --set data.cohort=$CH --set data.ehr_profile=EHR_0_h --set task.primary_target=$T \
-      --set experiment.output_id=$CH/EHR_0_h/$T/image_clinical
-  done
-done
-```
+`run_case.py` changes the manifest, `data.cohort`, `data.label_columns`, `task.primary_target`
+and `task.targets` together, and each (cohort, outcome) gets its own
+`prognosis_<cohort>_<label>/` folder.
 
 See [docs/04_experiments.md](../docs/04_experiments.md) for the full result-table recipes.

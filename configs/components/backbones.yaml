@@ -226,28 +226,3 @@ _presets_:
         # SLICE_ORDER; check it with CHECK_SLICE_ORDER=1 before changing).
         slice_order: inferior_to_superior
         pretrained: {enabled: true, required: true, path: third_party/weights/penet_best.pth.tar}
-
-  ct_fm:
-    # Select the ct_fm entry of the shared backbone registry.
-    #
-    # The contract itself lives in registry.yaml; this file only says which one to use, and
-    # records that choice as the run's baseline so that overriding `model.backbone` gives the
-    # run its own output directory instead of overwriting this one.
-    _base_:
-      - backbones.yaml#registry
-    model:
-      backbone: ct_fm
-    experiment:
-      baseline_backbone: ct_fm
-
-  ct_fm_features:
-    # Select precomputed CT-FM features (see the registry entry). Used by the frozen CT-FM
-    # runs in configs/runs/01_foundation; baseline_backbone keeps their output ids unchanged.
-    _base_:
-      - backbones.yaml#registry
-    model:
-      backbone: ct_fm_features
-    experiment:
-      baseline_backbone: ct_fm_features
-
-

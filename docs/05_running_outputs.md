@@ -1,7 +1,5 @@
 # 05. Chạy pipeline và output
 
-> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
-
 **Đọc khi:** ngồi vào máy (VM) để chạy thật, hoặc mở một thư mục output và cần biết mỗi file là gì.
 
 **Code chính:** `run.py`, `tools/launch.py`, `scripts/tool/{use_gcs_storage,_flags}.sh`, `configs/paths.yaml`, `source/engine/{experiment,task_artifacts}.py`, `source/metrics/result_table.py`
@@ -24,7 +22,7 @@ gcsfuse --implicit-dirs --only-dir Stanford_INSPECT_dataset pe-study /mnt/Stanfo
 | `output_root` | `/mnt/pe-project/outputs/pe-project/outputs` | không: config thắng |
 | `cloud_root` | `/mnt/pe-project/outputs` | không: config thắng `PE_CLOUD_ROOT` |
 
-`PE_LOCAL_CACHE_ROOT` (tuỳ chọn) đổi cache phía code, mặc định `<repo>/cache`. Nên export `PE_CLOUD_ROOT`: `run.py` cảnh báo khi thiếu, và vài config dùng `${PE_CLOUD_ROOT}` (vd `lineage.source_checkpoint` của `anatomy.remove_*`).
+`PE_LOCAL_CACHE_ROOT` (tuỳ chọn) đổi cache phía code, mặc định `<repo>/cache`. Nên export `PE_CLOUD_ROOT`: `run.py` cảnh báo khi thiếu, và vài config dùng `${PE_CLOUD_ROOT}`.
 
 `scripts/tool/use_gcs_storage.sh` đặt `PE_CLOUD_ROOT`, `PE_CLOUD_PROJECT_ROOT`, `PE_RAW_INSPECT_ROOT`, `PE_DERIVED_ROOT`; mọi script trong `scripts/` tự `source` nó. Để có cùng biến khi gọi `python run.py`:
 
@@ -35,15 +33,15 @@ gcloud storage rsync --recursive /mnt/pe-project/outputs gs://pe-study/pe-storag
 
 ## 2. `run.py` và quy tắc scope
 
-Lệnh: `list`, `show`, `plan`, `preflight`, `dry` (in lệnh launch), `run`, ví dụ `python run.py run diag.anatomy.concat --gpus 0,1`. Cờ truyền qua: `--gpus`, `--set KEY=VALUE` (lặp được), `--resume` | `--overwrite`, và một cờ scope.
+Lệnh: `list`, `show`, `plan`, `preflight`, `dry` (in lệnh launch), `run`, ví dụ `python run.py run baseline.resnet18_3d --gpus 0,1`. Cờ truyền qua: `--gpus`, `--set KEY=VALUE` (lặp được), `--resume` | `--overwrite`, và một cờ scope.
 
 | Stage | Scope bắt buộc | Cờ hợp lệ |
 |---|---|---|
 | dataset | có | `--max-cases`, `--allow-full` |
-| segmentation, roi, counterfactual | có | `--patient-id`, `--max-cases`, `--allow-full` |
+| segmentation, roi | có | `--patient-id`, `--max-cases`, `--allow-full` |
 | silver | có | `--patient-id`, `--max-reports`, `--allow-full` |
 | zero-shot (`runner`) | có | `--max-cases`, `--allow-full` |
-| diagnosis / prognosis / ablation (training) | **không** (scope = dataset profile) | không nhận cờ scope |
+| diagnosis / prognosis (training) | **không** (scope = dataset profile) | không nhận cờ scope |
 
 `dry` không dùng được cho data stage và zero-shot; dùng `preflight`.
 
@@ -69,7 +67,7 @@ Cả ba profile chạy đúng một code path, chỉ cohort khác nhau.
 
 Trước mỗi bước lớn: `plan`, `preflight`, `dry <exp> --set training.epochs=1`; kiểm tra preview/QC/log của bước nhỏ rồi mới chạy bước lớn. Không sửa `status` trong registry để vượt entry `blocked`.
 
-Phụ thuộc: dataset → segmentation → ROI → `diag.anatomy.*`, `ablation.arch.*` → `anatomy.remove_*`; dataset → silver → `diag.*.silver.*`; dataset → CT-FM cache → `foundation.ct_fm_frozen.*`; còn lại chỉ cần dataset.
+Phụ thuộc: dataset → segmentation → ROI; dataset → silver; dataset → CT-FM cache (`prepare_ctfm_cache.sh`) → `ctfm_frozen_3d`; mọi baseline khác và zero-shot chỉ cần dataset.
 
 ## 5. Script theo stage
 
@@ -100,67 +98,37 @@ PROFILE=smoke_30 MAX_REPORTS=10 GPUS=0 bash scripts/data/silver_labels.sh
 
 Config silver có `variant_stamp: false`: **mọi profile ghi chung** `silver_label/medgemma/`; đổi profile trên cùng thư mục thì `config_hash` khác và báo collision, phải `OVERWRITE=1` (xoá cả cache).
 
-**Stage 3: foundation và zero-shot.**
+**Stage 3: zero-shot.**
 
 ```bash
-PROFILE=smoke_30 EPOCHS=1 GPUS=0 bash scripts/diagnosis/foundation/ctfm_frozen.sh      # prognosis: scripts/prognosis/foundation/ctfm_frozen_{all,pe}.sh
 CHECK_SLICE_ORDER=1 bash scripts/diagnosis/zero_shot/penet.sh      # bắt buộc chạy trước; sau đó SLICE_ORDER=<hướng thắng>
 PROFILE=smoke_30 MAX_CASES=5 bash scripts/diagnosis/zero_shot/radar.sh
 ```
 
-CT-FM wrapper (driver `scripts/tool/run_ctfm_frozen.sh`): `ACTION` = `prepare` | `train` | `evaluate` | `all` (mặc định) | `preflight` | `dry`. `prepare` chạy `tools/data/build_ctfm_cache.py` (một lần mỗi profile; `REBUILD_CACHE=1`, `VERIFY_CACHE=1`); `OVERWRITE=1` chỉ thay `epoch_<EPOCHS>/`. Bước đã xong được bỏ qua (`tools/run_status.py`). Bốn arm `foundation.ct_fm_frozen.anatomy_*` không có wrapper: `python run.py run <name> --gpus 0` (cần cache CT-FM và ROI). RADAR cần conda env riêng (`RADAR_PYTHON`), resume được bằng `RESUME=1`; PENet thì không ([`scripts/README.md`](../scripts/README.md)).
+RADAR cần conda env riêng (`RADAR_PYTHON`), resume được bằng `RESUME=1`; PENet thì không ([`scripts/README.md`](../scripts/README.md)).
 
-**Stage 4: diagnosis và baseline zoo.**
-
-```bash
-python run.py run diag.global.single --gpus 0
-python run.py run diag.anatomy.concat --gpus 0,1
-```
-
-`run.py run` chỉ **train**. Metric test kèm CI do bước evaluate tạo ra; lặp lại đúng các `--set` đã dùng khi train:
+**Stage 4: baseline zoo (diagnosis + prognosis).**
 
 ```bash
-python tools/launch.py --config configs/runs/02_diagnosis/anatomy/single_concat.yaml --evaluate --allow-full --gpus 0
-# hoặc một tiến trình: python tools/tasks/evaluate.py --config <cùng config> --allow-full
+bash scripts/diagnosis/baselines/prepare_weights.sh                               # một lần, trước khi chạy song song
+bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh                            # cache CT-FM cho ctfm_frozen_3d (một lần mỗi profile)
+python tools/baselines/smoke_pipeline.py                                          # toàn pipeline trên dữ liệu tổng hợp (CPU, output/_smoke)
+PROFILE=smoke_30 EPOCHS=1 bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh
+GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh          # exp02/03/04 tương tự
+bash scripts/prognosis/baselines/exp01_baselines.sh --label 12_month_PH --gpus 0  # prognosis, --label bắt buộc
 ```
 
-Arm anatomy-aware trên profile khác `full_inspect` phải trỏ tới run ROI của profile đó (preset `configs/components/anatomy.yaml` cố định run ROI của `full_inspect`):
+Driver `scripts/tool/run_baseline_grid.sh` (`--task --label --cohort --seeds --gpus --runs-per-gpu --variants --heads --fractions --dry-run`) → `tools/baselines/run_many.py` → `run_case.py` (prepare → train → evaluate, bỏ qua case đã xong). Một run đơn qua `run.py run baseline.<model>` chỉ **train**; evaluate gọi riêng (`tools/launch.py --config <cùng config> --evaluate --allow-full`). Chi tiết: [`scripts/diagnosis/baselines/README.md`](../scripts/diagnosis/baselines/README.md).
 
-```bash
-python run.py run diag.anatomy.concat --gpus 0 --set data.profile=test_500_sample \
-  --set data.roi_manifest=roi/ROI_anatomy_and_controls__ds_test_500_sample/roi_manifest.csv
-```
-
-Baseline zoo (driver `scripts/tool/run_baseline_grid.sh`): `bash scripts/diagnosis/baselines/{prepare_weights,smoke,summarize}.sh`, `GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh`, hoặc một model: `PROFILE=smoke_30 EPOCHS=1 bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh`. Chi tiết: [`scripts/diagnosis/baselines/README.md`](../scripts/diagnosis/baselines/README.md).
-
-**Stage 5: prognosis** (chỉ `prog.spesi`, `prog.image` ready).
-
-```bash
-python run.py run prog.image --gpus 0
-# sPESI không train: chấm trên cùng danh sách ca (--restrict-to .../cache/full_inspect/clinical/spesi_evaluable.csv)
-python tools/tasks/score_baseline.py --config configs/runs/03_prognosis/modality/spesi.yaml --score-column spesi --allow-full \n  --restrict-to ${PE_DERIVED_ROOT}/cache/full_inspect/clinical/spesi_evaluable.csv
-```
-
-**Stage 6: anatomy analysis.**
-
-```bash
-for V in global_only global_heart global_pa global_lung full_moe full_no_router; do python run.py run ablation.arch.$V --gpus 0; done
-python run.py run anatomy.remove_pa --gpus 0 --patient-id <PATIENT_ID>   # smoke; thêm --allow-full cho toàn bộ
-```
-
-`anatomy.remove_*` đọc `lineage.source_checkpoint` = `${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/epoch_50/checkpoint/best.ckpt`. Train `diag.anatomy.concat` với ngân sách epoch/profile khác thì phải `--set lineage.source_checkpoint=<path>` (và `data.roi_manifest` như trên).
-
-**Tổng hợp:** `python tools/build_summary.py` (gom mọi `result.json`; output root lấy từ `PE_CLOUD_ROOT` hoặc `--output-root`) và `python tools/baselines/summarize.py --exp exp01_baselines --profile full_inspect`.
+**Tổng hợp:** `python tools/baselines/summarize.py --exp exp01_baselines --profile full_inspect` (chạy tự động sau mỗi grid; `bash scripts/diagnosis/baselines/summarize.sh`).
 
 ## 6. Song song và multi-GPU
 
-Chạy đồng thời được miễn input đã có và **không hai job ghi cùng một run directory** (thứ tự phụ thuộc ở mục 4). Khác profile/backbone/init thì id khác (stamping); khác `seed` thì va collision; silver không stamp profile.
+Chạy đồng thời được miễn input đã có và **không hai job ghi cùng một run directory** (thứ tự phụ thuộc ở mục 4). Khác profile/backbone/init thì id khác (stamping); khác `seed` qua `run.py` thì va collision (lưới baseline tách `official_seed<S>/`); silver không stamp profile.
 
-Nhiều experiment trên một máy nhiều GPU: `tools/launch_parallel.py --config sweep.yaml --dry-run`, với `sweep.yaml` có `parallel: {enabled, devices: [0,1,2,3], gpus_per_job, jobs: [{config: ...}]}` (mỗi job một config khác nhau; `args` chỉ nhận cờ scope và `--resume`, không nhận `--set`).
-
-- Train/evaluate diagnosis, prognosis, ablation: DDP một process mỗi GPU, `--gpus 0,1` → `torchrun --standalone --nproc-per-node=2` (`tools/launch.py`, `source/distributed/launcher.py`); `CUDA_VISIBLE_DEVICES` là GPU vật lý, child nhận `compute.devices` logic `[0,1]`.
+- Train/evaluate diagnosis, prognosis: DDP một process mỗi GPU, `--gpus 0,1` → `torchrun --standalone --nproc-per-node=2` (`tools/launch.py`, `source/distributed/launcher.py`); `CUDA_VISIBLE_DEVICES` là GPU vật lý, child nhận `compute.devices` logic `[0,1]`.
 - Silver: chia report theo rank (mỗi rank load MedGemma, kiểm tra VRAM). Segmentation: chia study cho từng GPU, không DDP. ROI: CPU worker (`roi.workers`), `--gpus` bị bỏ qua.
-- Baseline zoo: pool GPU qua `GPUS`, `JOBS_PER_GPU`, `GPUS_PER_JOB` (`scripts/tool/run_baseline_grid.sh`).
+- Baseline zoo: pool GPU qua `GPUS`, `JOBS_PER_GPU` (`--runs-per-gpu`), `GPUS_PER_JOB` (`scripts/tool/run_baseline_grid.sh`).
 
 `GPUS=` rỗng (hoặc không truyền `--gpus`) chạy CPU.
 
@@ -174,15 +142,13 @@ Nhiều experiment trên một máy nhiều GPU: `tools/launch_parallel.py --con
 │   └── cache/<profile>/                       cache nặng: volume, CT-FM feature, clinical
 └── pe-project/outputs/                        <output_root>: mọi run
     ├── segmentation/  roi/  silver_label/
-    ├── diagnosis/  prognosis/  counterfactual/
-    ├── ablation/{architecture,ehr}/
-    ├── EDA/<profile>/                         analysis/run_eda.py
-    └── summary/                               tools/build_summary.py
+    ├── diagnosis/  prognosis/                 gồm BASE/<profile>/<task>/ của lưới baseline
+    └── EDA/<profile>/                         analysis/run_eda.py
 ```
 
 Thư mục `output/` ở gốc repo là bản sao cục bộ cùng layout. Đường dẫn một run: `<output_root>/<FAMILY_PATHS[experiment.family]>/<output_id hoặc id>[/epoch_<training.epochs>]` (`OutputManager.run_dir()`).
 
-Family → thư mục: `segmentation`/`roi`/`silver` → `segmentation/`, `roi/`, `silver_label/`; `diagnosis`, `prognosis`, `counterfactual` cùng tên (diagnosis gồm cả zero-shot và baseline zoo `diagnosis/BASE/`); `architecture_ablation`/`ehr_ablation` → `ablation/architecture/`, `ablation/ehr/`. Run `01_foundation` nằm trong `diagnosis/`/`prognosis/`. Id có thể mang hậu tố stamp, ví dụ `diagnosis/DX_ctfm_frozen__ds_smoke_30/epoch_1/`.
+Family → thư mục: `segmentation`/`roi`/`silver` → `segmentation/`, `roi/`, `silver_label/`; `diagnosis`, `prognosis` cùng tên (diagnosis gồm cả zero-shot và baseline zoo `diagnosis/BASE/`). Id có thể mang hậu tố stamp, ví dụ `diagnosis/DX_base_resnet18_3d__ds_smoke_30/epoch_1/`. Thư mục cũ `DX_ctfm_frozen*` / `PR_ctfm_frozen_*` trên bucket do đường code đã gỡ sinh ra, chỉ còn giá trị lịch sử.
 
 ## 8. Stage 0, segmentation, ROI, silver
 
@@ -214,19 +180,19 @@ Manifest luôn có `patient_id, study_id, split, image_path`; `split` ∈ `train
 
 ## 9. Run train + evaluate: `epoch_<E>/`
 
-Áp dụng cho diagnosis, prognosis, ablation, CT-FM frozen, baseline zoo. Thư mục đặt theo **ngân sách** `training.epochs` (không phải số epoch thực chạy): `EPOCHS=1` và `EPOCHS=30` của cùng id là hai run độc lập.
+Áp dụng cho mọi run diagnosis / prognosis (baseline zoo). Thư mục đặt theo **ngân sách** `training.epochs` (không phải số epoch thực chạy): `EPOCHS=1` và `EPOCHS=30` của cùng id là hai run độc lập.
 
 ```text
 <family>/<id>/epoch_<E>/
 ├── resolved_config.yaml     config sau merge + --set + env + validate (có config_hash)
-├── checkpoint/              best.ckpt (primary_val_metric cao nhất; mặc định −val_loss), last.ckpt
+├── checkpoint/              best.ckpt (primary_val_metric cao nhất; baseline: val AUROC), last.ckpt
 ├── history.csv  training_curves.png   (train_task.py)
 ├── logs.txt                 log train, evaluate ghi nối tiếp
 ├── result.json              payload máy đọc (train tạo, evaluate cập nhật)
 ├── result.csv               bảng metric cho người đọc                  (evaluate.py)
 ├── predictions.csv          xác suất từng ca                           (evaluate.py)
 ├── reporting_checklist.json STARD-AI (diagnosis) / TRIPOD-AI (prognosis)
-├── preview/                 Grad-CAM trên validation                   (evaluate.py)
+├── preview/ | visualize/    Grad-CAM (validation, hoặc test với preview.split: test) (evaluate.py)
 └── smoke/<digest>/          evaluate giới hạn ca (--patient-id / --max-cases)
 ```
 
@@ -243,7 +209,7 @@ balanced_accuracy, accuracy, brier, [calibration_intercept, calibration_slope], 
 
 - `calibration_*` chỉ prognosis, cần ≥ `evaluation.calibration_min_events` (mặc định 10) ca mỗi lớp.
 - `threshold` (`p ≥ threshold` → dương) chỉ ảnh hưởng sensitivity, specificity, PPV, NPV, F1, accuracy, balanced accuracy.
-- `threshold_rule`: `youden_on_validation` (Youden J trên validation, áp cho mọi split); `default_0.5_validation_one_class` (validation một lớp, dùng 0.5); `locked_internal_validation` (external test dùng threshold khoá từ INSPECT validation).
+- `threshold_rule`: `youden_on_validation` (Youden J trên validation, áp cho mọi split); `default_0.5_validation_one_class` (validation một lớp, dùng 0.5).
 - CI 95% là patient bootstrap, **chỉ ở dòng `test`**, chỉ cho AUROC / AUPRC; CI mọi metric nằm trong `result.json`.
 - Ô trống = không tính được (không ghi `nan`); `note` ghi lý do (split một lớp, `n_pos`/`n_neg` < 5, thiếu sự kiện cho calibration).
 
@@ -251,20 +217,19 @@ balanced_accuracy, accuracy, brier, [calibration_intercept, calibration_slope], 
 
 - `predictions.csv`: `split, target, patient_id, study_id, y_true, y_prob, y_pred`; dùng làm `--reference-predictions` cho paired bootstrap (evaluate ghi thêm `bootstrap_metrics.parquet` và khoá `paired_vs_reference`).
 - `history.csv`: một dòng mỗi epoch (`train_loss`, `val_loss`, `primary_val_metric`, `lr`, `peak_vram_gb`, loss từng head, AUROC/AUPRC khi `training.record_epoch_auc` bật).
-- `result.json` (`compact_result()`): `experiment`, `lineage` (backbone, init, source checkpoint + SHA-256, dataset, fusion, code commit), `data`, `model` (params, GFLOPs, kết quả load weight), `compute`, `evaluation.metrics.<tên> = {value, ci_low, ci_high}` + threshold + `training` (`epochs_run`, `stopped_early`), `evaluation_scope` (`full_test` hoặc smoke), `evaluation_checkpoint`, `config_hash`. `tools/build_summary.py` đọc file này; [04_experiments.md](04_experiments.md) lấy số từ `evaluation.metrics`.
-- `preview/NN_<patient>_<study>_<TP|TN|FP|FN>.{html,png}` (`write_backbone_previews()`): Grad-CAM logit target chính trên **validation** (tối đa 5 study đầu; baseline zoo chọn 3 đúng + 3 sai tự tin nhất qua `preview:` trong `configs/components/baselines.yaml`). CAM không phải mask huyết khối. Tạo lại: `python tools/tasks/gradcam_preview.py --run-dir <epoch dir>`.
+- `result.json` (`compact_result()`): `experiment`, `lineage` (backbone, init, dataset, code commit, ...), `data`, `model` (params, GFLOPs, kết quả load weight), `compute`, `evaluation.metrics.<tên> = {value, ci_low, ci_high}` + threshold + `training` (`epochs_run`, `stopped_early`), `evaluation_scope` (`full_test` hoặc smoke), `evaluation_checkpoint`, `config_hash`. `tools/baselines/summarize.py` đọc `result.csv`; [04_experiments.md](04_experiments.md) lấy số từ bảng tổng hợp.
+- `NN_<patient>_<study>_<TP|TN|FP|FN>.{html,png}` (`write_backbone_previews()`): Grad-CAM logit target chính. Mặc định `preview/`, tối đa 5 study validation đầu; baseline zoo ghi vào `visualize/{correct,incorrect}/` 3 ca **test** đúng + 3 ca sai tự tin nhất (`preview:` trong `configs/components/baselines.yaml`). CAM không phải mask huyết khối. Tạo lại: chạy lại evaluate (`ACTION=evaluate`).
 
 ## 10. Layout đặc biệt và bảng tổng hợp
 
 | Trường hợp | Thư mục | Nội dung |
 |---|---|---|
 | Evaluate smoke | `<id>/epoch_<E>/smoke/<digest>/` | `result.csv`, `predictions.csv`, `result.json`, `logs.txt` của tập ca giới hạn; không đụng kết quả full |
-| sPESI score baseline | `prognosis/PR_spesi_only/score_baseline/` | `result.json`, `predictions.parquet`, `calibration_curve.parquet`; cạnh, không nằm trong, `epoch_<E>/` |
-| Zero-shot / External test-only | `diagnosis/DX_zeroshot_{penet,radar}[__ds_<p>]/`, `diagnosis/<id>/` | Không có `epoch_<E>/`: `result.csv`, `predictions.csv`, `logs.txt`, `result.json`, `preview/` |
-| Counterfactual | `counterfactual/CF_remove_{heart,pa,lung,random}/` | `counterfactual_predictions.parquet` (xác suất gốc vs sau khi xoá, theo cặp patient), `paired_bootstrap_metrics.parquet`, `result.json`; smoke: `CF_<x>__SMOKE_<digest>/` |
-| Baseline zoo | `diagnosis/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>[__v<variant>]/official_seed<S>/epoch_<E>/` | Bundle như trên; mỗi `exp0*_*/` chứa bảng tổng hợp và symlink tới run dùng chung |
+| Zero-shot | `diagnosis/DX_zeroshot_{penet,radar}[__ds_<p>]/` | Không có `epoch_<E>/`: `result.csv`, `predictions.csv`, `logs.txt`, `result.json`, `preview/` |
+| Baseline zoo | `<family>/BASE/<profile>/<task>/runs/<model>__<head>__frac<PPP>[__v<variant>]/official_seed<S>/epoch_<E>/` | Bundle như trên; mỗi `exp0*_*/` chứa bảng tổng hợp và symlink tới run dùng chung; exp02 xuất subset train ở `<task>/splits/data_fraction/seed_<s>/` (+ `check.json`) |
+| Smoke pipeline | `output/_smoke/` hoặc `$PE_SMOKE_ROOT` | `tools/baselines/smoke_pipeline.py`: dữ liệu tổng hợp + `smoke_report.md` |
 
-**`tools/build_summary.py`** quét mọi `result.json` (trừ `summary/`), ghi `<output_root>/summary/all_runs.csv` cùng `{silver,diagnosis,prognosis,architecture,ehr_ablation,counterfactual,roi,transfer}.csv` (family có run). **`tools/baselines/summarize.py --exp <exp>`** ghi `runs.csv`, `summary.csv`, `summary.md` (mean/std/n qua fold, seed) và hình `auroc_per_model.png` / `auroc_vs_fraction.png` / `mlp_vs_kan.png` (exp01/02/03) vào `diagnosis/BASE/<profile>/<task>/<exp>/`.
+**`tools/baselines/summarize.py --exp <exp>`** ghi vào `<family>/BASE/<profile>/<task>/<exp>/`: `summary.md`, `summary_pretty.csv`, `summary_ensemble.csv` (xác suất test trung bình qua seed, ghép theo `study_id`), `summary.csv` (mean/std/n qua seed), `summary_raw.csv`, `runs.csv` và hình `auroc_per_model.png` / `auroc_vs_fraction.png` / `mlp_vs_kan.png` / `slice_ablation.png` (exp01/02/03/04).
 
 ## 11. Resume và overwrite
 
@@ -274,8 +239,7 @@ balanced_accuracy, accuracy, brier, [calibration_intercept, calibration_slope], 
 | Evaluate | Dùng lại bundle đã train | — | Đánh giá lại |
 | Segmentation, ROI | Tiếp tục run dở; từ chối nếu setting đổi | `run.py` không nhận | Xoá và chạy lại |
 | Silver | Tiếp tục, dùng cache `.state/` | — | Xoá cả cache |
-| Counterfactual | Full: collision; smoke: resume trong `__SMOKE_<digest>` | Có | Xoá và chạy lại |
 | Dataset | `preprocessing.sh` bỏ qua profile đã đầy đủ cùng scope; dở hoặc khác scope thì dừng | — | Build lại |
-| CT-FM wrapper | Bỏ qua bước đã xong; cùng ngân sách nhưng setting khác thì báo lỗi | — | Thay `epoch_<EPOCHS>/`; cache chỉ tính lại khi `REBUILD_CACHE=1` |
+| Baseline grid | Bỏ qua case đã xong (`tools/run_status.py`); setting khác thì báo lỗi | — | Thay case; cache CT-FM chỉ tính lại khi `REBUILD_CACHE=1` (`prepare_ctfm_cache.sh`) |
 
-Thêm: run đã `completed` không thể `--resume`; `write_config()` so `config_hash` với `resolved_config.yaml` có sẵn, khác thì `OutputCollisionError` thay vì trộn hai config. Không xoá output cũ khi còn consumer (ví dụ `anatomy.remove_*` đọc checkpoint của `diag.anatomy.concat`).
+Thêm: run đã `completed` không thể `--resume`; `write_config()` so `config_hash` với `resolved_config.yaml` có sẵn, khác thì `OutputCollisionError` thay vì trộn hai config.

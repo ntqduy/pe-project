@@ -11,9 +11,9 @@ configs/experiments.yaml and delegates to the existing tools:
     python run.py dry    <experiment> --gpus 0  tools/launch.py --dry-run
     python run.py run    <experiment> --gpus 0  tools/launch.py
 
-`plan` never executes prerequisites; it only reports them. Data-generation stages (silver
-generation, counterfactual inference) still require an explicit selection flag, exactly as
-the underlying tools do: --patient-id, --max-cases/--max-reports, or --allow-full.
+`plan` never executes prerequisites; it only reports them. Silver-label generation still
+requires an explicit selection flag, exactly as its tool does: --patient-id, --max-reports,
+or --allow-full.
 """
 from __future__ import annotations
 

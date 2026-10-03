@@ -1,3 +1,1 @@
-from .model import DiagnosisModel
-
-__all__ = ["DiagnosisModel"]
+"""Diagnosis losses shared by the baseline classifier's training step."""

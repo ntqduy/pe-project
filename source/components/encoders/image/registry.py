@@ -30,15 +30,8 @@ def _ct_fm_features(config: Mapping[str, Any]) -> BaseImageEncoder:
     return importlib.import_module("source.model.3D_model.ctfm").build_ctfm_frozen_3d(config)
 
 
-def _penet_style(config: Mapping[str, Any]) -> BaseImageEncoder:
-    from .penet import build_penet_style
-
-    return build_penet_style(config)
-
-
 register_backbone("ct_fm", _ct_fm)
 register_backbone("ct_fm_features", _ct_fm_features)
-register_backbone("penet_style", _penet_style)
 
 
 def _register_baseline_zoo() -> None:

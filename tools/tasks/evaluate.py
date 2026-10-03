@@ -15,7 +15,6 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from source.components.roi.masks import apply_counterfactual
 from source.data.manifests import read_rows
 from source.data.paths import ProjectPaths
 from source.data.preflight import require_preflight
@@ -283,18 +282,6 @@ def _classification_rows_all_targets(model, loader, stage, targets, context, tas
     for batch in with_progress(loader, log, label):
         identifiers = list(zip(batch["patient_id"], batch["study_id"]))
         moved = move_to_device(batch, context.device)
-        if "volume" in moved:
-            moved = dict(moved)
-            moved["volume"] = apply_counterfactual(
-                moved["volume"],
-                moved["masks"],
-                str(task.get("input_counterfactual") or ""),
-                matched_region=str(task.get("matched_region", "pa")),
-                masking_policy=task.get("masking_policy", "local_mean"),
-                seed=seed,
-                patient_ids=batch.get("patient_id"),
-                study_ids=batch.get("study_id"),
-            )
         if stage == "diagnosis":
             output = model(moved["volume"], moved["masks"])
         else:
@@ -383,7 +370,7 @@ def main() -> int:
         default=None,
         help=(
             "predictions.parquet from a full-CT (or other reference) run, evaluated on the "
-            "same patients, for a paired bootstrap delta (section 14 ROI/counterfactual comparisons)"
+            "same patients, for a paired patient-bootstrap delta between two models"
         ),
     )
     args = parser.parse_args()
@@ -479,8 +466,6 @@ def main() -> int:
         log(f"data loader {worker_note}")
         stage = str(config["experiment"]["stage"])
         task_config = dict(config.get("task") or {})
-        if stage == "ablation":
-            stage = str(task_config.get("base_stage") or "")
         evaluation_config = dict(config.get("evaluation") or {})
         table_rows: list[dict[str, Any]] = []
         prediction_table: list[dict[str, Any]] = []

@@ -11,20 +11,17 @@ configs/
       segmentation/          inspect.yaml, turkey.yaml (TotalSegmentator + lungmask)
       roi/                   inspect.yaml, turkey.yaml (ROI1..ROI8 + random control)
       silver/                medgemma.yaml
-    01_foundation/           backbone public, không học thêm encoder
-      ct_fm_frozen/          CT-FM frozen: diagnosis, prognosis_all, prognosis_pe
-                             (cũng là nơi build cache feature cho baseline ctfm_frozen_3d)
-      zero_shot/             penet.yaml, radar.yaml
+    01_foundation/
+      zero_shot/             penet.yaml, radar.yaml (không train; runner riêng tools/tasks/zeroshot_*.py)
     02_diagnosis/
       baselines/             baseline zoo theo chiều: 2D/, 2_5D/, 3D/ (20 model); dùng cho cả
-                             diagnosis và prognosis (run_case.py --task prognosis --label ...)
+                             diagnosis và prognosis (run_case.py --task prognosis --label ...);
+                             ctfm_frozen_3d cần cache: scripts/diagnosis/baselines/prepare_ctfm_cache.sh
   components/
     backbones.yaml       CT backbone contract (registry của mọi encoder)
-    encoders.yaml        nguồn checkpoint/init
-    baselines.yaml       head/task/budget dùng chung cho baseline zoo
-    tasks.yaml           task/cohort/supervision
-    training.yaml        optimizer, PEFT, evaluation
-    fusions.yaml         concat_mlp (head của CT-FM frozen)
+    encoders.yaml        nguồn checkpoint/init (`sources`, `from_pretrained`)
+    baselines.yaml       task/head/PEFT/budget/preview dùng chung cho baseline zoo
+    tasks.yaml           preset `diagnosis` (dùng bởi zero-shot)
     silver.yaml          medgemma silver method
   clinical/              sPESI source contract
   compute/               CPU/GPU presets
@@ -34,8 +31,8 @@ configs/
 
 ## Cách đọc `_base_`
 
-`../../../components/training.yaml#diagnosis` nghĩa là lấy preset `diagnosis` trong catalog
-training. Base merge từ trên xuống; mapping merge đệ quy, list/scalar bị thay thế.
+`../../../../components/baselines.yaml#diagnosis` nghĩa là lấy preset `diagnosis` trong catalog
+baselines. Base merge từ trên xuống; mapping merge đệ quy, list/scalar bị thay thế.
 `_replace_: true` thay toàn bộ mapping, `_delete_` xóa key inherited. Setting trong run file
 luôn thắng.
 
@@ -50,10 +47,12 @@ Quy tắc:
 ## Các trục chính
 
 - `data.profile`: `smoke_30`, `test_500_sample`, `full_inspect`.
-- `model.backbone`: `ct_fm`, `ct_fm_features`, `penet_style`, and the baseline zoo in
-  `components/backbones.yaml` (`resnet18_3d`, `vit_2d`, ... see `scripts/diagnosis/baselines/README.md`).
-- `encoder.init_source`: `pretrained`, `diagnosis`, `custom`.
-- `finetuning.strategy`: `full`, `linear_probe`, `lora`; `partial` chưa hỗ trợ.
+- `model.backbone`: `ct_fm`, `ct_fm_features` và baseline zoo trong
+  `components/backbones.yaml` (`resnet18_3d`, `vit_2d`, ... xem `scripts/diagnosis/baselines/README.md`).
+- `encoder.init_source`: `pretrained` (mọi run trainable; `diagnosis`/`custom` đặt
+  `lineage.source_checkpoint`, mà training nay từ chối).
+- `peft.method`: `full`, `frozen`, `lora` (preset `baselines.yaml#train_*`).
+- `head.type`: `mlp`, `kan`; `task.architecture` luôn là `baseline_classifier`.
 
 Kiểm tra config qua:
 

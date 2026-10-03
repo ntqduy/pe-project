@@ -21,7 +21,7 @@ on different GPUs without touching each other. Training flags that differ from t
 (--scratch, --lr, --batch-size, --accumulation, --patience, --no-epoch-auc, extra --set) are
 stamped into the folder name as ``__x<settings>``; a case with the config's own settings
 keeps the plain name. Stages that already finished are skipped
-(tools/run_status.py, the same check scripts/tool/run_ctfm_frozen.sh uses); --overwrite
+(tools/run_status.py); --overwrite
 replaces the case. Everything scientific stays in the run config
 (configs/runs/02_diagnosis/baselines/<dim>/<model>.yaml); this script only adds --set overrides.
 """
@@ -204,7 +204,7 @@ def case_manifest(args: argparse.Namespace, config: dict, fraction: int) -> tupl
 
     A training fraction of the official split also exports every fraction of the same split
     seed (frac_025.csv ... frac_100.csv, patient_id + study_id) with their nesting / class
-    balance check (tools/baselines/fractions.py) into <task dir>/splits/data_fraction/seed_<s>/.
+    balance check (tools/baselines/fraction_subsets.py) into <task dir>/splits/data_fraction/seed_<s>/.
     """
     from source.data.experiment_splits import ExperimentSplits
     from source.data.paths import ProjectPaths
@@ -222,7 +222,7 @@ def case_manifest(args: argparse.Namespace, config: dict, fraction: int) -> tupl
     root = ProjectPaths.resolve(config).dataset_root_for(config)
     splits = ExperimentSplits(root, task=task_name, label=label, base_manifest=base, seed=args.split_seed)
     report = splits.materialize(configured, fraction / 100.0)
-    from tools.baselines.fractions import export_subsets
+    from tools.baselines.fraction_subsets import export_subsets
 
     family = "prognosis" if args.task == "prognosis" else "diagnosis"
     destination = (ProjectPaths.resolve(config).output_root / family / "BASE" / args.profile

@@ -26,7 +26,6 @@ import csv
 import itertools
 import json
 import random
-import shutil
 import subprocess
 import sys
 import tempfile

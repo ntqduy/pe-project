@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Training-fraction subsets of exp02: export their IDs and check them.
 
-    python tools/baselines/fractions.py --dir <outputs>/<family>/BASE/<profile>/<task>/splits/data_fraction/seed_0
+    python tools/baselines/fraction_subsets.py --dir <outputs>/<family>/BASE/<profile>/<task>/splits/data_fraction/seed_0
 
 run_case.py calls ``export_subsets`` for every fraction case, so each seed's subsets are on
 disk next to the runs that used them:

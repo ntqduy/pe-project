@@ -2,18 +2,9 @@
 # Select a fragment with: path/to/encoders.yaml#<preset>
 _presets_:
   sources:
-    # Where each kind of encoder checkpoint lives.
-    #
-    # The public backbone, the canonical diagnosis model, plus an explicit custom checkpoint
-    # option. Nothing here selects one; a run chooses it through `encoder.init_source`
-    # (or the shared matrix launchers' WEIGHT_SOURCE).
-    #
-    #   pretrained  the original public backbone weights, loaded through the backbone contract
-    #   diagnosis   encoder transferred from the canonical diagnosis checkpoint
-    #   custom      requires encoder.checkpoint; there is intentionally no default path
-    #
-    # Any other checkpoint is selected with `--set encoder.checkpoint=<path>` plus the
-    # matching `encoder.source_experiment`, so its provenance stays recorded in lineage.
+    # Where the encoder weights come from. The only source is `pretrained`: the original
+    # public backbone weights, loaded through the backbone contract (backbones.yaml#registry).
+    # A run never starts from another task's checkpoint.
     encoder:
       # Defaults to the run's model.backbone; set it to move backbone and weights together.
       backbone: null
@@ -22,18 +13,11 @@ _presets_:
       source_experiment: null
       sources:
         pretrained: null
-        # The epoch bundle train_task.py leaves (<id>/epoch_<training.epochs>/checkpoint/);
-        # the root best.ckpt is a temporary copy that cleanup_task_run removes.
-        diagnosis: ${PE_CLOUD_ROOT}/pe-project/outputs/diagnosis/DX_anatomy_concat/epoch_50/checkpoint/best.ckpt
-        custom: null
-      source_experiments:
-        diagnosis: DX_anatomy_concat
-        custom: null
 
   from_pretrained:
     # Start from the original public backbone weights — no adaptation of any kind.
     #
-    # The default for every diagnosis, prognosis and ablation arm.
+    # Every baseline arm (diagnosis and prognosis).
     _base_:
       - encoders.yaml#sources
     encoder:

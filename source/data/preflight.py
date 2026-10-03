@@ -96,7 +96,6 @@ def checkpoint_lineage_errors(
     errors: list[str] = []
     configured = dict(config.get("lineage") or {})
     data = dict(config.get("data") or {})
-    task = dict(config.get("task") or {})
     experiment = dict(config.get("experiment") or {})
     expected_experiment = configured.get("source_experiment")
     if expected_experiment and source_lineage.get("experiment_id") != expected_experiment:
@@ -112,8 +111,6 @@ def checkpoint_lineage_errors(
         )
 
     effective_stage = str(experiment.get("stage") or "")
-    if effective_stage in {"ablation", "counterfactual"}:
-        effective_stage = str(task.get("base_stage") or "")
     source_dataset = str(source_lineage.get("dataset") or "").lower()
     source_stage = str(source_lineage.get("stage") or "").lower()
     source_task = str(source_lineage.get("task") or "").lower()
@@ -208,11 +205,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
     stage = str((config.get("experiment") or {}).get("stage") or "")
     data_config = dict(config.get("data") or {})
     task = dict(config.get("task") or {})
-    effective_stage = (
-        str(task.get("base_stage") or "")
-        if stage in {"ablation", "counterfactual"}
-        else stage
-    )
+    effective_stage = stage
     manifest_path = data_config.get("manifest")
     manifest_payload: dict[str, Any] | None = None
     if stage == "silver":
@@ -357,8 +350,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     if bool((config.get("external_evaluation") or {}).get("test_only"))
                     else ("train", "validation", "test")
                     if effective_stage in {"diagnosis", "prognosis"}
-                    and stage != "counterfactual"
-                    else ("validation", "test") if stage == "counterfactual" else ()
+                    else ()
                 ),
             )
             manifest_payload = audit.as_dict()
@@ -409,7 +401,7 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
             checks.append(Check("DATA", "split_manifest", "FAIL", str(exc)))
     model = dict(config.get("model") or {})
     backbone = str(model.get("backbone") or "")
-    if stage in {"diagnosis", "prognosis", "ablation", "counterfactual"}:
+    if stage in {"diagnosis", "prognosis"}:
         uses_image_model = not (
             effective_stage == "prognosis"
             and "image" not in set(task.get("modalities") or ())
@@ -874,67 +866,6 @@ def run_preflight(config: Mapping[str, Any], paths: ProjectPaths) -> PreflightRe
                     f"extra_in_common={sorted(set(ehr_common) - set(ehr_full))}",
                 )
             )
-    if effective_stage == "diagnosis" and task.get("auxiliary_targets"):
-        try:
-            from source.silver.schema import canonical_target
-            from source.tasks.diagnosis.organ_targets import validate_organ_target_supervision
-
-            silver_targets = {
-                canonical_target(str(name)) for name in (task.get("silver_targets") or ())
-            }
-            errors = validate_organ_target_supervision(
-                task.get("auxiliary_targets"),
-                native_targets=set(data_config.get("label_columns") or ()),
-                silver_targets=silver_targets,
-                expert_targets=set(data_config.get("expert_label_columns") or ()),
-                default_source=str(task.get("auxiliary_default_source", "native")),
-            )
-            expert_targets = set(data_config.get("expert_label_columns") or ())
-            label_targets = set(data_config.get("label_columns") or ())
-            if not expert_targets <= label_targets:
-                errors.append(
-                    "data.expert_label_columns must also be present in data.label_columns: "
-                    + str(sorted(expert_targets - label_targets))
-                )
-            checks.append(
-                Check(
-                    "SUPERVISION",
-                    "organ_auxiliary_target_mapping",
-                    "PASS" if not errors else "FAIL",
-                    "; ".join(errors) or "all configured targets have anatomically mapped supervision",
-                )
-            )
-        except ValueError as exc:
-            checks.append(Check("SUPERVISION", "organ_auxiliary_target_mapping", "FAIL", str(exc)))
-    if stage == "counterfactual":
-        specification = str(task.get("input_counterfactual") or "")
-        region = specification.removeprefix("remove_") if specification.startswith("remove_") else ""
-        mask_columns = dict(data_config.get("mask_columns") or {})
-        valid = region in {"heart", "pa", "lung", "random"}
-        checks.append(
-            Check(
-                "EXPERIMENT",
-                "frozen_counterfactual_contract",
-                "PASS" if valid and bool(lineage.get("source_checkpoint")) else "FAIL",
-                f"operation={specification} source_checkpoint={lineage.get('source_checkpoint')}",
-            )
-        )
-        roi_masks = set((data_config.get("roi_mask_ids") or {}).keys())
-        if region == "random" and "random" in roi_masks | set(mask_columns):
-            required_masks = {"random"}
-        elif region == "random":
-            required_masks = {str(task.get("matched_region", "pa")), "body"}
-        else:
-            required_masks = {region}
-        missing_masks = sorted(required_masks - (set(mask_columns) | roi_masks))
-        checks.append(
-            Check(
-                "DATA",
-                "counterfactual_original_masks",
-                "PASS" if not missing_masks else "FAIL",
-                "original masks reused; missing=" + str(missing_masks),
-            )
-        )
     compute = dict(config.get("compute") or {})
     strategy = str(compute.get("strategy", "single"))
     accelerator = str(compute.get("accelerator", "cuda" if strategy != "cpu" else "cpu"))

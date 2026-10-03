@@ -17,7 +17,6 @@ ENTRYPOINTS = {
     "silver": "tools/silver_labels/generate_silver_labels.py",
     "diagnosis": "tools/tasks/train_task.py",
     "prognosis": "tools/tasks/train_task.py",
-    "counterfactual": "tools/tasks/counterfactual.py",
 }
 
 
@@ -51,8 +50,6 @@ def main() -> int:
     args = parser.parse_args()
     config = resolve_cli_config(args)
     stage = str(config["experiment"]["stage"])
-    if stage == "ablation":
-        stage = str((config.get("task") or {}).get("base_stage") or "")
     if stage not in ENTRYPOINTS:
         raise SystemExit(f"stage {stage!r} is not supported by the launcher")
     selected_scope = bool(
@@ -67,20 +64,14 @@ def main() -> int:
     else:
         if stage == "silver" and not silver_selection:
             raise SystemExit("silver generation requires --patient-id, --max-reports, or --allow-full")
-        if stage == "counterfactual" and not selected_scope:
-            raise SystemExit("counterfactual inference requires --patient-id, --max-cases, or --allow-full")
-        if stage not in {"silver", "counterfactual"} and selected_scope:
-            raise SystemExit("patient/item selection is only valid for silver or counterfactual inference")
+        if stage != "silver" and selected_scope:
+            raise SystemExit("patient/item selection is only valid for silver generation")
         if stage == "silver" and args.max_cases is not None:
             raise SystemExit("silver generation uses --max-reports, not --max-cases")
-        if stage == "counterfactual" and args.max_reports is not None:
-            raise SystemExit("counterfactual inference uses --max-cases, not --max-reports")
     if args.max_reports is not None and args.max_reports < 1:
         raise SystemExit("--max-reports must be positive")
     if args.max_cases is not None and args.max_cases < 1:
         raise SystemExit("--max-cases must be positive")
-    if stage == "counterfactual" and not args.allow_full and not args.evaluate:
-        config["resume"] = True
     if stage == "silver" and not args.overwrite and not args.evaluate:
         config["resume"] = True
     # Evaluation is a second phase of an already-completed training run. It must be
@@ -88,13 +79,6 @@ def main() -> int:
     # and then fails preflight on OUTPUT/collision before writing test metrics.
     if args.evaluate and not args.overwrite:
         config["resume"] = True
-    if str(config["experiment"].get("family") or "") == "remove_roi":
-        raise SystemExit(
-            "remove_roi ablation configs are frozen-checkpoint, no-retraining counterfactual "
-            "evaluations (section 10.B); run them with tools/tasks/evaluate.py --checkpoint "
-            "<frozen source checkpoint>, not tools/launch.py, which would fine-tune a new model "
-            "instead of evaluating the same frozen one."
-        )
     paths = ProjectPaths.resolve(config)
     require_preflight(config, paths)
     physical = tuple(config["compute"].get("devices") or ())
@@ -129,14 +113,6 @@ def main() -> int:
                 child_arguments += ["--patient-id", patient_id]
         elif args.max_reports is not None:
             child_arguments += ["--max-reports", str(args.max_reports)]
-        else:
-            child_arguments.append("--allow-full")
-    elif stage == "counterfactual":
-        if args.patient_ids:
-            for patient_id in args.patient_ids:
-                child_arguments += ["--patient-id", patient_id]
-        elif args.max_cases is not None:
-            child_arguments += ["--max-cases", str(args.max_cases)]
         else:
             child_arguments.append("--allow-full")
     entrypoint = paths.code_root / (

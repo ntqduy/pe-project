@@ -16,6 +16,7 @@ scripts/
 │   ├── exp02_data_fraction/    8 arms x MLP head x 25/50/75/100%   experiment.yaml + run_all.sh + 3D/<model>.sh
 │   ├── exp03_head_ablation/    6 arms x {MLP, KAN} x 100%          experiment.yaml + run_all.sh + 3D/<model>.sh
 │   ├── exp04_slice_ablation/   ResNet-18 2D/2.5D x {attention, mean, max, center}   + {2D,2_5D}/<model>.sh
+│   ├── prepare_ctfm_cache.sh  build the CT-FM feature cache once per profile (ctfm_frozen_3d)
 │   ├── prepare_weights.sh     download every pretrained weight once + weight-status table
 │   ├── smoke.sh               one bf16 train step per arm at 128^3 on GPU (grads, CAM, peak VRAM)
 │   └── summarize.sh           rebuild tables / plots from finished runs
@@ -51,8 +52,10 @@ GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh
 GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp03_head_ablation/run_all.sh
 ```
 
-A CT-FM frozen arm needs the CT-FM feature cache first (`ACTION=prepare bash
-scripts/tool/run_ctfm_frozen.sh`), exactly like the existing CT-FM runs.
+`ctfm_frozen_3d` (cached pooled CT-FM features + head) needs the CT-FM feature cache first,
+built once per profile: `bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh` (wraps
+`tools/data/build_ctfm_cache.py`; env `PROFILE`, `GPUS`, `WORKERS`, `VERIFY_CACHE=1`,
+`REBUILD_CACHE=1`). A finished cache is recognised in seconds; an unfinished one resumes.
 
 ## Knobs (environment variables, see `scripts/tool/run_baseline_grid.sh`)
 
@@ -62,7 +65,7 @@ scripts/tool/run_ctfm_frozen.sh`), exactly like the existing CT-FM runs.
 | `GPUS` | `0` | GPU pool; `''` = CPU |
 | `JOBS_PER_GPU` | `1` | cases sharing one GPU (2-4 for `ctfm_frozen_3d`) |
 | `GPUS_PER_JOB` | `1` | `>1` = one DDP case over several GPUs |
-| `SEEDS` | `42` | `SEEDS="42 43 44"` for repeated runs |
+| `SEEDS` | `0 1 2` | training seeds on the official split |
 | `HEADS`, `FRACTIONS` | experiment's | e.g. `HEADS=kan`, `FRACTIONS="25 50"` |
 | `ACTION` | `all` | `all`, `prepare`, `train`, `evaluate`, `preflight`, `dry` |
 | `EPOCHS`, `EARLY_STOPPING`, `BATCH_SIZE`, `ACCUMULATION`, `LR` | config | training overrides |
@@ -156,7 +159,7 @@ case exports them, with a check, to
                   patients, positive rate within 0.05 of the full train split -> PASS / FAIL
 ```
 
-A FAIL stops the case before training. `python tools/baselines/fractions.py --dir <seed dir>`
+A FAIL stops the case before training. `python tools/baselines/fraction_subsets.py --dir <seed dir>`
 re-checks a folder. The 100% case is the official split itself (shared with exp01 / exp03).
 There is no k-fold: every run uses the official split and is repeated with seeds.
 
@@ -189,11 +192,12 @@ tag (12.5% -> `frac012p5`), so two fractions never share a folder.
 │                         summary_raw.csv  auroc_per_model.png  launcher_logs/
 │                         runs/<model>_<head>[_frac<PPP>][_v<variant>]/official_seed<S> -> symlink to the shared run
 ├── exp02_data_fraction/  ...                                  auroc_vs_fraction.png
-└── exp03_head_ablation/  ...                                  mlp_vs_kan.png
+├── exp03_head_ablation/  ...                                  mlp_vs_kan.png
+└── exp04_slice_ablation/ ...                                  slice_ablation.png
 ```
 
 A run is identified by its settings, not by the experiment, so e.g. ResNet-18 3D + MLP at
-100% is trained once and reused by all three experiments.
+100% is trained once and reused by every experiment that contains it.
 
 `visualize/` explains the **3 most confident correct (TP/TN alternating) and 3 most confident
 wrong (FP/FN alternating) test cases** (`preview:` in `baselines.yaml`) at the
@@ -201,7 +205,7 @@ validation-selected threshold. The Grad-CAM (HiResCAM) target is each encoder's 
 feature map: conv stage for CNN/Swin/VMamba/PENet/nnMamba, the last token map reshaped to its
 3D grid for ViT / Mamba-MAE, and for 2D / 2.5D the per-slice maps stacked along z; their
 montage selects the highest MIL-attention slices. Each viewer's technical table names the
-target layer. `python tools/tasks/gradcam_preview.py --run-dir <run>` rebuilds a preview.
+target layer. The preview is written by `tools/tasks/evaluate.py`; `ACTION=evaluate` rebuilds it.
 
 Summary tables (`tools/baselines/summarize.py`, also run after every grid):
 
