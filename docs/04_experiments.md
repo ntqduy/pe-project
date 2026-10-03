@@ -1,5 +1,7 @@
 # 04. Experiments (diagnosis, prognosis, anatomy analysis, bảng paper)
 
+> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
+
 **Đọc khi:** muốn biết mỗi nhóm experiment trả lời câu hỏi gì, chạy và đánh giá bằng lệnh nào, cái nào đang `blocked` và vì sao, và điền số vào bảng paper thế nào.
 
 **Code chính:** `source/tasks/diagnosis/{model,losses,organ_targets,heads}.py`, `source/tasks/prognosis/{model,heads,losses}.py`, `source/engine/task_steps.py`, `source/clinical/{encoder,preprocessing,spesi}.py`, `source/data/build/{manifest_writer,adjudication}.py`, `tools/tasks/{zeroshot_penet,zeroshot_radar,score_baseline,counterfactual,evaluate}.py`, `source/components/roi/masks.py`, `source/roi/counterfactual.py`, `source/metrics/paired.py`, `configs/runs/**`, `configs/experiments.yaml`

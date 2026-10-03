@@ -251,13 +251,3 @@ _presets_:
       baseline_backbone: ct_fm_features
 
 
-
-  penet_style:
-    # Randomly initialized non-foundation 3D baseline requested in the study email.
-    # This is a PENet-style comparison arm, not a claim of exact paper reproduction.
-    _base_:
-      - backbones.yaml#registry
-    model:
-      backbone: penet_style
-    experiment:
-      baseline_backbone: penet_style

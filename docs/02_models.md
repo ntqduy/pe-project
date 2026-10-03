@@ -1,5 +1,7 @@
 # 02. Models
 
+> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
+
 **Đọc khi:** cần biết một config biến thành `nn.Module` thế nào; muốn thêm/đổi backbone; muốn hiểu
 forward pass (tensor shape) của baseline 3D, 2.5D slice-MIL và model anatomy-aware; muốn biết PEFT
 (full / frozen / LoRA) thực sự đóng băng cái gì.

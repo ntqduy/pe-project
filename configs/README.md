@@ -12,24 +12,19 @@ configs/
       roi/                   inspect.yaml, turkey.yaml (ROI1..ROI8 + random control)
       silver/                medgemma.yaml
     01_foundation/           backbone public, không học thêm encoder
-      ct_fm_frozen/          CT-FM frozen: diagnosis, prognosis_all/pe, anatomy_*
+      ct_fm_frozen/          CT-FM frozen: diagnosis, prognosis_all, prognosis_pe
+                             (cũng là nơi build cache feature cho baseline ctfm_frozen_3d)
       zero_shot/             penet.yaml, radar.yaml
     02_diagnosis/
-      global/                arm global (global_single, global_silver_multitask, penet_style)
-      anatomy/               arm anatomy-aware (single_concat, silver_*)
-      baselines/             baseline zoo theo chiều: 2D/, 2_5D/, 3D/
-      matrix/                single-task vs multitask
-      external/              test-only trên Turkey
-    03_prognosis/            modality/, global/, anatomy/, ehr_ablation/
-    04_anatomy_analysis/     counterfactual/, architecture/ (ablation)
+      baselines/             baseline zoo theo chiều: 2D/, 2_5D/, 3D/ (20 model); dùng cho cả
+                             diagnosis và prognosis (run_case.py --task prognosis --label ...)
   components/
-    backbones.yaml       CT backbone contract
+    backbones.yaml       CT backbone contract (registry của mọi encoder)
     encoders.yaml        nguồn checkpoint/init
     baselines.yaml       head/task/budget dùng chung cho baseline zoo
     tasks.yaml           task/cohort/supervision
     training.yaml        optimizer, PEFT, evaluation
-    fusions.yaml         concat, late-logit, Soft-MoE
-    anatomy.yaml         organ adapter và ROI source
+    fusions.yaml         concat_mlp (head của CT-FM frozen)
     silver.yaml          medgemma silver method
   clinical/              sPESI source contract
   compute/               CPU/GPU presets

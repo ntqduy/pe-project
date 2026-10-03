@@ -40,15 +40,3 @@ _presets_:
       init_source: pretrained
     experiment:
       baseline_init: pretrained
-
-  from_diagnosis:
-    # Transfer the image encoder from the canonical anatomy-aware diagnosis model.
-    # Full-model external evaluation still loads its explicit checkpoint strictly;
-    # this preset keeps provenance and preflight pointed at the same source run.
-    _base_:
-      - encoders.yaml#sources
-    encoder:
-      init_source: diagnosis
-      weight_source: diagnosis
-    experiment:
-      baseline_init: diagnosis

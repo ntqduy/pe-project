@@ -1,5 +1,7 @@
 # 05. Chạy pipeline và output
 
+> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
+
 **Đọc khi:** ngồi vào máy (VM) để chạy thật, hoặc mở một thư mục output và cần biết mỗi file là gì.
 
 **Code chính:** `run.py`, `tools/launch.py`, `scripts/tool/{use_gcs_storage,_flags}.sh`, `configs/paths.yaml`, `source/engine/{experiment,task_artifacts}.py`, `source/metrics/result_table.py`

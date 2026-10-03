@@ -1,5 +1,7 @@
 # PE Project — 3D CTPA
 
+> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
+
 Research framework for representation learning and pulmonary embolism (PE) tasks on 3D CTPA.
 Every stage has its own config, checkpoint lineage, QC and outputs. Only real models and real
 pipelines: nothing is mocked, and unresolved data contracts fail loudly instead of being

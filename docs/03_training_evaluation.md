@@ -1,5 +1,7 @@
 # 03. Huấn luyện và đánh giá (cơ chế chung)
 
+> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
+
 **Đọc khi:** muốn hiểu một run diagnosis/prognosis chạy thế nào từ lệnh đến `result.csv`: chọn GPU, DDP, vòng epoch, chọn checkpoint, chọn threshold, bootstrap CI, so sánh cặp, Grad-CAM preview, resume/overwrite.
 
 **Code chính:** `tools/launch.py`, `tools/tasks/train_task.py`, `source/engine/{trainer,checkpoint,transfer,task_artifacts,experiment}.py`, `tools/tasks/evaluate.py`, `source/distributed/{setup,gather,launcher}.py`, `source/metrics/{classification,bootstrap,calibration,paired,result_table,reporting}.py`, `tools/run_status.py`, `source/profiling/model_profile.py`

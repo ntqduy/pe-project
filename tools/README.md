@@ -1,5 +1,7 @@
 # `tools/` — CLI reference
 
+> **Lưu ý (2026-10-03):** các experiment anatomy-aware / Soft-MoE / late-logit / global / matrix, toàn bộ `03_prognosis` (modality, EHR ablation), `04_anatomy_analysis` (counterfactual, architecture) và external Turkey test đã được gỡ khỏi `configs/` và `configs/experiments.yaml`; phần nhắc tới chúng dưới đây chỉ còn giá trị lịch sử (config cũ: `git show 41e4c8c:configs/runs/...`). Protocol đang dùng: baseline zoo exp01-exp04 (`scripts/diagnosis/baselines/README.md`), CT-FM frozen, zero-shot PENet/RADAR và pipeline dữ liệu `00_data`.
+
 Normally you do not call these directly: `python run.py <command> <experiment>` resolves a
 semantic name from `configs/experiments.yaml` and delegates here. This file is for when you
 want the underlying command, a nested entrypoint, or an option `run.py` does not pass through.
