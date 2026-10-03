@@ -13,8 +13,10 @@ Quick reference of the flags: [scripts/README.md](../../README.md#baseline-exper
 scripts/
 ├── diagnosis/baselines/
 │   ├── exp01_baselines/       20 arms x MLP head x 100% train      experiment.yaml + run_all.sh + {2D,2_5D,3D}/<model>.sh
-│   ├── exp02_data_fraction/    8 arms x MLP head x 25/50/75/100%   experiment.yaml + run_all.sh + 3D/<model>.sh
-│   ├── exp03_head_ablation/    6 arms x {MLP, KAN} x 100%          experiment.yaml + run_all.sh + 3D/<model>.sh
+│   ├── exp02_data_fraction/    8 arms x MLP head x 25/50/75/100%   experiment.yaml + run_all.sh +
+│   │                           frac025/ frac050/ frac075/ frac100/ (run_all.sh + <model>.sh each)
+│   ├── exp03_head_ablation/    6 arms x KAN head x 100%            experiment.yaml + run_all.sh + <model>_kan.sh
+│   │                           (the MLP arm is the shared exp01 run; summary compares both)
 │   ├── exp04_slice_ablation/   ResNet-18 2D/2.5D x {attention, mean, max, center}   + {2D,2_5D}/<model>.sh
 │   ├── prepare_ctfm_cache.sh  build the CT-FM feature cache once per profile (ctfm_frozen_3d)
 │   ├── prepare_weights.sh     download every pretrained weight once + weight-status table
@@ -48,8 +50,9 @@ bash scripts/diagnosis/baselines/exp01_baselines/3D/resnet18_3d.sh
 
 # 3. a whole experiment over 4 GPUs (one case per GPU; finished cases are skipped)
 GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp01_baselines/run_all.sh
-GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh
-GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp03_head_ablation/run_all.sh
+GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp02_data_fraction/run_all.sh          # all four fractions
+GPUS=0 bash scripts/diagnosis/baselines/exp02_data_fraction/frac025/run_all.sh       # 25% only
+GPUS=0,1,2,3 bash scripts/diagnosis/baselines/exp03_head_ablation/run_all.sh          # KAN (after exp01)
 ```
 
 `ctfm_frozen_3d` (cached pooled CT-FM features + head) needs the CT-FM feature cache first,
@@ -66,7 +69,7 @@ built once per profile: `bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh`
 | `JOBS_PER_GPU` | `1` | cases sharing one GPU (2-4 for `ctfm_frozen_3d`) |
 | `GPUS_PER_JOB` | `1` | `>1` = one DDP case over several GPUs |
 | `SEEDS` | `0 1 2` | training seeds on the official split |
-| `HEADS`, `FRACTIONS` | experiment's | e.g. `HEADS=kan`, `FRACTIONS="25 50"` |
+| `HEADS`, `FRACTIONS` | experiment's | e.g. `HEADS=kan`, `FRACTIONS="25 50"` (the `frac0NN/` and `*_kan.sh` wrappers already set them) |
 | `ACTION` | `all` | `all`, `prepare`, `train`, `evaluate`, `preflight`, `dry` |
 | `EPOCHS`, `EARLY_STOPPING`, `BATCH_SIZE`, `ACCUMULATION`, `LR` | config | training overrides |
 | `EPOCH_AUC=0` | on | skip the per-epoch AUROC pass (halves epoch time) |

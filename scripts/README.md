@@ -18,8 +18,8 @@ scripts/
 │   │   └── radar.sh            released RADAR (abdominal-CT generalist) probed for PE, no training
 │   └── baselines/              the 2D / 2.5D / 3D baseline zoo (see baselines/README.md)
 │       ├── exp01_baselines/{2D,2_5D,3D}/   20 models, MLP head; one wrapper per model + run_all.sh
-│       ├── exp02_data_fraction/3D/         training-set size 25/50/75/100% (subsets per seed)
-│       ├── exp03_head_ablation/3D/         MLP vs KAN head
+│       ├── exp02_data_fraction/frac0NN/    training-set size: one folder per 25/50/75/100% (subsets per seed)
+│       ├── exp03_head_ablation/            <model>_kan.sh: KAN head (MLP arm = exp01 run)
 │       ├── exp04_slice_ablation/{2D,2_5D}/ attention-MIL vs mean / max pooling vs middle slice
 │       ├── prepare_ctfm_cache.sh  CT-FM feature cache, once per profile (ctfm_frozen_3d)
 │       ├── prepare_weights.sh  fetch the pretrained weights of every arm once
@@ -43,7 +43,8 @@ wrappers run one model of it. All take the same flags (or the environment variab
 E=scripts/diagnosis/baselines
 bash $E/exp01_baselines/run_all.sh --gpus 0,1 --seeds "0 1 2"            # 20 models, MLP
 bash $E/exp02_data_fraction/run_all.sh --gpus 0 --runs-per-gpu 2          # 25/50/75/100%
-bash $E/exp03_head_ablation/run_all.sh --gpus 0                           # MLP vs KAN
+bash $E/exp02_data_fraction/frac025/run_all.sh --gpus 0                   # 25% only
+bash $E/exp03_head_ablation/run_all.sh --gpus 0                           # KAN (MLP from exp01)
 bash $E/exp04_slice_ablation/run_all.sh --gpus 0 --variants "center mean" # 2D/2.5D slice ablation
 bash $E/exp01_baselines/3D/vit_3d.sh --gpus 1                             # one model
 bash scripts/prognosis/baselines/exp01_baselines.sh --label 12_month_PH --gpus 0   # prognosis
