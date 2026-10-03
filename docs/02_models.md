@@ -104,6 +104,26 @@ Nhét cả ngực vào một patch 24×128×128 cho voxel ~12×1.9×2.6 mm là s
   `ctfm_frozen_3d` (đường CT-FM frozen duy nhất) đọc bản pooled `[513,1,1,1]`; cache dựng một lần
   mỗi profile bằng `bash scripts/diagnosis/baselines/prepare_ctfm_cache.sh`.
 
+### 4.3 Hai biến thể CT-FM nhận đầu vào khác nhau (có chủ ý)
+
+| | `ctfm_frozen_3d` | `ctfm_lora_3d` |
+|---|---|---|
+| Nguồn ảnh | NIfTI gốc → cache CT-FM (`build_ctfm_cache.py`) | Volume chung `128³` của mọi baseline 3D |
+| Hướng | SPL | SPL (`ras_to_spl` trong encoder) |
+| Cường độ | HU clip [-1024, 2048] → [0, 1] | đổi từ [-1000, 1000] sang thang (HU + 1024)/3072 (`remap_intensity`; HU > 1000 đã bị cache cắt) |
+| Spacing | **3 × 1 × 1 mm** (đúng pretrain) | **1.5 mm đẳng hướng** |
+| Không gian đưa vào encoder | canvas 120×384×384, **45 patch 24×128×128** không chồng lấn | **một khối 128³** cho cả lồng ngực |
+| Cái gì được train | chỉ projection + head (feature tính một lần) | LoRA ở `layers.3/4.blocks` + projection + head |
+
+- **Frozen** theo đúng contract pretrain của CT-FM: feature tính một lần nên chi phí không đáng kể.
+- **LoRA** dùng volume chung 128³ để giữ chi phí train như các baseline 3D khác. Đưa LoRA về đúng
+  contract pretrain cần cache canvas CT-FM (~35 MB/study float16, ~800 GB cho toàn INSPECT) và
+  forward + backward qua 45 patch mỗi study ở **mọi epoch** (ước tính vài giờ/epoch trên một L4),
+  nên không chọn. Hướng ảnh và thang cường độ vẫn khớp pretrain; chỉ spacing và cách chia patch khác.
+- **Khi báo cáo:** chênh lệch frozen vs LoRA gồm cả cách thích nghi (frozen / LoRA) lẫn đầu vào
+  (canvas CT-FM vs volume 128³). Ghi rõ điều này trong Methods; đừng diễn giải nó như hiệu ứng thuần
+  của LoRA.
+
 ### 4.3 PENet
 
 `penet_3d` (`3D_model/penet.py`): PENet thật (`third_party/repos/penet`, weight `penet_best.pth.tar` load strict + SHA-256), RAS → layout DICOM của PENet, intensity `penet`, giữ stochastic depth nên `encoder.ddp_find_unused_parameters = True`. Zero-shot (`penet_zeroshot.py`, `diag.zeroshot.penet`) đọc NIfTI gốc, không train.

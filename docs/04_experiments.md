@@ -71,6 +71,8 @@ bash scripts/diagnosis/baselines/exp01_baselines/3D/ctfm_frozen_3d.sh
 
 Output cũ `DX_ctfm_frozen` / `PR_ctfm_frozen_*` (nếu còn trên bucket) do đường code đã gỡ sinh ra, chỉ có giá trị lịch sử.
 
+**Lưu ý so sánh hai arm CT-FM:** `ctfm_frozen_3d` dùng đúng contract pretrain của CT-FM (3×1×1 mm, canvas 120×384×384, 45 patch); `ctfm_lora_3d` dùng volume chung 128³ 1.5 mm như các baseline 3D khác (hướng SPL và thang HU vẫn khớp pretrain). Chênh lệch giữa hai arm vì thế gồm cả cách thích nghi lẫn đầu vào; chi tiết và lý do ở [02_models.md](02_models.md) §4.3.
+
 ## 2.3 Bốn lưới thí nghiệm
 
 Một case = model × head × fraction × variant × seed trên split chính thức (`tools/baselines/experiments.py` đọc `experiment.yaml`). Một run được định danh bằng setting, không bằng experiment, nên case trùng (vd. `resnet18_3d` + MLP + 100%) chỉ train một lần và dùng chung.

@@ -142,7 +142,7 @@ explicit from-scratch switch (also for CT-FM LoRA). The matched / missing counts
 | Mamba-MAE 3D | MAE on BraTS MRI (`third_party/weights/Mamba_MAE.pth`) | 4 MRI channels summed, positions 40^3 -> 32^3 |
 | VMamba-B 3D | ImageNet (`vssm_base_VMamba.pth`) | 2D -> 3D inflation, 4 SS2D scan params reused by the 4 SS3D scans |
 | PENet 3D | released PE model (`penet_best.pth.tar`, SHA-256 checked) | strict load; classifier replaced |
-| CT-FM LoRA / frozen | CT-FM feature extractor | LoRA on the two deepest stages / cached features |
+| CT-FM LoRA / frozen | CT-FM feature extractor | LoRA on the two deepest stages, on the shared 128³ 1.5 mm volume (SPL + CT-FM HU scale, not CT-FM's 3×1×1 mm patch canvas) / frozen features cached on CT-FM's own canvas (3×1×1 mm, 45 patches); see docs/02_models.md §4.3 |
 | 2D / 2.5D arms | ImageNet (timm) | timm adapts the stem to 1 / 3 channels |
 
 Weight loading is intentionally not assumed from a repository name: each actual run logs the
