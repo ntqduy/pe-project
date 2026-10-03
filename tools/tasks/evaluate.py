@@ -752,6 +752,16 @@ def main() -> int:
         else:
             raise ValueError(f"evaluation does not support stage={stage}")
         if context.is_main:
+            # Parameters / GFLOPs come from the training run's profile (train_task.py).
+            from source.metrics.result_table import model_cost
+
+            trained_result = next((path for path in (evaluation_dir / "result.json", run_dir / "result.json")
+                                   if path.is_file()), None)
+            cost = model_cost(
+                json.loads(trained_result.read_text(encoding="utf-8")).get("model") if trained_result else None
+            )
+            for row in table_rows:
+                row.update(cost)
             write_result_csv(output_dir / "result.csv", table_rows, stage=stage)
             write_predictions_csv(output_dir / "predictions.csv", prediction_table)
             result_path = evaluation_dir / "result.json"

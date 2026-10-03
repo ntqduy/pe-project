@@ -103,13 +103,18 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
             continue
         with result.open(newline="", encoding="utf-8") as handle:
             table = list(csv.DictReader(handle))
-        weights, params, primary = "", "", None
+        weights, primary = "", None
+        cost = {"params_M": float("nan"), "trainable_params_M": float("nan"), "gflops": float("nan"), "flops_scope": ""}
         try:
             payload = json.loads((epoch_dir / "result.json").read_text(encoding="utf-8"))
             model_block = payload.get("model") or {}
             weights = str((model_block.get("pretrained_weights") or {}).get("status") or "")
-            count = model_block.get("parameters") or model_block.get("total_params")
-            params = f"{float(count) / 1e6:.1f}" if count else ""
+            cost = {
+                "params_M": _float(model_block.get("total_params")) / 1e6,
+                "trainable_params_M": _float(model_block.get("trainable_params")) / 1e6,
+                "gflops": _float(model_block.get("gflops_per_volume")),
+                "flops_scope": str(model_block.get("flops_scope") or ""),
+            }
             primary = (payload.get("evaluation") or {}).get("primary_target") or (
                 (payload.get("config") or {}).get("task") or {}).get("primary_target")
         except (OSError, ValueError, TypeError, AttributeError):
@@ -134,7 +139,7 @@ def collect(base: Path, spec: dict, exp: str, settings_filter: str | None = None
             "n_test": test.get("n_studies"),
             **{column: (test.get(column) or "") if column in ("threshold_rule", "note") else _float(test.get(column))
                for column in RESULT_COLUMNS},
-            "val_auroc": _float((validation or {}).get("auroc")), "weights": weights, "params_M": params,
+            "val_auroc": _float((validation or {}).get("auroc")), "weights": weights, **cost,
             "primary_target": primary or "", "run_dir": str(epoch_dir),
         })
     return rows
@@ -155,7 +160,11 @@ def aggregate(rows: list[dict]) -> list[dict]:
                  "fraction": fraction, "variant": variant, "settings": settings, "n_runs": len(items),
                  "n_seeds": len({item["seed"] for item in items}),
                  "seeds": " ".join(str(seed) for seed in sorted({item["seed"] for item in items})),
-                 "weights": ",".join(sorted({item["weights"] for item in items}))}
+                 "weights": ",".join(sorted({item["weights"] for item in items})),
+                 # Same architecture in every run of a group: the first finite value stands for it.
+                 **{key: next((item[key] for item in items if math.isfinite(item[key])), float("nan"))
+                    for key in ("params_M", "trainable_params_M", "gflops")},
+                 "flops_scope": next((item["flops_scope"] for item in items if item["flops_scope"]), "")}
         for metric in METRICS + ("val_auroc",):
             values = [item[metric] for item in items if math.isfinite(item[metric])]
             entry[f"{metric}_mean"] = statistics.fmean(values) if values else float("nan")
@@ -255,6 +264,11 @@ def _interval(value, low, high) -> str:
     return f"{value:.3f} [{low:.3f}–{high:.3f}]"
 
 
+def _number(value, digits: int) -> str:
+    value = _float(value)
+    return f"{value:.{digits}f}" if math.isfinite(value) else "-"
+
+
 def _cell(entry: dict, metric: str) -> str:
     mean, std = entry[f"{metric}_mean"], entry[f"{metric}_std"]
     if not math.isfinite(mean):
@@ -294,6 +308,10 @@ def pretty_rows(summary: list[dict], ensembles: dict[tuple, dict]) -> list[dict]
         for metric in PRETTY_POINT_METRICS:
             row[f"{metric}_mean±std"] = _cell(entry, metric)
         row["val_auroc_mean±std"] = _cell(entry, "val_auroc")
+        row["params_M"] = _number(entry["params_M"], 2)
+        row["trainable_params_M"] = _number(entry["trainable_params_M"], 3)
+        row["gflops_per_volume"] = _number(entry["gflops"], 2) + (
+            " (head only)" if entry["flops_scope"].startswith("head only") else "")
         row["weights"] = entry["weights"]
         row["note"] = ensemble.get("note", "")
         rows.append(row)
@@ -323,9 +341,11 @@ def write_tables(out: Path, exp: str, spec: dict, rows: list[dict], summary: lis
                if (m, h, f, v) not in done]
     columns = ["model", "dim", "head", "train_%", "variant", "settings", "n_seeds", "auroc_[CI]_seed_avg", "auroc_mean±std",
                "auprc_[CI]_seed_avg", "auprc_mean±std", "sensitivity_mean±std", "specificity_mean±std",
-               "f1_mean±std", "balanced_accuracy_mean±std", "brier_mean±std", "weights"]
+               "f1_mean±std", "balanced_accuracy_mean±std", "brier_mean±std", "params_M", "trainable_params_M",
+               "gflops_per_volume", "weights"]
     titles = ["model", "dim", "head", "train %", "variant", "settings", "n seeds", "AUROC [95% CI]", "AUROC mean ± std",
-              "AUPRC [95% CI]", "AUPRC mean ± std", "Sens", "Spec", "F1", "Bal.Acc", "Brier", "weights"]
+              "AUPRC [95% CI]", "AUPRC mean ± std", "Sens", "Spec", "F1", "Bal.Acc", "Brier", "Params (M)",
+              "Trainable (M)", "GFLOPs / volume", "weights"]
     lines = [f"# {exp}: {spec['title']}", "",
              "Test split (official INSPECT test), threshold chosen on validation. "
              "`[95% CI]`: patient-bootstrap interval of the seed-averaged prediction (probabilities "

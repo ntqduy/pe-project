@@ -52,6 +52,9 @@ BASE_COLUMNS = (
     "brier",
 )
 CALIBRATION_COLUMNS = ("calibration_intercept", "calibration_slope")
+# Model size and cost from the training run's profile (result.json "model"), repeated on each
+# row so one result.csv carries everything a results table needs.
+MODEL_COLUMNS = ("total_params", "trainable_params", "gflops_per_volume")
 PREDICTION_COLUMNS = ("split", "target", "patient_id", "study_id", "y_true", "y_prob", "y_pred")
 # Metrics shown with a bootstrap interval in the CSV; all intervals remain in result.json.
 CI_METRICS = ("auroc", "auprc")
@@ -321,7 +324,18 @@ def calibration_reason(
 
 
 def result_columns(stage: str) -> tuple[str, ...]:
-    return (*BASE_COLUMNS, *(CALIBRATION_COLUMNS if stage == "prognosis" else ()), "note")
+    return (*BASE_COLUMNS, *(CALIBRATION_COLUMNS if stage == "prognosis" else ()), *MODEL_COLUMNS, "note")
+
+
+def model_cost(model: Mapping[str, Any] | None) -> dict[str, Any]:
+    """total / trainable parameters and GFLOPs per volume from a result.json "model" block."""
+    block = dict(model or {})
+    gflops = _finite(block.get("gflops_per_volume"))
+    return {
+        "total_params": block.get("total_params", ""),
+        "trainable_params": block.get("trainable_params", ""),
+        "gflops_per_volume": "" if gflops is None else round(gflops, 4),
+    }
 
 
 def _write_csv(path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> Path:

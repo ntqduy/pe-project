@@ -46,6 +46,41 @@ def _leading_batch_size(output: Any) -> int | None:
     return None
 
 
+FLOP_COUNTER_METHOD = (
+    "torch.utils.flop_counter: 2 x multiply-accumulates of convolutions (2D and 3D), matmuls and "
+    "attention in one forward; custom CUDA kernels (e.g. the Mamba selective scan) are not counted"
+)
+
+
+def _count_flops(forward: Callable[[], Any]) -> tuple[float | None, str | None, str]:
+    """GFLOPs of one ``forward()`` call, the method used, and why it is missing (if it is).
+
+    The dispatcher-level FlopCounterMode sees every aten convolution, so 3D CNNs are counted;
+    the profiler's ``with_flops`` (the fallback) skips 3D convolutions and undercounts them.
+    """
+    try:
+        from torch.utils.flop_counter import FlopCounterMode
+
+        with FlopCounterMode(display=False) as counter:
+            forward()
+        flops = int(counter.get_total_flops())
+        if flops > 0:
+            return flops / 1e9, FLOP_COUNTER_METHOD, ""
+        reason = "FlopCounterMode counted no supported operator"
+    except (ImportError, RuntimeError, NotImplementedError, TypeError) as exc:
+        reason = f"FlopCounterMode failed: {type(exc).__name__}: {exc}"
+    try:
+        with _quiet_native_profiler_output():
+            with torch.profiler.profile(with_flops=True) as profiler:
+                forward()
+        flops = sum(int(event.flops or 0) for event in profiler.key_averages())
+        if flops > 0:
+            return flops / 1e9, "torch.profiler with_flops (fallback; misses 3D convolutions)", ""
+    except (RuntimeError, NotImplementedError) as exc:
+        reason += f"; profiler failed: {exc}"
+    return None, None, reason
+
+
 @torch.no_grad()
 def profile_model(
     model: nn.Module,
@@ -80,18 +115,7 @@ def profile_model(
             torch.cuda.synchronize(device)
         latency = (time.perf_counter() - started) * 1000 / iterations
         peak = torch.cuda.max_memory_allocated(device) / (1024**3) if device.type == "cuda" else 0.0
-        gflops: float | None = None
-        reason = "PyTorch profiler did not report supported operator FLOPs"
-        try:
-            with _quiet_native_profiler_output():
-                with torch.profiler.profile(with_flops=True) as profiler:
-                    output = forward()
-            flops = sum(int(event.flops or 0) for event in profiler.key_averages())
-            if flops > 0:
-                gflops = flops / 1e9
-                reason = ""
-        except (RuntimeError, NotImplementedError) as exc:
-            reason = str(exc)
+        gflops, method, reason = _count_flops(forward)
     finally:
         for module, training in modes:
             module.training = training
@@ -100,6 +124,7 @@ def profile_model(
         **summary,
         "batch_size": volumes,
         "gflops_per_volume": gflops / volumes if gflops is not None else None,
+        "gflops_method": method,
         "gflops_unavailable_reason": reason or None,
         "peak_vram_gb": peak,
         "latency_ms_per_batch": latency,

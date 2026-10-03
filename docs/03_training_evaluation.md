@@ -193,6 +193,7 @@ So hai model trên cùng bệnh nhân test (chỉ primary target):
 | `ppv`, `npv` | TP/(TP+FP), TN/(TN+FN); không có dự đoán dương → NaN |
 | `f1`, `accuracy`, `balanced_accuracy` | sklearn (`f1` dùng `zero_division=0`; balanced một lớp → NaN) |
 | `brier` | `brier_score_loss` |
+| `total_params`, `trainable_params`, `gflops_per_volume` | Kích thước và chi phí của model, lấy từ profile lúc train (`result.json` → `model`); GFLOPs = 2 × multiply-accumulate của một lần forward (`torch.utils.flop_counter`, đếm cả conv 3D; kernel CUDA riêng như selective scan của Mamba không được đếm); `ctfm_frozen_3d` chỉ tính head vì feature CT-FM đã tính trước (`model.flops_scope`) |
 | `calibration_intercept`, `calibration_slope` | chỉ prognosis |
 
 Xác suất phải hữu hạn và trong [0,1]. `result.csv` (`result_table.py`) có một dòng cho mỗi (target, split), ô không tính được để trống và cột `note` giải thích (một lớp, ít ca `< evaluation.min_class_count_warning` mặc định 5 → "unstable estimate", threshold nằm ngoài khoảng `y_prob`...). `predictions.csv`: `split, target, patient_id, study_id, y_true, y_prob, y_pred`. Train metrics dùng cùng threshold validation, không CI; chỉ để xem overfit, không để báo cáo.

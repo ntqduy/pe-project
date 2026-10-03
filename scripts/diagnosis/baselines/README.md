@@ -211,7 +211,7 @@ Summary tables (`tools/baselines/summarize.py`, also run after every grid):
 
 | file | content |
 |---|---|
-| `summary.md`, `summary_pretty.csv` | one row per model: AUROC / AUPRC as `0.812 [0.790–0.834]` (seed ensemble) and mean ± std over seeds, every other metric mean ± std, `n_seeds` |
+| `summary.md`, `summary_pretty.csv` | one row per model: AUROC / AUPRC as `0.812 [0.790–0.834]` (seed ensemble) and mean ± std over seeds, every other metric mean ± std, `n_seeds`, total / trainable parameters (M) and GFLOPs per volume |
 | `summary_ensemble.csv` | the seed ensemble with every `result.csv` column: test probabilities averaged per `study_id` over the seeds (merged on `study_id`, never on row order; runs whose studies or labels differ are an error), threshold re-chosen on the averaged validation probabilities, patient-bootstrap CI |
 | `summary.csv` | numeric mean / std / n per metric |
 | `summary_raw.csv` | every run's test row (all `result.csv` columns) |

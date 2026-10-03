@@ -485,6 +485,13 @@ def main() -> int:
                     "feature_standardization": feature_standardization,
                     "pretrained_weights": pretrained_report,
                     "head": (config.get("head") or {}).get("type"),
+                    # Cached CT-FM features were computed once by build_ctfm_cache.py, so the
+                    # profiled forward (and its GFLOPs) covers the trainable head only.
+                    "flops_scope": (
+                        "head only (CT-FM features precomputed by tools/data/build_ctfm_cache.py)"
+                        if bool((config.get("model") or {}).get("cached_features"))
+                        else "whole model forward on one validation batch"
+                    ),
                 },
                 compute={
                     "strategy": config["compute"]["strategy"],
